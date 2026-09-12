@@ -1,0 +1,15 @@
+node_modules/
+dist/
+coverage/
+
+# secrets — only .env.example is committed
+.env
+.env.*
+!.env.example
+
+# supabase local stack
+supabase/.temp/
+supabase/.branches/
+
+*.log
+.DS_Store

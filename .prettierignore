@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+supabase/.temp/
+package-lock.json
+
+# external inputs kept verbatim
+docs/RFC-*.md
+docs/PHASE1-PLAN-PROMPT.md

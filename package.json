@@ -1,0 +1,36 @@
+{
+  "name": "analytics-be",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 1 analytics service: nightly/on-demand sync of NEXD and Zeus (ATK) analytics into Postgres, plus signed scheduled report webhooks to clients.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "node --watch --env-file-if-exists=.env src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "test": "vitest run --project unit",
+    "test:watch": "vitest --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:all": "vitest run",
+    "sync": "node --env-file-if-exists=.env src/cli/sync.ts",
+    "admin": "node --env-file-if-exists=.env src/cli/admin.ts",
+    "db:reset": "supabase db reset"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.4",
+    "eslint": "10.10.0",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.9.6",
+    "supabase": "2.117.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.70.0",
+    "vitest": "5.0.0"
+  }
+}
