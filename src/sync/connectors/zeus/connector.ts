@@ -148,11 +148,11 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): SourceC
             'creatives',
             window,
             zeusCreativesRow,
-            config.campaignIdParam,
+            config.campaign_id_param,
             campaign.externalId,
             result.warnings,
           )
-        : await getPerCreative(ctx, window, creatives, config.campaignIdParam, result.warnings)
+        : await getPerCreative(ctx, window, creatives, config.campaign_id_param, result.warnings)
       result.raw.push(...fetched.raw)
       for (const row of fetched.rows) {
         const entity =
@@ -171,7 +171,7 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): SourceC
         'campaigns',
         window,
         zeusCampaignsRow,
-        config.campaignIdParam,
+        config.campaign_id_param,
         campaign.externalId,
         result.warnings,
       )
@@ -254,7 +254,7 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): SourceC
       const result: FetchResult = { rows: [], raw: [], warnings: [] }
       const input: ZeusMapperInput = {
         language: ctx.link.language,
-        clickthroughCtaId: config.clickthroughCtaId,
+        clickthroughCtaId: config.clickthrough_cta_id,
         creatives: [],
         campaigns: [],
         tracker: [],

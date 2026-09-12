@@ -56,9 +56,9 @@ export function zeusReport<T extends z.ZodType>(row: T) {
 export const zeusLinkConfig = z
   .object({
     /** analytics.cta.cta_id that /reports/creatives clicks are written to. */
-    clickthroughCtaId: z.string().min(1),
+    clickthrough_cta_id: z.string().min(1),
     /** Which query parameter carries the campaign id when filtering reports. */
-    campaignIdParam: z.enum(['external_id', 'internal_id']).default('external_id'),
+    campaign_id_param: z.enum(['external_id', 'internal_id']).default('external_id'),
   })
   .strict()
 export type ZeusLinkConfig = z.infer<typeof zeusLinkConfig>

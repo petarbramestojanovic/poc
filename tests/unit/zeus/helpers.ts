@@ -111,7 +111,7 @@ export function context(
   http: HttpClient,
   window: DateWindow = FIXTURE_WINDOW,
   entities: LinkEntity[] = ALL_ENTITIES,
-  config: Record<string, unknown> = { clickthroughCtaId: 'clickthrough' },
+  config: Record<string, unknown> = { clickthrough_cta_id: 'clickthrough' },
 ): SyncContext {
   return {
     source: {
