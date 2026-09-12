@@ -1,0 +1,100 @@
+{
+  "customer": {
+    "id": 317,
+    "name": "Brame"
+  },
+  "from": "2026-09-01",
+  "to": "2026-09-03",
+  "rows": [
+    {
+      "date": "2026-09-01",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "creative_id": 12345,
+      "creative_name": "ENG Swipe MPU V1",
+      "creative_external_id": "mpu-v1-ext",
+      "impressions": 20000,
+      "unique_impressions": 17000,
+      "clicks": 150,
+      "unique_clicks": 140,
+      "ctr": 0.0075,
+      "visible_impressions": 16000,
+      "visibility": 0.8
+    },
+    {
+      "date": "2026-09-01",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "creative_id": 12346,
+      "creative_name": "ENG Swipe MPU V2",
+      "creative_external_id": "mpu-v2-ext",
+      "impressions": 10000,
+      "unique_impressions": 8800,
+      "clicks": 60,
+      "unique_clicks": 55,
+      "ctr": 0.006,
+      "visible_impressions": 7500,
+      "visibility": 0.75
+    },
+    {
+      "date": "2026-09-02",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "creative_id": 12345,
+      "creative_name": "ENG Swipe MPU V1",
+      "creative_external_id": "mpu-v1-ext",
+      "impressions": 21000,
+      "unique_impressions": 17900,
+      "clicks": 160,
+      "unique_clicks": 149,
+      "ctr": 0.00762,
+      "visible_impressions": 16800,
+      "visibility": 0.8
+    },
+    {
+      "date": "2026-09-02",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "creative_id": 12346,
+      "creative_name": "ENG Swipe MPU V2",
+      "creative_external_id": "mpu-v2-ext",
+      "impressions": 10500,
+      "unique_impressions": 9250,
+      "clicks": 65,
+      "unique_clicks": 59,
+      "ctr": 0.00619,
+      "visible_impressions": 7900,
+      "visibility": 0.7524
+    },
+    {
+      "date": "2026-09-03",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "creative_id": 12345,
+      "creative_name": "ENG Swipe MPU V1",
+      "creative_external_id": "mpu-v1-ext",
+      "impressions": 22000,
+      "unique_impressions": 18800,
+      "clicks": 170,
+      "unique_clicks": 158,
+      "ctr": 0.00773,
+      "visible_impressions": 17600,
+      "visibility": 0.8
+    },
+    {
+      "date": "2026-09-03",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "creative_id": 12346,
+      "creative_name": "ENG Swipe MPU V2",
+      "creative_external_id": "mpu-v2-ext",
+      "impressions": 11000,
+      "unique_impressions": 9700,
+      "clicks": 70,
+      "unique_clicks": 63,
+      "ctr": 0.00636,
+      "visible_impressions": 8300,
+      "visibility": 0.7545
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "customer": {
+    "id": 317,
+    "name": "Brame"
+  },
+  "from": "2026-09-01",
+  "to": "2026-09-03",
+  "rows": [
+    {
+      "date": "2026-09-01",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "name": "AT2608 Tchibo",
+      "impressions": 30000,
+      "unique_impressions": 25800,
+      "clicks": 210,
+      "unique_clicks": 195,
+      "visible_impressions": 23500
+    },
+    {
+      "date": "2026-09-02",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "name": "AT2608 Tchibo",
+      "impressions": 31500,
+      "unique_impressions": 27150,
+      "clicks": 225,
+      "unique_clicks": 208,
+      "visible_impressions": 24700
+    },
+    {
+      "date": "2026-09-03",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "name": "AT2608 Tchibo",
+      "impressions": 33000,
+      "unique_impressions": 28500,
+      "clicks": 240,
+      "unique_clicks": 221,
+      "visible_impressions": 25900
+    }
+  ]
+}
