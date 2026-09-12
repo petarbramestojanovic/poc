@@ -23,6 +23,8 @@ export default defineConfig(
       ],
       '@typescript-eslint/switch-exhaustiveness-check': 'error',
       '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
+      // Fastify plugins and handlers are async by contract even when they never await.
+      '@typescript-eslint/require-await': 'off',
       'no-console': 'error',
     },
   },
