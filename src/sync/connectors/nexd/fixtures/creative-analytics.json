@@ -1,0 +1,501 @@
+{
+  "result": {
+    "analytics": {
+      "performance": [
+        {
+          "date": "2026-08-31",
+          "impressions": 10000,
+          "loaded": 9880,
+          "viewable": {
+            "value": 8500,
+            "percent": 85.0
+          },
+          "engagement": {
+            "value": 700,
+            "percent": 7.0
+          },
+          "ctr": {
+            "value": 120,
+            "percent": 1.2
+          },
+          "dwell": 21000
+        },
+        {
+          "date": "2026-09-01",
+          "impressions": 11000,
+          "loaded": 10880,
+          "viewable": {
+            "value": 9400,
+            "percent": 85.45
+          },
+          "engagement": {
+            "value": 760,
+            "percent": 6.91
+          },
+          "ctr": {
+            "value": 130,
+            "percent": 1.182
+          },
+          "dwell": 22500
+        },
+        {
+          "date": "2026-09-02",
+          "impressions": 12000,
+          "loaded": 11880,
+          "viewable": {
+            "value": 10200,
+            "percent": 85.0
+          },
+          "engagement": {
+            "value": 800,
+            "percent": 6.67
+          },
+          "ctr": {
+            "value": 140,
+            "percent": 1.167
+          },
+          "dwell": 23000
+        },
+        {
+          "date": "2026-09-03",
+          "impressions": 10500,
+          "loaded": 10380,
+          "viewable": {
+            "value": 8900,
+            "percent": 84.76
+          },
+          "engagement": {
+            "value": 690,
+            "percent": 6.57
+          },
+          "ctr": {
+            "value": 115,
+            "percent": 1.095
+          },
+          "dwell": 21500
+        },
+        {
+          "date": "2026-09-04",
+          "impressions": 11200,
+          "loaded": 11080,
+          "viewable": {
+            "value": 9550,
+            "percent": 85.27
+          },
+          "engagement": {
+            "value": 740,
+            "percent": 6.61
+          },
+          "ctr": {
+            "value": 125,
+            "percent": 1.116
+          },
+          "dwell": 22000
+        },
+        {
+          "date": "2026-09-05",
+          "impressions": 10800,
+          "loaded": 10680,
+          "viewable": {
+            "value": 9200,
+            "percent": 85.19
+          },
+          "engagement": {
+            "value": 710,
+            "percent": 6.57
+          },
+          "ctr": {
+            "value": 120,
+            "percent": 1.111
+          },
+          "dwell": 22800
+        },
+        {
+          "date": "2026-09-06",
+          "impressions": 10700,
+          "loaded": 10580,
+          "viewable": {
+            "value": 9097,
+            "percent": 85.02
+          },
+          "engagement": {
+            "value": 655,
+            "percent": 6.12
+          },
+          "ctr": {
+            "value": 110,
+            "percent": 1.028
+          },
+          "dwell": 21900
+        }
+      ],
+      "eventsList": {
+        "2026-08-31": [
+          {
+            "action": {
+              "original": "Unique [Touch]"
+            },
+            "count": 640,
+            "u_count": 640
+          },
+          {
+            "action": {
+              "original": "Unique [Hover]"
+            },
+            "count": 260,
+            "u_count": 260
+          },
+          {
+            "action": {
+              "original": "Page seen [Main]"
+            },
+            "count": 700,
+            "u_count": 700
+          },
+          {
+            "action": {
+              "original": "Page seen [Result]"
+            },
+            "count": 300,
+            "u_count": 300
+          },
+          {
+            "action": {
+              "original": "CTR [global]"
+            },
+            "count": 120,
+            "u_count": 120
+          },
+          {
+            "action": {
+              "original": "Sound on"
+            },
+            "count": 50,
+            "u_count": 50
+          }
+        ],
+        "2026-09-01": [
+          {
+            "action": {
+              "original": "Unique [Touch]"
+            },
+            "count": 690,
+            "u_count": 690
+          },
+          {
+            "action": {
+              "original": "Unique [Hover]"
+            },
+            "count": 280,
+            "u_count": 280
+          },
+          {
+            "action": {
+              "original": "Page seen [Main]"
+            },
+            "count": 760,
+            "u_count": 760
+          },
+          {
+            "action": {
+              "original": "Page seen [Result]"
+            },
+            "count": 320,
+            "u_count": 320
+          },
+          {
+            "action": {
+              "original": "CTR [global]"
+            },
+            "count": 130,
+            "u_count": 130
+          },
+          {
+            "action": {
+              "original": "Sound on"
+            },
+            "count": 50,
+            "u_count": 50
+          }
+        ],
+        "2026-09-02": [
+          {
+            "action": {
+              "original": "Unique [Touch]"
+            },
+            "count": 730,
+            "u_count": 730
+          },
+          {
+            "action": {
+              "original": "Unique [Hover]"
+            },
+            "count": 300,
+            "u_count": 300
+          },
+          {
+            "action": {
+              "original": "Page seen [Main]"
+            },
+            "count": 800,
+            "u_count": 800
+          },
+          {
+            "action": {
+              "original": "Page seen [Result]"
+            },
+            "count": 340,
+            "u_count": 340
+          },
+          {
+            "action": {
+              "original": "CTR [global]"
+            },
+            "count": 140,
+            "u_count": 140
+          },
+          {
+            "action": {
+              "original": "Sound on"
+            },
+            "count": 50,
+            "u_count": 50
+          }
+        ],
+        "2026-09-03": [
+          {
+            "action": {
+              "original": "Unique [Touch]"
+            },
+            "count": 630,
+            "u_count": 630
+          },
+          {
+            "action": {
+              "original": "Unique [Hover]"
+            },
+            "count": 255,
+            "u_count": 255
+          },
+          {
+            "action": {
+              "original": "Page seen [Main]"
+            },
+            "count": 690,
+            "u_count": 690
+          },
+          {
+            "action": {
+              "original": "Page seen [Result]"
+            },
+            "count": 290,
+            "u_count": 290
+          },
+          {
+            "action": {
+              "original": "CTR [global]"
+            },
+            "count": 115,
+            "u_count": 115
+          },
+          {
+            "action": {
+              "original": "Sound on"
+            },
+            "count": 50,
+            "u_count": 50
+          }
+        ],
+        "2026-09-04": [
+          {
+            "action": {
+              "original": "Unique [Touch]"
+            },
+            "count": 680,
+            "u_count": 680
+          },
+          {
+            "action": {
+              "original": "Unique [Hover]"
+            },
+            "count": 275,
+            "u_count": 275
+          },
+          {
+            "action": {
+              "original": "Page seen [Main]"
+            },
+            "count": 740,
+            "u_count": 740
+          },
+          {
+            "action": {
+              "original": "Page seen [Result]"
+            },
+            "count": 310,
+            "u_count": 310
+          },
+          {
+            "action": {
+              "original": "CTR [global]"
+            },
+            "count": 125,
+            "u_count": 125
+          },
+          {
+            "action": {
+              "original": "Sound on"
+            },
+            "count": 50,
+            "u_count": 50
+          }
+        ],
+        "2026-09-05": [
+          {
+            "action": {
+              "original": "Unique [Touch]"
+            },
+            "count": 650,
+            "u_count": 650
+          },
+          {
+            "action": {
+              "original": "Unique [Hover]"
+            },
+            "count": 265,
+            "u_count": 265
+          },
+          {
+            "action": {
+              "original": "Page seen [Main]"
+            },
+            "count": 710,
+            "u_count": 710
+          },
+          {
+            "action": {
+              "original": "Page seen [Result]"
+            },
+            "count": 300,
+            "u_count": 300
+          },
+          {
+            "action": {
+              "original": "CTR [global]"
+            },
+            "count": 120,
+            "u_count": 120
+          },
+          {
+            "action": {
+              "original": "Sound on"
+            },
+            "count": 50,
+            "u_count": 50
+          }
+        ],
+        "2026-09-06": [
+          {
+            "action": {
+              "original": "Unique [Touch]"
+            },
+            "count": 600,
+            "u_count": 600
+          },
+          {
+            "action": {
+              "original": "Unique [Hover]"
+            },
+            "count": 258,
+            "u_count": 258
+          },
+          {
+            "action": {
+              "original": "Page seen [Main]"
+            },
+            "count": 655,
+            "u_count": 655
+          },
+          {
+            "action": {
+              "original": "Page seen [Result]"
+            },
+            "count": 280,
+            "u_count": 280
+          },
+          {
+            "action": {
+              "original": "CTR [global]"
+            },
+            "count": 110,
+            "u_count": 110
+          },
+          {
+            "action": {
+              "original": "Sound on"
+            },
+            "count": 50,
+            "u_count": 50
+          }
+        ]
+      },
+      "events": [
+        {
+          "action": {
+            "original": "Unique [Touch]"
+          },
+          "count": 4620,
+          "u_count": 4620
+        },
+        {
+          "action": {
+            "original": "Unique [Hover]"
+          },
+          "count": 1893,
+          "u_count": 1893
+        },
+        {
+          "action": {
+            "original": "Page seen [Main]"
+          },
+          "count": 5055,
+          "u_count": 5055
+        },
+        {
+          "action": {
+            "original": "Page seen [Result]"
+          },
+          "count": 2140,
+          "u_count": 2140
+        },
+        {
+          "action": {
+            "original": "CTR [global]"
+          },
+          "count": 860,
+          "u_count": 860
+        },
+        {
+          "action": {
+            "original": "Sound on"
+          },
+          "count": 350,
+          "u_count": 350
+        }
+      ],
+      "summary": {
+        "totals": {
+          "impressions": 76200,
+          "loaded": 75360,
+          "viewable": 64847,
+          "engagement": {
+            "clicks": 5055
+          },
+          "ctr": {
+            "clicks": 860
+          }
+        }
+      }
+    }
+  }
+}
