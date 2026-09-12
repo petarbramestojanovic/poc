@@ -12,7 +12,10 @@ export interface AppDeps {
 }
 
 export function buildApp({ config, db, logger }: AppDeps): FastifyInstance {
-  const app = fastify({ loggerInstance: logger as FastifyBaseLogger })
+  // Widen to Fastify's logger interface so its logger type parameter is not inferred as the
+  // concrete pino type, which conflicts with Fastify's own child-logger factory typing.
+  const loggerInstance: FastifyBaseLogger = logger
+  const app = fastify({ loggerInstance })
 
   app.register(healthRoutes, { db })
 
