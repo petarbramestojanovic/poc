@@ -23,6 +23,7 @@ const sql = loadSql(import.meta.url, [
   'load_nightly_links',
   'load_credentials',
   'record_credential_check',
+  'load_run',
 ] as const)
 
 export interface CredentialPointer {
@@ -362,4 +363,55 @@ export async function recordCredentialCheck(
   ok: boolean,
 ): Promise<void> {
   await db.query(sql.record_credential_check, [credentialId, ok])
+}
+
+export interface SyncRunRecord {
+  id: string
+  linkId: string
+  trigger: SyncTrigger
+  dryRun: boolean
+  status: 'running' | 'succeeded' | 'failed'
+  window: DateWindow
+  startedAt: string
+  finishedAt: string | null
+  daysWritten: number | null
+  rowsWritten: number | null
+  warnings: string[]
+  /** Redacted when it was recorded. */
+  error: string | null
+}
+
+interface SyncRunRow {
+  id: string
+  link_id: string
+  trigger: SyncTrigger
+  dry_run: boolean
+  status: SyncRunRecord['status']
+  window_from: IsoDate
+  window_to: IsoDate
+  started_at: Date
+  finished_at: Date | null
+  days_written: number | null
+  rows_written: number | null
+  warnings: string[]
+  error: string | null
+}
+
+export async function loadRun(db: Queryable, runId: string): Promise<SyncRunRecord | undefined> {
+  const [row] = await db.query<SyncRunRow>(sql.load_run, [runId])
+  if (!row) return undefined
+  return {
+    id: row.id,
+    linkId: row.link_id,
+    trigger: row.trigger,
+    dryRun: row.dry_run,
+    status: row.status,
+    window: { from: row.window_from, to: row.window_to },
+    startedAt: row.started_at.toISOString(),
+    finishedAt: row.finished_at?.toISOString() ?? null,
+    daysWritten: row.days_written,
+    rowsWritten: row.rows_written,
+    warnings: row.warnings,
+    error: row.error,
+  }
 }

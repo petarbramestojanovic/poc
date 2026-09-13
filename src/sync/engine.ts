@@ -65,6 +65,8 @@ export interface SyncRequest {
   triggeredBy?: string | null
   /** Marks external.sync_state.last_deep_sync_at on success (weekly deep re-pull). */
   deep?: boolean
+  /** Called once the run row exists, before any fetching, so a caller can answer with its id. */
+  onRunOpened?: (syncRunId: string) => void
 }
 
 export interface SyncSummary {
@@ -121,6 +123,33 @@ export function createRunTracker(): RunTracker {
 export function runSync(deps: SyncDeps, request: SyncRequest): Promise<SyncSummary> {
   const run = execute(deps, request)
   return deps.tracker ? deps.tracker.track(run) : run
+}
+
+export interface StartedSync {
+  syncRunId: string
+  /** Settles when the run finishes. Already observed, so leaving it unawaited is safe. */
+  completion: Promise<SyncSummary>
+}
+
+/**
+ * Opens a run and resolves as soon as its sync_run row exists, while the fetch and the writes
+ * carry on (tracked, so shutdown drains them). A refusal before the row exists (unknown link,
+ * cooldown, a run already in progress, invalid config) rejects here, so the trigger route can
+ * answer it with a status. A later failure is recorded on the run row and logged by the engine.
+ */
+export function startSync(deps: SyncDeps, request: SyncRequest): Promise<StartedSync> {
+  return new Promise((resolve, reject) => {
+    const completion: Promise<SyncSummary> = runSync(deps, {
+      ...request,
+      onRunOpened: (syncRunId) => {
+        request.onRunOpened?.(syncRunId)
+        resolve({ syncRunId, completion })
+      },
+    })
+    completion.catch((error: unknown) => {
+      reject(error instanceof Error ? error : new Error(String(error)))
+    })
+  })
 }
 
 /** Boot check: the connector registry matches the enabled platform sources in the database. */
@@ -184,6 +213,7 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
     },
     request.trigger === 'manual' ? ctx.source.minManualIntervalSeconds : null,
   )
+  request.onRunOpened?.(runId)
   const runLog = log.child({
     syncRunId: runId,
     linkId: ctx.link.id,

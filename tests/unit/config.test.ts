@@ -19,6 +19,7 @@ describe('loadConfig', () => {
       port: 3000,
       logLevel: 'info',
       trustProxyHops: 0,
+      syncSchedulerEnabled: true,
     })
   })
 
@@ -27,6 +28,16 @@ describe('loadConfig', () => {
     expect(config.port).toBe(8080)
     expect(config.logLevel).toBe('debug')
     expect(config.trustProxyHops).toBe(2)
+  })
+
+  it('reads SYNC_SCHEDULER_ENABLED as a boolean, on by default', () => {
+    expect(loadConfig(valid).syncSchedulerEnabled).toBe(true)
+    expect(loadConfig({ ...valid, SYNC_SCHEDULER_ENABLED: 'false' }).syncSchedulerEnabled).toBe(
+      false,
+    )
+    expect(() => loadConfig({ ...valid, SYNC_SCHEDULER_ENABLED: 'maybe' })).toThrow(
+      'SYNC_SCHEDULER_ENABLED',
+    )
   })
 
   it('ignores unrelated variables and empty values', () => {

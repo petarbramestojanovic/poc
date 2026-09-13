@@ -15,6 +15,7 @@ const config: Config = {
   port: 0,
   logLevel: 'silent',
   trustProxyHops: 0,
+  syncSchedulerEnabled: false,
 }
 
 const localDb = (options: DbOptions = {}) => createDb(DATABASE_URL, { ssl: 'disable', ...options })

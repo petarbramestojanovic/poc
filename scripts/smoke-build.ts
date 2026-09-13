@@ -8,6 +8,8 @@ const modules = [
   'sync/nightly.js',
   'runtime.js',
   'cli/sync-commands.js',
+  'sync/scheduler.js',
+  'routes/sync.js',
 ]
 for (const module of modules) {
   await import(new URL(`../dist/${module}`, import.meta.url).href)

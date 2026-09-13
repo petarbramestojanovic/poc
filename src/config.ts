@@ -53,6 +53,8 @@ const serviceSchema = z
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     /** Number of reverse proxies in front of the service (Render = 1, Cloudflare + Render = 2). */
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
+    /** Schedules the 04:00 nightly pass in this process. Every replica may; the leader lock picks one. */
+    SYNC_SCHEDULER_ENABLED: z.stringbool().default(true),
   })
   .superRefine(checkDatabase)
 
@@ -70,6 +72,7 @@ export interface Config extends RuntimeConfig {
   readonly adminToken: string
   readonly port: number
   readonly trustProxyHops: number
+  readonly syncSchedulerEnabled: boolean
 }
 
 export class ConfigError extends Error {
@@ -113,5 +116,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: data.PORT,
     logLevel: data.LOG_LEVEL,
     trustProxyHops: data.TRUST_PROXY_HOPS,
+    syncSchedulerEnabled: data.SYNC_SCHEDULER_ENABLED,
   }
 }

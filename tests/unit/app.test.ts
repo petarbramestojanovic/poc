@@ -19,6 +19,7 @@ const config: Config = {
   port: 0,
   logLevel: 'silent',
   trustProxyHops: 0,
+  syncSchedulerEnabled: false,
 }
 
 function fakeDb(query: Db['query'] = () => Promise.resolve([])): Db {

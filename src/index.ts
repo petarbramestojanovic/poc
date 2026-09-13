@@ -2,7 +2,8 @@ import { buildApp } from './app.ts'
 import { loadConfig } from './config.ts'
 import { createLogger } from './log.ts'
 import { createSyncRuntime } from './runtime.ts'
-import { createRunTracker } from './sync/engine.ts'
+import { createRunTracker, type SyncDeps } from './sync/engine.ts'
+import { startNightlyScheduler, type NightlyScheduler } from './sync/scheduler.ts'
 
 /** Render sends SIGTERM and kills the process 30 s later; finish well inside that. */
 const SHUTDOWN_DEADLINE_MS = 10_000
@@ -13,21 +14,34 @@ const logger = createLogger(config.logLevel)
 // and external.source disagree.
 const runtime = await createSyncRuntime(config, logger)
 
-// Process-wide cancellation. Step 9 passes `shutdown.signal` and `tracker` into runSync, so a
-// deploy landing mid-run stops between day transactions and records the run as aborted.
+// Process-wide cancellation: a deploy landing mid-run stops it between day transactions and the
+// run is recorded as aborted. The tracker lets app.close() wait for in-flight runs.
 const shutdown = new AbortController()
 const tracker = createRunTracker()
-export const lifecycle = { signal: shutdown.signal, tracker, runtime }
+
+// One set of sync dependencies for the trigger route and the nightly scheduler.
+const sync: SyncDeps = {
+  db: runtime.db,
+  registry: runtime.registry,
+  http: runtime.http,
+  log: logger,
+  limiter: runtime.limiter,
+  signal: shutdown.signal,
+  tracker,
+}
 
 const app = buildApp({
   config,
   db: runtime.db,
   logger,
   tracker,
+  sync,
   drainTimeoutMs: SHUTDOWN_DEADLINE_MS - 2_000,
 })
 
+let scheduler: NightlyScheduler | undefined
 let shuttingDown = false
+
 async function stop(signal: NodeJS.Signals): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
@@ -40,6 +54,8 @@ async function stop(signal: NodeJS.Signals): Promise<void> {
 
   shutdown.abort(new Error(`received ${signal}`))
   try {
+    // No new ticks. A pass already running stops before its next day and releases the lock.
+    await scheduler?.stop()
     await app.close() // drains in-flight runs, then closes the pool (onClose hook)
     process.exitCode = 0
   } catch (err) {
@@ -53,3 +69,10 @@ process.once('SIGTERM', (signal) => void stop(signal))
 process.once('SIGINT', (signal) => void stop(signal))
 
 await app.listen({ port: config.port, host: '0.0.0.0' })
+
+if (!config.syncSchedulerEnabled) {
+  logger.info('nightly sync scheduler disabled (SYNC_SCHEDULER_ENABLED=false)')
+} else if (!shutdown.signal.aborted) {
+  // A signal can land while listen() is still pending; never start ticks after that.
+  scheduler = startNightlyScheduler(sync)
+}

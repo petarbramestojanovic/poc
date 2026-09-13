@@ -82,6 +82,19 @@ With real keys you can sync into your local database and inspect the rows direct
 
 `npm run sync -- --all` runs the nightly pass over every enabled link. It skips campaigns that are archived, not started yet, or finished before the 35-day deep lookback. `npm run db:reset` removes everything you created.
 
+### Trigger a sync over HTTP
+
+With the service running (`npm run dev`), trigger a link and poll its run. Replace `<token>` with `SERVICE_ADMIN_TOKEN`.
+
+```sh
+curl -X POST http://127.0.0.1:3000/sync/links/10000000-0000-4000-8000-000000000012/run \
+  -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+  -d '{"from": "2026-09-01", "to": "2026-09-07"}'
+curl http://127.0.0.1:3000/sync/runs/<sync run id> -H 'authorization: Bearer <token>'
+```
+
+The trigger answers `202` with the run id as soon as the run is open, `429` inside the five-minute cooldown and `409` while the link already has a run in progress. A body of `{}` syncs the source's lookback ending yesterday. `"dryRun": true` records a dry run; only the CLI prints its diff. Windows longer than 366 days belong to the CLI.
+
 ## Scripts
 
 | Script                     | What it does                                                      |
@@ -103,18 +116,19 @@ With real keys you can sync into your local database and inspect the rows direct
 
 See [.env.example](.env.example). Secrets live only in environment variables (locally in `.env`, on Render in the dashboard). `external.credential` rows store the _name_ of the variable, never the value.
 
-| Variable              | Purpose                                                                                                        |
-| --------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`        | Postgres URL: local direct; on Render the session pooler (5432) or direct, never the transaction pooler (6543) |
-| `DATABASE_SSL`        | `verify-full` (default) or `disable` (loopback hosts only)                                                     |
-| `DATABASE_SSL_CA`     | PEM of the database CA; empty uses the system CAs                                                              |
-| `NEXD_API_KEY`        | NEXD bearer key                                                                                                |
-| `ZEUS_API_TOKEN`      | Zeus bearer token                                                                                              |
-| `SERVICE_ADMIN_TOKEN` | Bearer token for `/sync/*` and `/webhooks/*` routes, at least 32 characters                                    |
-| `PORT`                | HTTP port                                                                                                      |
-| `LOG_LEVEL`           | pino level                                                                                                     |
-| `TRUST_PROXY_HOPS`    | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                            |
-| `TZ`                  | Always `UTC`; sources and schedules carry explicit timezones                                                   |
+| Variable                 | Purpose                                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`           | Postgres URL: local direct; on Render the session pooler (5432) or direct, never the transaction pooler (6543) |
+| `DATABASE_SSL`           | `verify-full` (default) or `disable` (loopback hosts only)                                                     |
+| `DATABASE_SSL_CA`        | PEM of the database CA; empty uses the system CAs                                                              |
+| `NEXD_API_KEY`           | NEXD bearer key                                                                                                |
+| `ZEUS_API_TOKEN`         | Zeus bearer token                                                                                              |
+| `SERVICE_ADMIN_TOKEN`    | Bearer token for `/sync/*` and `/webhooks/*` routes, at least 32 characters                                    |
+| `PORT`                   | HTTP port                                                                                                      |
+| `LOG_LEVEL`              | pino level                                                                                                     |
+| `TRUST_PROXY_HOPS`       | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                            |
+| `SYNC_SCHEDULER_ENABLED` | Run the 04:00 Europe/Zurich nightly pass in this process (default `true`)                                      |
+| `TZ`                     | Always `UTC`; sources and schedules carry explicit timezones                                                   |
 
 ## Branches
 

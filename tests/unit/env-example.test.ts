@@ -12,6 +12,7 @@ const REQUIRED = [
   'PORT',
   'LOG_LEVEL',
   'TRUST_PROXY_HOPS',
+  'SYNC_SCHEDULER_ENABLED',
   'TZ',
 ]
 

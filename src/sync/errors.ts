@@ -26,6 +26,12 @@ export class LinkNotFoundError extends SyncError {
   override readonly status = 404
 }
 
+export class SyncRunNotFoundError extends SyncError {
+  override readonly name = 'SyncRunNotFoundError'
+  override readonly code = 'sync_run_not_found'
+  override readonly status = 404
+}
+
 export class LinkDisabledError extends SyncError {
   override readonly name = 'LinkDisabledError'
   override readonly code = 'link_disabled'

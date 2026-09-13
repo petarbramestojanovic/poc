@@ -13,7 +13,8 @@ import type { Db } from './db.ts'
 import type { Logger } from './log.ts'
 import { requireAdminToken } from './plugins/admin-auth.ts'
 import { healthRoutes } from './routes/health.ts'
-import type { RunTracker } from './sync/engine.ts'
+import { syncRoutes } from './routes/sync.ts'
+import type { RunTracker, SyncDeps } from './sync/engine.ts'
 import {
   classifySyncError,
   InvalidLinkConfigError,
@@ -28,6 +29,8 @@ export interface AppDeps {
   /** In-flight sync runs; `app.close()` waits for them (up to the drain timeout) before closing the pool. */
   tracker?: RunTracker
   drainTimeoutMs?: number
+  /** Sync machinery behind the /sync routes. The service passes it; without it /sync answers 404. */
+  sync?: SyncDeps
 }
 
 /** Admin prefixes: every method and path under these requires the operator token. */
@@ -39,6 +42,7 @@ export function buildApp({
   logger,
   tracker,
   drainTimeoutMs = 8_000,
+  sync,
 }: AppDeps): FastifyInstance {
   // Widen to Fastify's logger interface so its logger type parameter is not inferred as the
   // concrete pino type, which conflicts with Fastify's own child-logger factory typing.
@@ -96,6 +100,7 @@ export function buildApp({
         admin.setNotFoundHandler(async (_request, reply) =>
           reply.code(404).send({ error: 'not_found' }),
         )
+        if (prefix === '/sync' && sync) await admin.register(syncRoutes, { deps: sync })
       },
       { prefix },
     )
