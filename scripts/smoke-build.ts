@@ -5,6 +5,9 @@ const modules = [
   'sync/engine.js',
   'sync/connectors/nexd/connector.js',
   'sync/connectors/zeus/connector.js',
+  'sync/nightly.js',
+  'runtime.js',
+  'cli/sync-commands.js',
 ]
 for (const module of modules) {
   await import(new URL(`../dist/${module}`, import.meta.url).href)

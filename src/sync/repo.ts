@@ -3,6 +3,7 @@ import type { DateWindow, IsoDate } from '../dates.ts'
 import { loadSql } from '../sql-file.ts'
 import { RunInProgressError, TooSoonError } from './errors.ts'
 import type { EventMapEntry, LinkEntity, LinkRecord, RawCapture, SourceRecord } from './types.ts'
+import type { LookbackSource } from './windows.ts'
 
 // All sync bookkeeping SQL, one function per statement. Statements live in ./sql/*.sql and are
 // loaded at import time.
@@ -19,6 +20,9 @@ const sql = loadSql(import.meta.url, [
   'insert_raw_payloads',
   'upsert_sync_state',
   'upsert_unmapped',
+  'load_nightly_links',
+  'load_credentials',
+  'record_credential_check',
 ] as const)
 
 export interface CredentialPointer {
@@ -264,4 +268,98 @@ export async function upsertUnmapped(
     totals.map((t) => t.lastSeen),
     totals.map((t) => t.totalCount),
   ])
+}
+
+export interface NightlyCandidate {
+  linkId: string
+  sourceId: string
+  credentialId: string
+  campaignId: string
+  campaignName: string
+  campaignStatus: 'draft' | 'active' | 'archived'
+  startsOn: IsoDate | null
+  endsOn: IsoDate | null
+  source: LookbackSource
+}
+
+interface NightlyLinkRow {
+  link_id: string
+  source_id: string
+  credential_id: string
+  campaign_id: string
+  campaign_name: string
+  campaign_status: NightlyCandidate['campaignStatus']
+  starts_on: IsoDate | null
+  ends_on: IsoDate | null
+  day_timezone: string
+  lookback_days: number
+  deep_lookback_days: number
+}
+
+/** Enabled links on enabled credentials and platform sources, with what the nightly skip rules need. */
+export async function loadNightlyCandidates(db: Queryable): Promise<NightlyCandidate[]> {
+  const rows = await db.query<NightlyLinkRow>(sql.load_nightly_links)
+  return rows.map((row) => ({
+    linkId: row.link_id,
+    sourceId: row.source_id,
+    credentialId: row.credential_id,
+    campaignId: row.campaign_id,
+    campaignName: row.campaign_name,
+    campaignStatus: row.campaign_status,
+    startsOn: row.starts_on,
+    endsOn: row.ends_on,
+    source: {
+      id: row.source_id,
+      dayTimezone: row.day_timezone,
+      lookbackDays: row.lookback_days,
+      deepLookbackDays: row.deep_lookback_days,
+    },
+  }))
+}
+
+export interface CredentialRecord {
+  id: string
+  name: string
+  sourceId: string
+  secretEnvVar: string
+  accountScope: Record<string, unknown>
+  enabled: boolean
+  dayTimezone: string
+}
+
+interface CredentialRow {
+  id: string
+  name: string
+  source_id: string
+  secret_env_var: string
+  account_scope: Record<string, unknown>
+  enabled: boolean
+  day_timezone: string
+}
+
+export async function findCredentials(
+  db: Queryable,
+  match: { idOrName?: string; sourceId?: string },
+): Promise<CredentialRecord[]> {
+  const rows = await db.query<CredentialRow>(sql.load_credentials, [
+    match.idOrName ?? null,
+    match.sourceId ?? null,
+  ])
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    sourceId: row.source_id,
+    secretEnvVar: row.secret_env_var,
+    accountScope: row.account_scope,
+    enabled: row.enabled,
+    dayTimezone: row.day_timezone,
+  }))
+}
+
+export async function recordCredentialCheck(
+  db: Queryable,
+  credentialId: string,
+  ok: boolean,
+): Promise<void> {
+  await db.query(sql.record_credential_check, [credentialId, ok])
 }

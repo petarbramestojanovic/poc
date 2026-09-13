@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, loadConfig } from '../../src/config.ts'
+import { ConfigError, loadConfig, loadRuntimeConfig } from '../../src/config.ts'
 
 const TOKEN = 'a-long-enough-operator-token-0123456789'
 
@@ -76,5 +76,32 @@ describe('loadConfig', () => {
   ])('rejects %s', (_name, env, message) => {
     expect(() => loadConfig(env as NodeJS.ProcessEnv)).toThrow(ConfigError)
     expect(() => loadConfig(env as NodeJS.ProcessEnv)).toThrow(message)
+  })
+})
+
+describe('loadRuntimeConfig', () => {
+  it('needs only the database, log level and TZ, never the admin token', () => {
+    expect(loadRuntimeConfig({ DATABASE_URL: valid.DATABASE_URL, TZ: 'UTC' })).toEqual({
+      databaseUrl: valid.DATABASE_URL,
+      databaseSsl: 'verify-full',
+      databaseSslCa: undefined,
+      logLevel: 'info',
+    })
+  })
+
+  it('applies the same database checks as the service', () => {
+    expect(() =>
+      loadRuntimeConfig({
+        DATABASE_URL: 'postgresql://u:p@aws-0.pooler.supabase.com:6543/postgres',
+        TZ: 'UTC',
+      }),
+    ).toThrow('transaction-mode')
+    expect(() =>
+      loadRuntimeConfig({
+        DATABASE_URL: 'postgresql://u:p@db.example.com:5432/db',
+        DATABASE_SSL: 'disable',
+        TZ: 'UTC',
+      }),
+    ).toThrow('loopback')
   })
 })

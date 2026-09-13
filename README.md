@@ -22,6 +22,66 @@ npm run db:reset                 # apply migrations + seed.sql
 npm run dev                      # service with file watching
 ```
 
+## Sync against the real APIs locally
+
+With real keys you can sync into your local database and inspect the rows directly. Use a campaign of your own rather than the seeded one, because the integration tests reset the seeded campaign's rows.
+
+1. Put `NEXD_API_KEY` and `ZEUS_API_TOKEN` in `.env`.
+
+2. Check both keys. The result is recorded on the credential row.
+
+   ```sh
+   npm run sync -- --check-connection nexd-main
+   npm run sync -- --check-connection zeus-main
+   ```
+
+3. List the ATK pixels the Zeus token can see, and note which column (`code`, `external_id` or `name`) carries the ATK identity.
+
+   ```sh
+   npm run sync -- --source zeus --list-pixels
+   ```
+
+4. Create a campaign and its links in Studio (http://127.0.0.1:54323) or psql. Replace every `<…>`.
+
+   ```sql
+   -- Campaign under the seeded company, plus the CTA Zeus clicks are written to.
+   INSERT INTO app.campaign (id, company_id, name, primary_source, starts_on, ends_on) VALUES
+     ('10000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000001',
+      '<campaign name>', 'zeus', '<YYYY-MM-DD>', '<YYYY-MM-DD>');
+   INSERT INTO analytics.cta (campaign_id, cta_id, name) VALUES
+     ('10000000-0000-4000-8000-000000000001', 'clickthrough', 'Click-out');
+
+   -- NEXD: one creative row per live id. campaign_tag names the creative in the breakdown.
+   INSERT INTO external.campaign_link (id, campaign_id, source_id, credential_id, language) VALUES
+     ('10000000-0000-4000-8000-000000000011', '10000000-0000-4000-8000-000000000001', 'nexd',
+      '00000000-0000-4000-8000-000000000011', '<language>');
+   INSERT INTO external.link_entity (link_id, source_id, level, external_id, label, campaign_tag) VALUES
+     ('10000000-0000-4000-8000-000000000011', 'nexd', 'creative', '<live id>', '<label>', '<live id>');
+
+   -- Zeus: the campaign, its creatives, and the engagement and finish pixels from step 3.
+   -- Set "campaign_id_param" to "internal_id" when the campaign id is Zeus's internal id.
+   INSERT INTO external.campaign_link (id, campaign_id, source_id, credential_id, language, config) VALUES
+     ('10000000-0000-4000-8000-000000000012', '10000000-0000-4000-8000-000000000001', 'zeus',
+      '00000000-0000-4000-8000-000000000012', '<language>',
+      '{"clickthrough_cta_id": "clickthrough", "campaign_id_param": "external_id"}');
+   INSERT INTO external.link_entity (link_id, source_id, level, external_id, role, label, campaign_tag) VALUES
+     ('10000000-0000-4000-8000-000000000012', 'zeus', 'campaign', '<campaign id>', NULL, NULL, ''),
+     ('10000000-0000-4000-8000-000000000012', 'zeus', 'creative', '<creative_id>', NULL, '<label>', '<tag>'),
+     ('10000000-0000-4000-8000-000000000012', 'zeus', 'pixel', '<pixel>', 'engagement', NULL, '<tag>'),
+     ('10000000-0000-4000-8000-000000000012', 'zeus', 'pixel', '<pixel>', 'finish', NULL, '<tag>');
+   ```
+
+5. Preview a window, then write it. `--trigger backfill` skips the five-minute cooldown between manual runs.
+
+   ```sh
+   npm run sync -- --link 10000000-0000-4000-8000-000000000012 --from 2026-09-01 --to 2026-09-07 --dry-run
+   npm run sync -- --link 10000000-0000-4000-8000-000000000012 --from 2026-09-01 --to 2026-09-07 --trigger backfill
+   ```
+
+6. Inspect `external.sync_run`, `analytics.advanced_analytics`, `analytics.cta_clicks`, `analytics.page_views`, `external.raw_payload` and `external.unmapped_event`. NEXD event names with no mapping land in `external.unmapped_event`; add them to `external.event_map` and sync again.
+
+`npm run sync -- --all` runs the nightly pass over every enabled link. It skips campaigns that are archived, not started yet, or finished before the 35-day deep lookback. `npm run db:reset` removes everything you created.
+
 ## Scripts
 
 | Script                     | What it does                                                      |
@@ -30,6 +90,7 @@ npm run dev                      # service with file watching
 | `npm run build`            | Clean `dist/`, compile `src/`, copy the `sql/` directories        |
 | `npm run build:smoke`      | Import the built modules, proving every `.sql` file was copied    |
 | `npm start`                | Run the compiled service with source maps (`dist/index.js`)       |
+| `npm run sync -- …`        | Operator sync CLI: one link, the nightly pass, key checks, pixels |
 | `npm run typecheck`        | `tsc --noEmit` over `src/`, `tests/` and config files             |
 | `npm run lint`             | ESLint (type-aware) + Prettier check                              |
 | `npm run lint:fix`         | Same, applying fixes                                              |

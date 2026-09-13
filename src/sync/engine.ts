@@ -21,6 +21,7 @@ import { groupByDate, mergeRows } from './merge.ts'
 import { assertRegistryMatchesSources, type ConnectorRegistry } from './registry.ts'
 import * as repo from './repo.ts'
 import { createRunMemo, type CanonicalDailyRow, type RunMemo, type SyncContext } from './types.ts'
+import { lookbackWindow } from './windows.ts'
 import { diffDay, writeDay, type DayDiff } from './writer.ts'
 
 export * from './errors.ts'
@@ -48,11 +49,17 @@ export interface SyncDeps {
   tracker?: RunTracker
   /** Shared across the links of one scheduler pass; a fresh memo per run otherwise. */
   memo?: RunMemo
+  /** Clock for the default lookback window and the nightly pass. Injectable for tests. */
+  now?: () => Date
 }
 
 export interface SyncRequest {
   linkId: string
-  window: DateWindow
+  /**
+   * Days to pull. Omitted = the source's lookback (the deep lookback when `deep`) ending at
+   * yesterday in the source's day zone: the same window the nightly pass uses.
+   */
+  window?: DateWindow
   trigger: repo.SyncTrigger
   dryRun?: boolean
   triggeredBy?: string | null
@@ -125,6 +132,7 @@ export async function verifyRegistryAgainstSources(
 }
 
 const NEVER_ABORTED = new AbortController().signal
+const currentTime = (): Date => new Date()
 
 async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummary> {
   const { registry, log } = deps
@@ -134,9 +142,11 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
   const dryRun = request.dryRun ?? false
   const started = Date.now()
 
-  assertIsoDate(request.window.from)
-  assertIsoDate(request.window.to)
-  daysInclusive(request.window.from, request.window.to) // rejects an inverted window
+  if (request.window) {
+    assertIsoDate(request.window.from)
+    assertIsoDate(request.window.to)
+    daysInclusive(request.window.from, request.window.to) // rejects an inverted window
+  }
   if (signal.aborted) throw new SyncAbortedError('shutdown in progress; run not started')
 
   const ctx = await repo.loadLinkContext(db, request.linkId)
@@ -159,13 +169,17 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
     )
   }
 
+  const window =
+    request.window ??
+    lookbackWindow(ctx.source, { deep: request.deep ?? false, now: (deps.now ?? currentTime)() })
+
   const runId = await repo.openRun(
     db,
     {
       linkId: ctx.link.id,
       trigger: request.trigger,
       triggeredBy: request.triggeredBy ?? null,
-      window: request.window,
+      window,
       dryRun,
     },
     request.trigger === 'manual' ? ctx.source.minManualIntervalSeconds : null,
@@ -207,7 +221,7 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
         secret,
         accountScope: ctx.credential.accountScope,
       },
-      window: request.window,
+      window,
       http: deps.http,
       log: runLog,
       signal,
@@ -219,7 +233,7 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
       memo: deps.memo ?? createRunMemo(),
     }
 
-    runLog.info({ window: request.window, trigger: request.trigger }, 'sync started')
+    runLog.info({ window, trigger: request.trigger }, 'sync started')
     const fetched = await connector.fetchWindow(syncContext)
     warnings.push(...fetched.warnings)
 
@@ -230,7 +244,7 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
     )
     assertValidDates(rows)
     const covered = fetched.covered
-    assertWithinWindow(rows, covered, request.window)
+    assertWithinWindow(rows, covered, window)
     await assertKnownTargets(db, ctx.campaign.id, rows)
 
     const byDate = groupByDate(rows)
@@ -289,7 +303,7 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
     await db.withTransaction(async (tx) => {
       await repo.upsertUnmapped(tx, ctx.link.id, unmappedTotals(rows))
       await repo.upsertSyncState(tx, ctx.link.id, {
-        cursor: { lastWindow: covered ?? request.window, lastRunId: runId },
+        cursor: { lastWindow: covered ?? window, lastRunId: runId },
         dataCompleteThrough: covered?.to ?? null,
         deep: request.deep ?? false,
       })

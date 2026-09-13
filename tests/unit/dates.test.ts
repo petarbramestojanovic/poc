@@ -3,6 +3,7 @@ import {
   addDays,
   assertIsoDate,
   chunkWindow,
+  dayOfWeek,
   daysInclusive,
   eachDay,
   isConsecutive,
@@ -51,6 +52,12 @@ describe('dates', () => {
     expect(chunkWindow({ from: '2026-09-01', to: '2026-09-03' }, 31)).toEqual([
       { from: '2026-09-01', to: '2026-09-03' },
     ])
+  })
+
+  it('names the weekday of a calendar day', () => {
+    expect(dayOfWeek('2026-09-13')).toBe(0) // Sunday
+    expect(dayOfWeek('2026-09-14')).toBe(1)
+    expect(dayOfWeek('2026-09-12')).toBe(6)
   })
 
   it('detects consecutive days', () => {

@@ -126,6 +126,11 @@ export function yesterdayUtc(now: Date = new Date()): IsoDate {
   return yesterdayIn('UTC', now)
 }
 
+/** 0 = Sunday … 6 = Saturday: the weekday of a calendar day, which needs no zone once written down. */
+export function dayOfWeek(date: IsoDate): number {
+  return toDate(date).getUTCDay()
+}
+
 const offsetFormatters = new Map<string, Intl.DateTimeFormat>()
 
 /** Milliseconds `timeZone` is ahead of UTC at `instant`. */

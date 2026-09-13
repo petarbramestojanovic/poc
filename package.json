@@ -13,6 +13,7 @@
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/copy-sql.ts",
     "build:smoke": "node scripts/smoke-build.ts",
     "start": "node --enable-source-maps dist/index.js",
+    "sync": "node --enable-source-maps --env-file-if-exists=.env src/cli/sync.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
