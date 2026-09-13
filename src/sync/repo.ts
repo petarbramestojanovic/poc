@@ -1,10 +1,25 @@
-import type { Queryable } from '../db.ts'
+import type { Db, Queryable } from '../db.ts'
 import type { DateWindow, IsoDate } from '../dates.ts'
-import { sqlFile } from '../sql-file.ts'
+import { loadSql } from '../sql-file.ts'
+import { RunInProgressError, TooSoonError } from './errors.ts'
 import type { EventMapEntry, LinkEntity, LinkRecord, RawCapture, SourceRecord } from './types.ts'
 
-// All sync bookkeeping SQL, one function per statement. Statements live in ./sql/*.sql.
-const sql = (name: string) => sqlFile(import.meta.url, name)
+// All sync bookkeeping SQL, one function per statement. Statements live in ./sql/*.sql and are
+// loaded at import time.
+const sql = loadSql(import.meta.url, [
+  'load_link',
+  'load_entities',
+  'load_event_map',
+  'load_campaign_targets',
+  'load_enabled_platform_sources',
+  'run_gate_status',
+  'insert_run',
+  'finish_run',
+  'fail_run',
+  'insert_raw_payloads',
+  'upsert_sync_state',
+  'upsert_unmapped',
+] as const)
 
 export interface CredentialPointer {
   id: string
@@ -63,12 +78,10 @@ export async function loadLinkContext(
   db: Queryable,
   linkId: string,
 ): Promise<LinkContext | undefined> {
-  const [row] = await db.query<LinkRow>(sql('load_link'), [linkId])
+  const [row] = await db.query<LinkRow>(sql.load_link, [linkId])
   if (!row) return undefined
-  const [entities, eventMap] = await Promise.all([
-    db.query<EntityRow>(sql('load_entities'), [linkId]),
-    db.query<EventMapRow>(sql('load_event_map'), [linkId]),
-  ])
+  const entities = await db.query<EntityRow>(sql.load_entities, [linkId])
+  const eventMap = await db.query<EventMapRow>(sql.load_event_map, [linkId])
   return {
     link: {
       id: row.id,
@@ -115,7 +128,7 @@ export async function loadCampaignTargets(
   db: Queryable,
   campaignId: string,
 ): Promise<{ pages: Set<string>; ctas: Set<string> }> {
-  const rows = await db.query<{ kind: 'page' | 'cta'; id: string }>(sql('load_campaign_targets'), [
+  const rows = await db.query<{ kind: 'page' | 'cta'; id: string }>(sql.load_campaign_targets, [
     campaignId,
   ])
   return {
@@ -124,36 +137,62 @@ export async function loadCampaignTargets(
   }
 }
 
-export async function secondsSinceLastRun(
-  db: Queryable,
-  linkId: string,
-): Promise<number | undefined> {
-  const [row] = await db.query<{ elapsed_seconds: number }>(sql('last_run_started_at'), [linkId])
-  return row?.elapsed_seconds
+export async function loadEnabledPlatformSourceIds(db: Queryable): Promise<string[]> {
+  const rows = await db.query<{ id: string }>(sql.load_enabled_platform_sources)
+  return rows.map((r) => r.id)
 }
 
 export type SyncTrigger = 'cron' | 'manual' | 'backfill'
 
-export async function insertRun(
-  db: Queryable,
-  run: {
-    linkId: string
-    trigger: SyncTrigger
-    triggeredBy: string | null
-    window: DateWindow
-    dryRun: boolean
-  },
+export interface NewRun {
+  linkId: string
+  trigger: SyncTrigger
+  triggeredBy: string | null
+  window: DateWindow
+  dryRun: boolean
+}
+
+/**
+ * Opens a run. For real (non-dry) runs the check and the insert happen in one transaction under
+ * a per-link gate lock, so two triggers arriving together cannot both proceed: a link has at most
+ * one real run in flight, and a manual run respects the source's cooldown.
+ */
+export async function openRun(
+  db: Db,
+  run: NewRun,
+  manualCooldownSeconds: number | null,
 ): Promise<string> {
-  const [row] = await db.query<{ id: string }>(sql('insert_run'), [
-    run.linkId,
-    run.trigger,
-    run.triggeredBy,
-    run.window.from,
-    run.window.to,
-    run.dryRun,
-  ])
-  if (!row) throw new Error('insert_run returned no id')
-  return row.id
+  return db.withTransaction(async (tx) => {
+    if (!run.dryRun) {
+      await tx.xactLock(`sync-run-gate:${run.linkId}`)
+      const [gate] = await tx.query<{ running: boolean; elapsed_seconds: number | null }>(
+        sql.run_gate_status,
+        [run.linkId],
+      )
+      if (gate?.running) {
+        throw new RunInProgressError(`link ${run.linkId} already has a sync run in progress`)
+      }
+      if (manualCooldownSeconds !== null && gate?.elapsed_seconds != null) {
+        const remaining = Math.ceil(manualCooldownSeconds - gate.elapsed_seconds)
+        if (remaining > 0) {
+          throw new TooSoonError(
+            `last run for link ${run.linkId} was ${Math.round(gate.elapsed_seconds)} s ago; wait ${remaining} s`,
+            remaining,
+          )
+        }
+      }
+    }
+    const [row] = await tx.query<{ id: string }>(sql.insert_run, [
+      run.linkId,
+      run.trigger,
+      run.triggeredBy,
+      run.window.from,
+      run.window.to,
+      run.dryRun,
+    ])
+    if (!row) throw new Error('insert_run returned no id')
+    return row.id
+  })
 }
 
 export async function finishRun(
@@ -161,7 +200,7 @@ export async function finishRun(
   runId: string,
   result: { daysWritten: number; rowsWritten: number; warnings: string[] },
 ): Promise<void> {
-  await db.query(sql('finish_run'), [
+  await db.query(sql.finish_run, [
     runId,
     result.daysWritten,
     result.rowsWritten,
@@ -175,7 +214,7 @@ export async function failRun(
   error: string,
   warnings: string[],
 ): Promise<void> {
-  await db.query(sql('fail_run'), [runId, error, JSON.stringify(warnings)])
+  await db.query(sql.fail_run, [runId, error, JSON.stringify(warnings)])
 }
 
 export async function insertRawPayloads(
@@ -184,7 +223,7 @@ export async function insertRawPayloads(
   captures: readonly RawCapture[],
 ): Promise<void> {
   if (captures.length === 0) return
-  await db.query(sql('insert_raw_payloads'), [
+  await db.query(sql.insert_raw_payloads, [
     runId,
     captures.map((c) => JSON.stringify(c.request)),
     captures.map((c) => JSON.stringify(c.response)),
@@ -197,10 +236,32 @@ export async function upsertSyncState(
   linkId: string,
   state: { cursor: unknown; dataCompleteThrough: IsoDate | null; deep: boolean },
 ): Promise<void> {
-  await db.query(sql('upsert_sync_state'), [
+  await db.query(sql.upsert_sync_state, [
     linkId,
     JSON.stringify(state.cursor),
     state.dataCompleteThrough,
     state.deep,
+  ])
+}
+
+export interface UnmappedTotal {
+  eventName: string
+  firstSeen: IsoDate
+  lastSeen: IsoDate
+  totalCount: number
+}
+
+export async function upsertUnmapped(
+  db: Queryable,
+  linkId: string,
+  totals: readonly UnmappedTotal[],
+): Promise<void> {
+  if (totals.length === 0) return
+  await db.query(sql.upsert_unmapped, [
+    linkId,
+    totals.map((t) => t.eventName),
+    totals.map((t) => t.firstSeen),
+    totals.map((t) => t.lastSeen),
+    totals.map((t) => t.totalCount),
   ])
 }

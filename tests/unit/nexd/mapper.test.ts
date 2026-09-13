@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { NexdContractError } from '../../../src/sync/connectors/nexd/errors.ts'
 import {
   mapNexdRows,
   performanceDate,
@@ -64,8 +65,30 @@ describe('NEXD mapper', () => {
     )
     expect(sum(rows, (r) => r.pageViews.find((p) => p.pageId === 'result')?.count)).toBe(2_140)
     expect(sum(rows, (r) => r.ctaClicks.find((c) => c.ctaId === 'clickthrough')?.count)).toBe(860)
-    expect(sum(rows, (r) => r.unmapped['Sound on'])).toBe(350)
-    expect(Object.keys(rows[0]?.unmapped ?? {})).toEqual(['Sound on'])
+    expect(sum(rows, (r) => r.unmapped.get('Sound on'))).toBe(350)
+    expect([...(rows[0]?.unmapped.keys() ?? [])]).toEqual(['Sound on'])
+  })
+
+  it('keeps vendor event names as Map keys, so a name like __proto__ cannot touch a prototype', () => {
+    const [row] = mapNexdRows({
+      language: '',
+      campaignTag: '',
+      eventMap: [],
+      days: [
+        {
+          date: '2026-09-01',
+          performance: {
+            impressions: 1,
+            viewable: { value: 1 },
+            engagement: { value: 1 },
+            dwell: 1,
+          },
+          events: [{ action: { original: '__proto__' }, count: 3 }],
+        },
+      ],
+    })
+    expect(row?.unmapped.get('__proto__')).toBe(3)
+    expect(Object.getPrototypeOf(row?.unmapped)).toBe(Map.prototype)
   })
 
   it("lets the link's event map override built-ins and honours ignore", () => {
@@ -80,18 +103,28 @@ describe('NEXD mapper', () => {
     })
     expect(custom[0]?.metrics.hovered).toBeUndefined()
     expect(custom[0]?.metrics.game_finished).toBe(50)
-    expect(custom[0]?.unmapped).toEqual({
-      'Page seen [Main]': 700,
-      'Page seen [Result]': 300,
-      'CTR [global]': 120,
-    })
+    expect(custom[0]?.unmapped).toEqual(
+      new Map([
+        ['Page seen [Main]', 700],
+        ['Page seen [Result]', 300],
+        ['CTR [global]', 120],
+      ]),
+    )
   })
 
-  it('accepts the documented `dt` timestamp as well as `date`', () => {
+  it('accepts the documented `dt` timestamp as well as `date`, in the source day zone', () => {
     const base = { impressions: 1, viewable: { value: 1 }, engagement: { value: 1 }, dwell: 1 }
     expect(performanceDate({ ...base, date: '2026-09-01' })).toBe('2026-09-01')
     expect(performanceDate({ ...base, dt: Date.UTC(2026, 8, 1, 12) / 1000 })).toBe('2026-09-01')
     expect(performanceDate({ ...base, dt: '2026-09-01T00:00:00Z' })).toBe('2026-09-01')
+    const lateUtc = Date.UTC(2026, 7, 31, 22, 30) / 1000
+    expect(performanceDate({ ...base, dt: lateUtc })).toBe('2026-08-31')
+    expect(performanceDate({ ...base, dt: lateUtc }, 'Europe/Zurich')).toBe('2026-09-01')
     expect(() => performanceDate(base)).toThrow('neither')
+  })
+
+  it('rejects an impossible calendar date as a contract error', () => {
+    const base = { impressions: 1, viewable: { value: 1 }, engagement: { value: 1 }, dwell: 1 }
+    expect(() => performanceDate({ ...base, date: '2026-02-31' })).toThrow(NexdContractError)
   })
 })

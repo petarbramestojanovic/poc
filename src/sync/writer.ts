@@ -1,14 +1,29 @@
 import type { Queryable, Tx } from '../db.ts'
 import type { IsoDate } from '../dates.ts'
-import { sqlFile } from '../sql-file.ts'
-import { METRIC_IDS, type CanonicalDailyRow, type MetricId } from './types.ts'
+import { loadSql } from '../sql-file.ts'
+import {
+  METRIC_AGGREGATION,
+  METRIC_IDS,
+  METRIC_WEIGHT,
+  type CanonicalDailyRow,
+  type MetricId,
+} from './types.ts'
 
 // The day-replace write (RFC-003 §4): under the link's transaction-scoped advisory lock,
 // delete the (campaign, source, language, day) slice from all three rollup tables, then
 // insert the fresh rows stamped data_source = 'sync'. An upsert would be wrong: it cannot
-// remove a key that disappeared from the source.
+// remove a key that disappeared from the source. An EMPTY slice is a valid write: it clears
+// a day the source no longer reports.
 
-const sql = (name: string) => sqlFile(import.meta.url, name)
+const sql = loadSql(import.meta.url, [
+  'delete_day',
+  'insert_advanced',
+  'insert_page_views',
+  'insert_cta_clicks',
+  'select_day_advanced',
+  'select_day_page_views',
+  'select_day_cta_clicks',
+] as const)
 
 export interface DaySlice {
   linkId: string
@@ -17,7 +32,7 @@ export interface DaySlice {
   language: string
   date: IsoDate
   syncRunId: string
-  /** Already merged: at most one row per campaign_tag. */
+  /** Already merged: at most one row per campaign_tag. May be empty. */
   rows: CanonicalDailyRow[]
 }
 
@@ -36,13 +51,14 @@ export async function writeDay(tx: Tx, slice: DaySlice): Promise<DayWriteCounts>
   await tx.xactLock(slice.linkId)
 
   const key = [slice.campaignId, slice.source, slice.language, slice.date]
-  const [deleted] = await tx.query<DeletedRow>(sql('delete_day'), key)
+  const [deleted] = await tx.query<DeletedRow>(sql.delete_day, key)
   const insertKey = [slice.campaignId, slice.source, slice.language, slice.date, slice.syncRunId]
 
   const advanced = slice.rows.filter((row) => Object.keys(row.metrics).length > 0)
   if (advanced.length > 0) {
+    // Positional: METRIC_IDS order must equal the unnest column order in insert_advanced.sql.
     const column = (id: MetricId) => advanced.map((row) => row.metrics[id] ?? null)
-    await tx.query(sql('insert_advanced'), [
+    await tx.query(sql.insert_advanced, [
       ...insertKey,
       advanced.map((row) => row.campaignTag),
       ...METRIC_IDS.map(column),
@@ -53,7 +69,7 @@ export async function writeDay(tx: Tx, slice: DaySlice): Promise<DayWriteCounts>
     row.pageViews.map((p) => ({ tag: row.campaignTag, ...p })),
   )
   if (pageViews.length > 0) {
-    await tx.query(sql('insert_page_views'), [
+    await tx.query(sql.insert_page_views, [
       ...insertKey,
       pageViews.map((p) => p.tag),
       pageViews.map((p) => p.pageId),
@@ -65,25 +81,11 @@ export async function writeDay(tx: Tx, slice: DaySlice): Promise<DayWriteCounts>
     row.ctaClicks.map((c) => ({ tag: row.campaignTag, ...c })),
   )
   if (ctaClicks.length > 0) {
-    await tx.query(sql('insert_cta_clicks'), [
+    await tx.query(sql.insert_cta_clicks, [
       ...insertKey,
       ctaClicks.map((c) => c.tag),
       ctaClicks.map((c) => c.ctaId),
       ctaClicks.map((c) => c.count),
-    ])
-  }
-
-  const unmapped = new Map<string, number>()
-  for (const row of slice.rows) {
-    for (const [name, count] of Object.entries(row.unmapped))
-      unmapped.set(name, (unmapped.get(name) ?? 0) + count)
-  }
-  if (unmapped.size > 0) {
-    await tx.query(sql('upsert_unmapped'), [
-      slice.linkId,
-      slice.date,
-      [...unmapped.keys()],
-      [...unmapped.values()],
     ])
   }
 
@@ -101,29 +103,83 @@ export async function writeDay(tx: Tx, slice: DaySlice): Promise<DayWriteCounts>
   }
 }
 
+export interface MetricDiff {
+  before: number | null
+  after: number | null
+}
+
+export interface TagScalarDiff extends MetricDiff {
+  campaignTag: string
+}
+
 export interface DayDiff {
   date: IsoDate
   rows: { before: number; after: number }
-  metrics: Partial<Record<MetricId, { before: number | null; after: number | null }>>
+  /** Day totals for `sum` metrics, weighted day averages for `weighted_avg` metrics. */
+  metrics: Partial<Record<MetricId, MetricDiff>>
+  /** `none` metrics cannot be totalled across tags: listed per tag, only where the value changes. */
+  perTag: Partial<Record<MetricId, TagScalarDiff[]>>
   pageViews: { before: number; after: number }
   ctaClicks: { before: number; after: number }
 }
 
+type StoredRow = Record<string, string | number | null>
+
 /** What a real run would change for one day, computed without writing (dry run). */
 export async function diffDay(db: Queryable, slice: Omit<DaySlice, 'syncRunId'>): Promise<DayDiff> {
   const key = [slice.campaignId, slice.source, slice.language, slice.date]
-  const [existing, pages, ctas] = await Promise.all([
-    db.query<Record<string, string | number | null>>(sql('select_day_advanced'), key),
-    db.query<{ count: string }>(sql('select_day_page_views'), key),
-    db.query<{ count: string }>(sql('select_day_cta_clicks'), key),
-  ])
+  const existing = await db.query<StoredRow>(sql.select_day_advanced, key)
+  const pages = await db.query<{ count: string }>(sql.select_day_page_views, key)
+  const ctas = await db.query<{ count: string }>(sql.select_day_cta_clicks, key)
 
+  const stored = (row: StoredRow, id: MetricId) => toNumber(row[id])
   const metrics: DayDiff['metrics'] = {}
+  const perTag: DayDiff['perTag'] = {}
+
   for (const id of METRIC_IDS) {
-    const before = sumOrNull(existing.map((row) => row[id]))
-    const after = sumOrNull(slice.rows.map((row) => row.metrics[id]))
-    if (before !== null || after !== null) metrics[id] = { before, after }
+    switch (METRIC_AGGREGATION[id]) {
+      case 'sum': {
+        const before = sumOrNull(existing.map((row) => stored(row, id)))
+        const after = sumOrNull(slice.rows.map((row) => row.metrics[id] ?? null))
+        if (before !== null || after !== null) metrics[id] = { before, after }
+        break
+      }
+      case 'weighted_avg': {
+        const weightId = METRIC_WEIGHT[id]
+        const before = weightedAverage(
+          existing.map((row) => ({
+            value: stored(row, id),
+            weight: weightId ? stored(row, weightId) : null,
+          })),
+        )
+        const after = weightedAverage(
+          slice.rows.map((row) => ({
+            value: row.metrics[id] ?? null,
+            weight: weightId ? (row.metrics[weightId] ?? null) : null,
+          })),
+        )
+        if (before !== null || after !== null) metrics[id] = { before, after }
+        break
+      }
+      case 'none': {
+        const beforeByTag = new Map(
+          existing.map((row) => [String(row.campaign_tag), stored(row, id)]),
+        )
+        const afterByTag = new Map(
+          slice.rows.map((row) => [row.campaignTag, row.metrics[id] ?? null]),
+        )
+        const changes: TagScalarDiff[] = []
+        for (const tag of new Set([...beforeByTag.keys(), ...afterByTag.keys()])) {
+          const before = beforeByTag.get(tag) ?? null
+          const after = afterByTag.get(tag) ?? null
+          if (before !== after) changes.push({ campaignTag: tag, before, after })
+        }
+        if (changes.length > 0) perTag[id] = changes
+        break
+      }
+    }
   }
+
   const total = (list: { count: number | string }[]) =>
     list.reduce((acc, item) => acc + Number(item.count), 0)
 
@@ -134,13 +190,30 @@ export async function diffDay(db: Queryable, slice: Omit<DaySlice, 'syncRunId'>)
       after: slice.rows.filter((r) => Object.keys(r.metrics).length > 0).length,
     },
     metrics,
+    perTag,
     pageViews: { before: total(pages), after: total(slice.rows.flatMap((r) => r.pageViews)) },
     ctaClicks: { before: total(ctas), after: total(slice.rows.flatMap((r) => r.ctaClicks)) },
   }
 }
 
-function sumOrNull(values: (string | number | null | undefined)[]): number | null {
-  const present = values.filter((v): v is string | number => v !== null && v !== undefined)
+function toNumber(value: string | number | null | undefined): number | null {
+  return value === null || value === undefined ? null : Number(value)
+}
+
+function sumOrNull(values: (number | null)[]): number | null {
+  const present = values.filter((v): v is number => v !== null)
   if (present.length === 0) return null
-  return present.reduce<number>((acc, v) => acc + Number(v), 0)
+  return present.reduce((acc, v) => acc + v, 0)
+}
+
+function weightedAverage(pairs: { value: number | null; weight: number | null }[]): number | null {
+  const present = pairs.filter(
+    (p): p is { value: number; weight: number | null } => p.value !== null,
+  )
+  if (present.length === 0) return null
+  const totalWeight = present.reduce((acc, p) => acc + (p.weight ?? 0), 0)
+  if (totalWeight > 0) {
+    return present.reduce((acc, p) => acc + p.value * (p.weight ?? 0), 0) / totalWeight
+  }
+  return present.reduce((acc, p) => acc + p.value, 0) / present.length
 }

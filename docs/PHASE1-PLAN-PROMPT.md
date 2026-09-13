@@ -95,7 +95,7 @@ You are building **phase 1** of a standalone analytics product for playable-ad c
 
 ## Webhook payload contract v1 (write it up in `docs/WEBHOOK-PAYLOAD-v1.md` in step 10)
 
-Headers: `Content-Type: application/json`, `X-Delivery-Id: <webhook_delivery.id>`, `X-Timestamp: <unix seconds>`, `X-Signature: sha256=<hex HMAC-SHA256(secret, timestamp + "." + rawBody)>`, `X-Payload-Version: 1`. Only a 2xx counts as delivered. Timeout 10 s. Retries 1 m, 5 m, 30 m, 2 h, 12 h.
+Headers: `Content-Type: application/json`, `X-Delivery-Id: <webhook_delivery.id>`, `X-Timestamp: <unix seconds>`, `X-Signature: sha256=<hex HMAC-SHA256(secret, deliveryId + "." + timestamp + "." + rawBody)>`, `X-Payload-Version: 1`. The delivery id is inside the signed input so it cannot be altered without breaking the signature. Serialise the body once into a buffer and sign exactly those bytes. For rotation without downtime, sign with every active secret and send the signatures comma-separated in `X-Signature`; that needs an additive second-secret column on `app.webhook`, so confirm with the RFC-004 owner before step 11 (code review, 2026-09). Only a 2xx counts as delivered. Timeout 10 s. Retries 1 m, 5 m, 30 m, 2 h, 12 h.
 
 ```json
 {

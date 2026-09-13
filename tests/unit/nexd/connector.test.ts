@@ -1,38 +1,47 @@
 import { describe, expect, it } from 'vitest'
+import { NetworkError } from '../../../src/http/HttpClient.ts'
 import {
   createNexdConnector,
   NexdContractError,
   NexdVerificationError,
 } from '../../../src/sync/connectors/nexd/connector.ts'
 import {
+  connection,
   context,
   entity,
+  failingHttp,
   fakeHttp,
   FIXTURE_WINDOW,
+  httpStatus,
   KNOWN_TOTALS,
   loadFixture,
   syntheticResponse,
 } from './helpers.ts'
 
-const connector = createNexdConnector({ baseUrl: 'https://nexd.test' })
+const NOW = () => new Date('2026-09-10T10:00:00Z')
+const connector = createNexdConnector({ baseUrl: 'https://nexd.test', now: NOW })
 
 const sumMetric = (rows: { metrics: Record<string, number | undefined> }[], id: string) =>
   rows.reduce((acc, r) => acc + (r.metrics[id] ?? 0), 0)
 
 describe('NEXD connector', () => {
-  it('fetches one request per live_id, authenticates with the credential and maps the fixture', async () => {
+  it('fetches one request per live_id, authenticates, captures and maps the fixture', async () => {
     const http = fakeHttp(() => loadFixture())
-    const result = await connector.fetchWindow(context(http, FIXTURE_WINDOW))
+    const ctx = context(http, FIXTURE_WINDOW)
+    const result = await connector.fetchWindow(ctx)
 
     expect(http.requests).toEqual([
       { url: 'https://nexd.test/analytics/creatives/nx_1', window: FIXTURE_WINDOW },
     ])
+    expect(http.meta[0]?.signal).toBe(ctx.signal)
+    expect(http.meta[0]?.log).toBe(ctx.log)
     expect(result.rows).toHaveLength(7)
+    expect(result.covered).toEqual(FIXTURE_WINDOW)
     expect(sumMetric(result.rows, 'impressions')).toBe(KNOWN_TOTALS.impressions)
     expect(sumMetric(result.rows, 'interactions')).toBe(KNOWN_TOTALS.interactions)
     expect(result.warnings).toEqual([])
-    expect(result.raw).toHaveLength(1)
-    expect(result.raw[0]?.request).toEqual({
+    expect(ctx.captures).toHaveLength(1)
+    expect(ctx.captures[0]?.request).toEqual({
       method: 'POST',
       url: 'https://nexd.test/analytics/creatives/nx_1',
       body: {
@@ -44,7 +53,17 @@ describe('NEXD connector', () => {
         incvtr: true,
       },
     })
-    expect(JSON.stringify(result.raw)).not.toContain('test-key')
+    expect(JSON.stringify(ctx.captures)).not.toContain('test-key')
+  })
+
+  it('computes the request day boundaries in the source day zone, not UTC', async () => {
+    const http = fakeHttp(() => loadFixture())
+    const ctx = context(http, FIXTURE_WINDOW, [entity('nx_1')], { dayTimezone: 'Europe/Zurich' })
+    await connector.fetchWindow(ctx)
+    expect(ctx.captures[0]?.request.body).toMatchObject({
+      startDate: Date.UTC(2026, 7, 30, 22) / 1000,
+      endDate: Date.UTC(2026, 8, 6, 21, 59, 59) / 1000,
+    })
   })
 
   it('gives every live_id its own campaign_tag rows', async () => {
@@ -80,7 +99,8 @@ describe('NEXD connector', () => {
     delete analytics.eventsList
 
     const http = fakeHttp(() => fixture)
-    const result = await connector.fetchWindow(context(http, FIXTURE_WINDOW))
+    const ctx = context(http, FIXTURE_WINDOW)
+    const result = await connector.fetchWindow(ctx)
 
     // 1 window request + 7 per-day requests: the fallback path was exercised.
     expect(http.requests).toHaveLength(8)
@@ -98,7 +118,7 @@ describe('NEXD connector', () => {
     expect(result.warnings).toEqual([
       'live_id nx_1: eventsList missing, fell back to one request per day',
     ])
-    expect(result.raw).toHaveLength(8)
+    expect(ctx.captures).toHaveLength(8)
     // The fixture's range-total events[] are served for every day, so the per-day interaction
     // count equals the range total; what matters here is that events reached the rows at all.
     expect(result.rows.every((r) => (r.metrics.interactions ?? 0) > 0)).toBe(true)
@@ -119,20 +139,18 @@ describe('NEXD connector', () => {
     ).rejects.toThrow(NexdContractError)
   })
 
-  it('fails the run when written days do not add up to summary.totals', async () => {
+  it('fails the run when written days do not add up to summary.totals, keeping the captured payload', async () => {
     const fixture = loadFixture()
     const analytics = (
       fixture.result as { analytics: { summary: { totals: { impressions: number } } } }
     ).analytics
     analytics.summary.totals.impressions += 1
-    await expect(
-      connector.fetchWindow(
-        context(
-          fakeHttp(() => fixture),
-          FIXTURE_WINDOW,
-        ),
-      ),
-    ).rejects.toThrow(NexdVerificationError)
+    const ctx = context(
+      fakeHttp(() => fixture),
+      FIXTURE_WINDOW,
+    )
+    await expect(connector.fetchWindow(ctx)).rejects.toThrow(NexdVerificationError)
+    expect(ctx.captures).toHaveLength(1)
   })
 
   it('fails when the returned days are not consecutive', async () => {
@@ -158,8 +176,47 @@ describe('NEXD connector', () => {
     )
   })
 
+  it('makes no further request once the run signal is aborted', async () => {
+    const http = fakeHttp(() => loadFixture())
+    const controller = new AbortController()
+    controller.abort(new Error('SIGTERM'))
+    await expect(
+      connector.fetchWindow(
+        context(http, FIXTURE_WINDOW, [entity('nx_1')], { signal: controller.signal }),
+      ),
+    ).rejects.toThrow('SIGTERM')
+    expect(http.requests).toHaveLength(0)
+  })
+
   it('describes an empty strict link config', () => {
     expect(connector.describe().configSchema.safeParse({}).success).toBe(true)
     expect(connector.describe().configSchema.safeParse({ liveIds: [] }).success).toBe(false)
+  })
+})
+
+describe('NEXD checkConnection', () => {
+  it.each([
+    [401, false, 'rejected the API key'],
+    [403, false, 'rejected the API key'],
+    [404, true, 'accepted the API key'],
+    [429, false, 'not answering normally'],
+    [500, false, 'not answering normally'],
+    [503, false, 'not answering normally'],
+  ])('HTTP %i → ok=%s', async (status, ok, message) => {
+    const http = httpStatus(status)
+    const check = await connector.checkConnection(connection(http))
+    expect(check.ok).toBe(ok)
+    expect(check.message).toContain(message)
+    expect(http.meta[0]?.deadlineMs).toBe(20_000)
+  })
+
+  it('treats a 2xx with an unexpected body as an accepted key', async () => {
+    const check = await connector.checkConnection(connection(fakeHttp(() => ({ nope: true }))))
+    expect(check.ok).toBe(true)
+  })
+
+  it('rethrows failures that say nothing about the key', async () => {
+    const http = failingHttp(new NetworkError('https://nexd.test', 0, 'ECONNREFUSED', true, null))
+    await expect(connector.checkConnection(connection(http))).rejects.toThrow(NetworkError)
   })
 })

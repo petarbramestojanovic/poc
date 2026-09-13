@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { groupByDate, mergeRows } from '../../src/sync/merge.ts'
-import type { CanonicalDailyRow } from '../../src/sync/types.ts'
+import { METRIC_AGGREGATION, METRIC_IDS, type CanonicalDailyRow } from '../../src/sync/types.ts'
 
 const row = (over: Partial<CanonicalDailyRow>): CanonicalDailyRow => ({
   date: '2026-09-01',
@@ -9,18 +9,18 @@ const row = (over: Partial<CanonicalDailyRow>): CanonicalDailyRow => ({
   metrics: {},
   pageViews: [],
   ctaClicks: [],
-  unmapped: {},
+  unmapped: new Map(),
   ...over,
 })
 
 describe('mergeRows', () => {
-  it('sums metrics, pages, CTAs and unmapped for the same (date, language, tag)', () => {
+  it('sums sum-metrics, pages, CTAs and unmapped for the same (date, language, tag)', () => {
     const merged = mergeRows([
       row({
         metrics: { impressions: 10, in_view: 5 },
         pageViews: [{ pageId: 'main', count: 3 }],
         ctaClicks: [{ ctaId: 'x', count: 1 }],
-        unmapped: { e: 1 },
+        unmapped: new Map([['e', 1]]),
       }),
       row({
         metrics: { impressions: 20, game_started: 4 },
@@ -29,7 +29,10 @@ describe('mergeRows', () => {
           { pageId: 'r', count: 1 },
         ],
         ctaClicks: [{ ctaId: 'x', count: 2 }],
-        unmapped: { e: 2, f: 1 },
+        unmapped: new Map([
+          ['e', 2],
+          ['f', 1],
+        ]),
       }),
     ])
     expect(merged).toEqual([
@@ -40,14 +43,17 @@ describe('mergeRows', () => {
           { pageId: 'r', count: 1 },
         ],
         ctaClicks: [{ ctaId: 'x', count: 3 }],
-        unmapped: { e: 3, f: 1 },
+        unmapped: new Map([
+          ['e', 3],
+          ['f', 1],
+        ]),
       }),
     ])
   })
 
   it('returns a single row unchanged', () => {
     const only = row({
-      metrics: { impressions: 1, dwell_avg_ms: 5 },
+      metrics: { impressions: 1, dwell_avg_ms: 5, unique_impressions_reported: 1 },
       pageViews: [{ pageId: 'p', count: 1 }],
     })
     expect(mergeRows([only])).toEqual([only])
@@ -67,6 +73,37 @@ describe('mergeRows', () => {
       row({ metrics: { dwell_avg_ms: 30 } }),
     ])
     expect(merged?.metrics.dwell_avg_ms).toBe(20)
+  })
+
+  it('never adds per-day unique scalars: keeps one value, drops disagreeing ones with a warning', () => {
+    const warnings: string[] = []
+    const [kept] = mergeRows([
+      row({ metrics: { impressions: 10, unique_impressions_reported: 8 } }),
+      row({ metrics: { impressions: 5 } }),
+    ])
+    expect(kept?.metrics).toEqual({ impressions: 15, unique_impressions_reported: 8 })
+
+    const [agreed] = mergeRows([
+      row({ metrics: { unique_clicks_reported: 3 } }),
+      row({ metrics: { unique_clicks_reported: 3 } }),
+    ])
+    expect(agreed?.metrics.unique_clicks_reported).toBe(3)
+
+    const [dropped] = mergeRows(
+      [
+        row({ metrics: { impressions: 10, unique_impressions_reported: 8 } }),
+        row({ metrics: { impressions: 5, unique_impressions_reported: 4 } }),
+        row({ metrics: { unique_impressions_reported: 9 } }),
+      ],
+      (w) => warnings.push(w),
+    )
+    expect(dropped?.metrics).toEqual({ impressions: 15 })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('unique_impressions_reported dropped')
+  })
+
+  it('declares an aggregation for every metric', () => {
+    expect(Object.keys(METRIC_AGGREGATION).sort()).toEqual([...METRIC_IDS].sort())
   })
 
   it('keeps different tags, languages and dates apart and sorts the result', () => {

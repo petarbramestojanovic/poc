@@ -1,10 +1,14 @@
 import type { IsoDate } from '../../../dates.ts'
+import { VerificationError } from '../../errors.ts'
+import { mergeRows } from '../../merge.ts'
 import type { CanonicalDailyRow, LinkEntity } from '../../types.ts'
 import type { ZeusCampaignsRow, ZeusCreativesRow, ZeusTrackerRow } from './schema.ts'
 
-// Pure. Delivery rows (creatives or campaigns) and pixel fires are merged per (date, campaign_tag):
-// a pixel's fires land on the tag its link_entity carries, which an operator sets to its
-// creative's tag. Metrics Zeus does not measure are absent, never zero.
+// Pure. Delivery rows (creatives or campaigns) and pixel fires become one row per
+// (entity, date), merged per (date, campaign_tag) by the shared aggregation rules: counts add,
+// the per-day unique_* scalars are never added across entities. A pixel's fires land on the
+// tag its link_entity carries, which an operator sets to its creative's tag. Metrics Zeus does
+// not measure are absent, never zero.
 
 export interface Matched<T> {
   entity: LinkEntity
@@ -21,81 +25,106 @@ export interface ZeusMapperInput {
   unmatchedPixels: { label: string; date: IsoDate; fires: number }[]
 }
 
-export class ZeusInvariantError extends Error {
+export class ZeusInvariantError extends VerificationError {
   override readonly name = 'ZeusInvariantError'
 }
 
-/** RFC-003 §2.2: Zeus has no range totals, so the run asserts internal consistency instead. */
-export function checkZeusInvariants(creatives: Matched<ZeusCreativesRow>[]): void {
-  const seen = new Set<string>()
-  for (const { entity, row } of creatives) {
-    const key = `${entity.externalId}|${row.date}`
-    if (seen.has(key)) {
-      throw new ZeusInvariantError(`creative ${entity.externalId} appears twice for ${row.date}`)
-    }
-    seen.add(key)
-    const violated = [
-      ['clicks', row.clicks],
-      ['visible_impressions', row.visible_impressions],
-      ['unique_impressions', row.unique_impressions],
-    ].find(([, value]) => (value as number) > row.impressions)
-    if (violated) {
-      throw new ZeusInvariantError(
-        `creative ${entity.externalId} on ${row.date}: ${violated[0] as string} ${violated[1] as number} > impressions ${row.impressions}`,
-      )
-    }
+type DeliveryRow = Pick<
+  ZeusCampaignsRow,
+  'date' | 'impressions' | 'clicks' | 'visible_impressions' | 'unique_impressions' | 'unique_clicks'
+>
+
+function checkDelivery(kind: string, entity: LinkEntity, row: DeliveryRow, subject: string): void {
+  const counts: [string, number | undefined][] = [
+    ['clicks', row.clicks],
+    ['visible_impressions', row.visible_impressions],
+    ['unique_impressions', row.unique_impressions],
+  ]
+  const violated = counts.find(([, value]) => value !== undefined && value > row.impressions)
+  if (violated) {
+    throw new ZeusInvariantError(
+      `${kind} ${subject} (entity ${entity.externalId}) on ${row.date}: ${violated[0]} ${String(violated[1])} > impressions ${row.impressions}`,
+    )
+  }
+  if (row.unique_clicks !== undefined && row.unique_clicks > row.clicks) {
+    throw new ZeusInvariantError(
+      `${kind} ${subject} on ${row.date}: unique_clicks ${row.unique_clicks} > clicks ${row.clicks}`,
+    )
   }
 }
 
-export function mapZeusRows(input: ZeusMapperInput): CanonicalDailyRow[] {
-  const rows = new Map<string, CanonicalDailyRow>()
-  const rowFor = (date: IsoDate, campaignTag: string): CanonicalDailyRow => {
-    const key = `${date}|${campaignTag}`
-    let row = rows.get(key)
-    if (!row) {
-      row = {
-        date,
-        language: input.language,
-        campaignTag,
-        metrics: {},
-        pageViews: [],
-        ctaClicks: [],
-        unmapped: {},
-      }
-      rows.set(key, row)
+/**
+ * RFC-003 §2.2: Zeus has no range totals, so the run asserts internal consistency instead —
+ * on every report it consumes. A day may appear once per creative, campaign and pixel; ratios
+ * must hold; counts are non-negative integers (enforced by the schema).
+ */
+export function checkZeusInvariants(
+  input: Pick<ZeusMapperInput, 'creatives' | 'campaigns' | 'tracker'>,
+): void {
+  const seen = new Set<string>()
+  const once = (key: string, message: string) => {
+    if (seen.has(key)) throw new ZeusInvariantError(message)
+    seen.add(key)
+  }
+  for (const { entity, row } of input.creatives) {
+    once(
+      `creative|${row.creative_id}|${row.date}`,
+      `creative ${row.creative_id} appears twice for ${row.date}`,
+    )
+    checkDelivery('creative', entity, row, row.creative_id)
+  }
+  for (const { entity, row } of input.campaigns) {
+    once(
+      `campaign|${row.campaign_id}|${row.date}`,
+      `campaign ${row.campaign_id} appears twice for ${row.date}`,
+    )
+    checkDelivery('campaign', entity, row, row.campaign_id)
+  }
+  for (const { row } of input.tracker) {
+    once(`pixel|${row.pixel_id}|${row.date}`, `pixel ${row.pixel_id} appears twice for ${row.date}`)
+  }
+}
+
+export function mapZeusRows(
+  input: ZeusMapperInput,
+  warn: (message: string) => void = () => undefined,
+): CanonicalDailyRow[] {
+  const rows: CanonicalDailyRow[] = []
+  const newRow = (date: IsoDate, campaignTag: string): CanonicalDailyRow => {
+    const row: CanonicalDailyRow = {
+      date,
+      language: input.language,
+      campaignTag,
+      metrics: {},
+      pageViews: [],
+      ctaClicks: [],
+      unmapped: new Map(),
     }
+    rows.push(row)
     return row
   }
-  const add = (row: CanonicalDailyRow, id: keyof CanonicalDailyRow['metrics'], value: number) => {
-    row.metrics[id] = (row.metrics[id] ?? 0) + value
-  }
 
-  const delivery = [...input.creatives, ...input.campaigns]
+  const delivery: Matched<DeliveryRow>[] = [...input.creatives, ...input.campaigns]
   for (const { entity, row: src } of delivery) {
-    const row = rowFor(src.date, entity.campaignTag)
-    add(row, 'impressions', src.impressions)
-    add(row, 'in_view', src.visible_impressions)
+    const row = newRow(src.date, entity.campaignTag)
+    row.metrics.impressions = src.impressions
+    row.metrics.in_view = src.visible_impressions
     if (src.unique_impressions !== undefined)
-      add(row, 'unique_impressions_reported', src.unique_impressions)
-    if (src.unique_clicks !== undefined) add(row, 'unique_clicks_reported', src.unique_clicks)
-    const cta = row.ctaClicks.find((c) => c.ctaId === input.clickthroughCtaId)
-    if (cta) cta.count += src.clicks
-    else row.ctaClicks.push({ ctaId: input.clickthroughCtaId, count: src.clicks })
+      row.metrics.unique_impressions_reported = src.unique_impressions
+    if (src.unique_clicks !== undefined) row.metrics.unique_clicks_reported = src.unique_clicks
+    row.ctaClicks.push({ ctaId: input.clickthroughCtaId, count: src.clicks })
   }
 
   for (const { entity, row: src } of input.tracker) {
-    const row = rowFor(src.date, entity.campaignTag)
-    if (entity.role === 'engagement') add(row, 'game_started', src.fires)
-    else if (entity.role === 'finish') add(row, 'game_finished', src.fires)
+    const row = newRow(src.date, entity.campaignTag)
+    if (entity.role === 'engagement') row.metrics.game_started = src.fires
+    else if (entity.role === 'finish') row.metrics.game_finished = src.fires
   }
 
   for (const { label, date, fires } of input.unmatchedPixels) {
     // Unmatched pixels are a link-level "map this" signal; they carry no tag.
-    const row = rowFor(date, '')
-    row.unmapped[label] = (row.unmapped[label] ?? 0) + fires
+    newRow(date, '').unmapped.set(label, fires)
   }
 
-  return [...rows.values()].sort(
-    (a, b) => a.date.localeCompare(b.date) || a.campaignTag.localeCompare(b.campaignTag),
-  )
+  return mergeRows(rows, warn)
 }

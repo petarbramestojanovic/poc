@@ -8,9 +8,11 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "dev": "node --watch --env-file-if-exists=.env src/index.ts",
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-sql.ts",
-    "start": "node dist/index.js",
+    "dev": "node --watch --enable-source-maps --env-file-if-exists=.env src/index.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/copy-sql.ts",
+    "build:smoke": "node scripts/smoke-build.ts",
+    "start": "node --enable-source-maps dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
@@ -18,8 +20,6 @@
     "test:watch": "vitest --project unit",
     "test:integration": "vitest run --project integration",
     "test:all": "vitest run",
-    "sync": "node --env-file-if-exists=.env src/cli/sync.ts",
-    "admin": "node --env-file-if-exists=.env src/cli/admin.ts",
     "db:reset": "supabase db reset"
   },
   "devDependencies": {

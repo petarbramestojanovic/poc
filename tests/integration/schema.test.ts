@@ -90,7 +90,7 @@ describe('migration 0001_foundation', () => {
   it('metric columns are nullable with no default: a keys-only insert stores NULLs', async () => {
     await sql(
       `INSERT INTO analytics.advanced_analytics (campaign_id, source, language, campaign_tag, events_date)
-       VALUES ($1, 'zeus', 'de', 'mpu_v1', '2026-09-01')`,
+       VALUES ($1, 'zeus', 'de', 'schema_probe', '2031-01-01')`,
       [SEED.campaignId],
     )
     const [row] = await sql<Record<string, unknown>>(
@@ -98,7 +98,7 @@ describe('migration 0001_foundation', () => {
               in_view_time, dwell_time, interaction_time, dwell_avg_ms,
               unique_impressions_reported, unique_clicks_reported, data_source
          FROM analytics.advanced_analytics
-        WHERE campaign_id = $1 AND source = 'zeus' AND events_date = '2026-09-01'`,
+        WHERE campaign_id = $1 AND source = 'zeus' AND campaign_tag = 'schema_probe' AND events_date = '2031-01-01'`,
       [SEED.campaignId],
     )
     expect(row).toEqual({
@@ -193,10 +193,10 @@ describe('external.event_map target validation trigger', () => {
     )
 
   it('accepts valid metric, page_view, cta_click and ignore targets', async () => {
-    await insert('e1', 'metric', 'game_finished')
-    await insert('e2', 'page_view', 'result')
-    await insert('e3', 'cta_click', 'clickthrough')
-    await insert('e4', 'ignore', null)
+    await expect(insert('e1', 'metric', 'game_finished')).resolves.toBeDefined()
+    await expect(insert('e2', 'page_view', 'result')).resolves.toBeDefined()
+    await expect(insert('e3', 'cta_click', 'clickthrough')).resolves.toBeDefined()
+    await expect(insert('e4', 'ignore', null)).resolves.toBeDefined()
   })
 
   it('rejects a metric that is not an advanced_analytics column', async () => {

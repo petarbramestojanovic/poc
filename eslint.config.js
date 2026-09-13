@@ -16,17 +16,22 @@ export default defineConfig(
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
     },
     rules: {
-      '@typescript-eslint/consistent-type-imports': ['error', { fixStyle: 'inline-type-imports' }],
+      // Type-only imports are enforced by the compiler (verbatimModuleSyntax), not by lint.
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
       ],
       '@typescript-eslint/switch-exhaustiveness-check': 'error',
       '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
-      // Fastify plugins and handlers are async by contract even when they never await.
-      '@typescript-eslint/require-await': 'off',
       'no-console': 'error',
     },
+  },
+
+  // Fastify plugins, hooks and handlers (and the fetch fakes and route handlers tests define)
+  // are async by contract even when they never await. Everywhere else the rule stays on.
+  {
+    files: ['src/app.ts', 'src/routes/**/*.ts', 'src/plugins/**/*.ts', 'tests/**/*.ts'],
+    rules: { '@typescript-eslint/require-await': 'off' },
   },
 
   // Operator CLI prints to stdout by design.

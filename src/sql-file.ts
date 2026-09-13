@@ -1,16 +1,28 @@
 import { readFileSync } from 'node:fs'
 
 // Queries live in `sql/<name>.sql` next to the module that runs them (plan rule: SQL in files,
-// parameters only). Files are read once, on first use at startup, and cached.
-const cache = new Map<string, string>()
+// parameters only). They are read EAGERLY, at module import time, so a missing or un-copied
+// file fails the boot rather than the first nightly run at 04:00. The returned object is typed
+// over the names given, so an unknown statement name is a compile error.
 
-export function sqlFile(moduleUrl: string, name: string): string {
-  const url = new URL(`./sql/${name}.sql`, moduleUrl)
-  const key = url.href
-  let text = cache.get(key)
-  if (text === undefined) {
-    text = readFileSync(url, 'utf8')
-    cache.set(key, text)
+export type SqlStatements<N extends readonly string[]> = Readonly<Record<N[number], string>>
+
+export class SqlFileError extends Error {
+  override readonly name = 'SqlFileError'
+}
+
+export function loadSql<const N extends readonly string[]>(
+  moduleUrl: string,
+  names: N,
+): SqlStatements<N> {
+  const out: Record<string, string> = {}
+  for (const name of names) {
+    const url = new URL(`./sql/${name}.sql`, moduleUrl)
+    try {
+      out[name] = readFileSync(url, 'utf8')
+    } catch (cause) {
+      throw new SqlFileError(`Cannot read SQL file ${url.pathname}`, { cause })
+    }
   }
-  return text
+  return out as SqlStatements<N>
 }

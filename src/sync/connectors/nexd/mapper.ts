@@ -1,5 +1,6 @@
-import { fromDate, type IsoDate } from '../../../dates.ts'
+import { assertIsoDate, todayIn, type IsoDate } from '../../../dates.ts'
 import type { CanonicalDailyRow, EventMapEntry, MetricId } from '../../types.ts'
+import { NexdContractError } from './errors.ts'
 import type { NexdEventItem, NexdPerformanceItem } from './schema.ts'
 
 // Pure: one NEXD day (performance row + that day's events) → one CanonicalDailyRow.
@@ -24,17 +25,26 @@ const BUILT_IN_EVENT_MAP: EventMapEntry[] = [
   { eventName: 'Unique [Hover]', targetKind: 'metric', targetId: 'hovered' },
 ]
 
-export function performanceDate(item: NexdPerformanceItem): IsoDate {
-  if (item.date !== undefined) return item.date.slice(0, 10)
-  if (typeof item.dt === 'number') return fromDate(new Date(item.dt * 1000))
-  if (typeof item.dt === 'string') return fromDate(new Date(item.dt))
-  throw new Error('NEXD performance item has neither `date` nor `dt`')
+/**
+ * The calendar day of a performance item. `date` (undocumented, returned today) is taken as
+ * written; the documented `dt` timestamp is converted in the source's day zone.
+ */
+export function performanceDate(item: NexdPerformanceItem, timeZone = 'UTC'): IsoDate {
+  try {
+    if (item.date !== undefined) return assertIsoDate(item.date.slice(0, 10))
+    if (typeof item.dt === 'number') return todayIn(timeZone, new Date(item.dt * 1000))
+    if (typeof item.dt === 'string') return todayIn(timeZone, new Date(item.dt))
+  } catch (cause) {
+    throw new NexdContractError(`NEXD performance item has an invalid date`, { cause })
+  }
+  throw new NexdContractError('NEXD performance item has neither `date` nor `dt`')
 }
 
 export function mapNexdRows(input: NexdMapperInput): CanonicalDailyRow[] {
   const eventMap = new Map<string, EventMapEntry>()
-  for (const entry of [...BUILT_IN_EVENT_MAP, ...input.eventMap])
+  for (const entry of [...BUILT_IN_EVENT_MAP, ...input.eventMap]) {
     eventMap.set(entry.eventName, entry)
+  }
 
   return input.days.map(({ date, performance, events }) => {
     const row: CanonicalDailyRow = {
@@ -49,14 +59,14 @@ export function mapNexdRows(input: NexdMapperInput): CanonicalDailyRow[] {
       },
       pageViews: [],
       ctaClicks: [],
-      unmapped: {},
+      unmapped: new Map(),
     }
 
     for (const event of events) {
       const name = event.action.original
       const target = eventMap.get(name)
       if (!target) {
-        row.unmapped[name] = (row.unmapped[name] ?? 0) + event.count
+        row.unmapped.set(name, (row.unmapped.get(name) ?? 0) + event.count)
         continue
       }
       switch (target.targetKind) {

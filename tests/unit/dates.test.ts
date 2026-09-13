@@ -6,15 +6,26 @@ import {
   daysInclusive,
   eachDay,
   isConsecutive,
+  startOfDayIn,
+  todayIn,
+  yesterdayIn,
   yesterdayUtc,
 } from '../../src/dates.ts'
 
 describe('dates', () => {
   it('validates ISO dates', () => {
     expect(assertIsoDate('2026-02-28')).toBe('2026-02-28')
+    expect(assertIsoDate('2028-02-29')).toBe('2028-02-29')
     expect(() => assertIsoDate('2026-2-8')).toThrow(RangeError)
     expect(() => assertIsoDate('2026-13-01')).toThrow(RangeError)
   })
+
+  it.each(['2026-02-31', '2026-04-31', '2027-02-29', '2026-00-10', '2026-06-00'])(
+    'rejects the impossible calendar date %s instead of rolling it over',
+    (value) => {
+      expect(() => assertIsoDate(value)).toThrow(RangeError)
+    },
+  )
 
   it('adds days across month, year and leap boundaries', () => {
     expect(addDays('2026-01-31', 1)).toBe('2026-02-01')
@@ -50,5 +61,33 @@ describe('dates', () => {
 
   it('derives yesterday in UTC regardless of the wall clock', () => {
     expect(yesterdayUtc(new Date('2026-09-12T00:30:00Z'))).toBe('2026-09-11')
+  })
+
+  it('derives today and yesterday in an explicit time zone, not the server clock', () => {
+    const lateUtc = new Date('2026-09-11T23:30:00Z') // 01:30 on the 12th in Zurich (CEST)
+    expect(todayIn('UTC', lateUtc)).toBe('2026-09-11')
+    expect(todayIn('Europe/Zurich', lateUtc)).toBe('2026-09-12')
+    expect(yesterdayIn('Europe/Zurich', lateUtc)).toBe('2026-09-11')
+    expect(yesterdayIn('America/New_York', lateUtc)).toBe('2026-09-10')
+  })
+
+  it('finds the start of a calendar day in a zone, across both DST changes', () => {
+    expect(startOfDayIn('2026-09-12', 'UTC').toISOString()).toBe('2026-09-12T00:00:00.000Z')
+    expect(startOfDayIn('2026-09-12', 'Europe/Zurich').toISOString()).toBe(
+      '2026-09-11T22:00:00.000Z',
+    )
+    expect(startOfDayIn('2026-01-15', 'Europe/Zurich').toISOString()).toBe(
+      '2026-01-14T23:00:00.000Z',
+    )
+    expect(startOfDayIn('2026-03-29', 'Europe/Zurich').toISOString()).toBe(
+      '2026-03-28T23:00:00.000Z',
+    )
+    expect(startOfDayIn('2026-10-25', 'Europe/Zurich').toISOString()).toBe(
+      '2026-10-24T22:00:00.000Z',
+    )
+  })
+
+  it('rejects an unknown time zone with a clear error', () => {
+    expect(() => todayIn('Mars/Olympus')).toThrow('IANA')
   })
 })
