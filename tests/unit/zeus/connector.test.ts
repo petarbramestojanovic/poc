@@ -79,6 +79,26 @@ describe('Zeus connector', () => {
     await expect(connector.fetchWindow(context(http))).rejects.toThrow(ZeusInvariantError)
   })
 
+  it('stores unique clicks above clicks as reported and warns about the contradiction', async () => {
+    const http = fixtureHttp({
+      campaigns: (s) => {
+        const fixture = fixtureFor(s)
+        const rows = fixture.rows.map((r) => ({ ...r }))
+        rows[0] = { ...rows[0], clicks: 294, unique_clicks: 297 }
+        return { ...fixture, rows }
+      },
+    })
+
+    const result = await connector.fetchWindow(context(http, FIXTURE_WINDOW, [ENTITIES.campaign]))
+
+    const day = result.rows.find((r) => r.date === '2026-09-01' && r.campaignTag === '')
+    expect(day?.metrics).toMatchObject({ unique_clicks_reported: 297 })
+    expect(day?.ctaClicks).toEqual([{ ctaId: 'clickthrough', count: 294 }])
+    expect(result.warnings).toContain(
+      'campaign 501 on 2026-09-01: Zeus reports unique_clicks 297 > clicks 294; stored as reported',
+    )
+  })
+
   it('rejects rows with an impossible calendar date', async () => {
     const http = fixtureHttp({
       creatives: (s) => {

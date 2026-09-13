@@ -34,7 +34,13 @@ type DeliveryRow = Pick<
   'date' | 'impressions' | 'clicks' | 'visible_impressions' | 'unique_impressions' | 'unique_clicks'
 >
 
-function checkDelivery(kind: string, entity: LinkEntity, row: DeliveryRow, subject: string): void {
+function checkDelivery(
+  kind: string,
+  entity: LinkEntity,
+  row: DeliveryRow,
+  subject: string,
+  warn: (message: string) => void,
+): void {
   const counts: [string, number | undefined][] = [
     ['clicks', row.clicks],
     ['visible_impressions', row.visible_impressions],
@@ -46,9 +52,13 @@ function checkDelivery(kind: string, entity: LinkEntity, row: DeliveryRow, subje
       `${kind} ${subject} (entity ${entity.externalId}) on ${row.date}: ${violated[0]} ${String(violated[1])} > impressions ${row.impressions}`,
     )
   }
+  // Not a failure. Zeus's unique click count sits within a couple of percent of its click count
+  // and lands slightly above it on some days (campaign 18, August 2026: 13 of 31 days). The value
+  // is stored as reported: it is a per-day scalar that is never added up, so it cannot inflate a
+  // total, and the warning keeps the contradiction visible on the run.
   if (row.unique_clicks !== undefined && row.unique_clicks > row.clicks) {
-    throw new ZeusInvariantError(
-      `${kind} ${subject} on ${row.date}: unique_clicks ${row.unique_clicks} > clicks ${row.clicks}`,
+    warn(
+      `${kind} ${subject} on ${row.date}: Zeus reports unique_clicks ${row.unique_clicks} > clicks ${row.clicks}; stored as reported`,
     )
   }
 }
@@ -56,10 +66,12 @@ function checkDelivery(kind: string, entity: LinkEntity, row: DeliveryRow, subje
 /**
  * RFC-003 §2.2: Zeus has no range totals, so the run asserts internal consistency instead —
  * on every report it consumes. A day may appear once per creative, campaign and pixel; ratios
- * must hold; counts are non-negative integers (enforced by the schema).
+ * must hold; counts are non-negative integers (enforced by the schema). Unique clicks above clicks
+ * is reported through `warn` and stored, never thrown (see checkDelivery).
  */
 export function checkZeusInvariants(
   input: Pick<ZeusMapperInput, 'creatives' | 'campaigns' | 'tracker'>,
+  warn: (message: string) => void = () => undefined,
 ): void {
   const seen = new Set<string>()
   const once = (key: string, message: string) => {
@@ -71,14 +83,14 @@ export function checkZeusInvariants(
       `creative|${row.creative_id}|${row.date}`,
       `creative ${row.creative_id} appears twice for ${row.date}`,
     )
-    checkDelivery('creative', entity, row, row.creative_id)
+    checkDelivery('creative', entity, row, row.creative_id, warn)
   }
   for (const { entity, row } of input.campaigns) {
     once(
       `campaign|${row.campaign_id}|${row.date}`,
       `campaign ${row.campaign_id} appears twice for ${row.date}`,
     )
-    checkDelivery('campaign', entity, row, row.campaign_id)
+    checkDelivery('campaign', entity, row, row.campaign_id, warn)
   }
   for (const { row } of input.tracker) {
     once(`pixel|${row.pixel_id}|${row.date}`, `pixel ${row.pixel_id} appears twice for ${row.date}`)

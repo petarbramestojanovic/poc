@@ -166,7 +166,6 @@ describe('Zeus invariants', () => {
     ['clicks > impressions', { clicks: 20_001 }],
     ['visible_impressions > impressions', { visible_impressions: 20_001 }],
     ['unique_impressions > impressions', { unique_impressions: 20_001 }],
-    ['unique_clicks > clicks', { unique_clicks: 151 }],
   ])('fails on a creative with %s', (_name, patch) => {
     const [first, ...rest] = base
     if (!first) throw new Error('fixture is empty')
@@ -174,6 +173,30 @@ describe('Zeus invariants', () => {
     expect(() => {
       checkZeusInvariants(input({ creatives: broken }))
     }).toThrow(ZeusInvariantError)
+  })
+
+  it('warns instead of failing when Zeus reports more unique clicks than clicks', () => {
+    const [first, ...rest] = base
+    if (!first) throw new Error('fixture is empty')
+    const creative = {
+      entity: first.entity,
+      row: { ...first.row, unique_clicks: first.row.clicks + 3 },
+    }
+    const campaign = {
+      entity: ENTITIES.campaign,
+      row: { ...campaignRow, unique_clicks: campaignRow.clicks + 1 },
+    }
+    const warnings: string[] = []
+
+    expect(() => {
+      checkZeusInvariants(input({ creatives: [creative, ...rest], campaigns: [campaign] }), (w) =>
+        warnings.push(w),
+      )
+    }).not.toThrow()
+    expect(warnings).toEqual([
+      `creative ${first.row.creative_id} on ${first.row.date}: Zeus reports unique_clicks ${first.row.clicks + 3} > clicks ${first.row.clicks}; stored as reported`,
+      `campaign ${campaignRow.campaign_id} on ${campaignRow.date}: Zeus reports unique_clicks ${campaignRow.clicks + 1} > clicks ${campaignRow.clicks}; stored as reported`,
+    ])
   })
 
   it('fails when a creative appears twice for one day', () => {

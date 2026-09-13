@@ -43,7 +43,7 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 - Pass `signal: ctx.signal` and `log: ctx.log` to every request. Call `ctx.signal.throwIfAborted()` between chunks and entities.
 - Persist raw responses with `await ctx.capture(raw)` **right after parsing each response**, never batched at the end — failed runs must keep their payloads. Redact the request before capturing.
 - Verify every row belongs to the entity you asked for. Id filters are ambiguous (`external_id` vs `internal_id`); a row for another campaign is a `ConnectorContractError`, never silently attributed.
-- Check invariants on **every** report consumed: one row per entity per day, ratios (`clicks ≤ impressions`, …), non-negative integer counts, and the returned window equals the requested one.
+- Check invariants on **every** report consumed: one row per entity per day, ratios (`clicks ≤ impressions`, …), non-negative integer counts, and the returned window equals the requested one. A contradiction the platform produces routinely on a never-summed per-day scalar (Zeus: `unique_clicks > clicks`) is a run warning and the value is stored as reported. Never clamp it.
 - Errors: shape surprises extend `ConnectorContractError`; numbers that do not add up extend `VerificationError`.
 - Responses identical across links (e.g. Zeus's unfiltered tracker) go through `ctx.memo.getOrLoad(key, …)`, keyed by credential, report and window.
 - `checkConnection` answers `ok: true` only when the key is known to be accepted. 429 and 5xx mean "cannot tell" → `ok: false`. Give probes a `deadlineMs`.

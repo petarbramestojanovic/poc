@@ -341,7 +341,7 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
         await fetchChunk(ctx, chunk, input, state, ctx.memo)
       }
 
-      checkZeusInvariants(input)
+      checkZeusInvariants(input, (warning) => state.warnings.add(warning))
       const warnings = [...state.warnings]
       const rows = mapZeusRows(input, (w) => warnings.push(w))
       const coveredTo = state.servedTo ?? window.to
