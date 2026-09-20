@@ -1,4 +1,5 @@
 import { Client, type QueryResultRow } from 'pg'
+import { dateAsStringTypes } from '../../src/db.ts'
 import { afterEach, beforeEach } from 'vitest'
 
 // One client per test file, every test inside its own transaction that is rolled back,
@@ -7,7 +8,7 @@ export function useTransactionalClient(): { sql: typeof sql } {
   let client: Client
 
   beforeEach(async () => {
-    client = new Client({ connectionString: process.env.DATABASE_URL })
+    client = new Client({ connectionString: process.env.DATABASE_URL, types: dateAsStringTypes })
     await client.connect()
     await client.query('BEGIN')
   })

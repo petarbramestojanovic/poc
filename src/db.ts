@@ -85,7 +85,8 @@ const DATE_OID = 1082 // pg.types.builtins.DATE
 
 type TextParser = (value: string) => unknown
 
-const types: pg.CustomTypesConfig = {
+/** Exported so integration tests read dates exactly as the service does. */
+export const dateAsStringTypes: pg.CustomTypesConfig = {
   getTypeParser: ((oid: number): TextParser =>
     oid === DATE_OID
       ? (value: string) => value
@@ -125,7 +126,7 @@ export function createDb(connectionString: string, options: DbOptions = {}): Db 
     lock_timeout: options.lockTimeoutMs ?? DEFAULTS.lockTimeoutMs,
     idle_in_transaction_session_timeout:
       options.idleInTransactionTimeoutMs ?? DEFAULTS.idleInTransactionTimeoutMs,
-    types,
+    types: dateAsStringTypes,
   })
 
   // node-postgres emits 'error' on IDLE clients when a backend is terminated or the network
