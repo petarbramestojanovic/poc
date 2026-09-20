@@ -7,17 +7,15 @@ import {
   ResponseTooLargeError,
   RetryBudgetExhaustedError,
 } from '../http/HttpClient.ts'
+import { AppError } from '../errors.ts'
 
 // Every failure a sync run can end in carries a stable machine code, whether retrying could
 // help, and the HTTP status the trigger route should answer with. The route (step 9) maps
 // errors through `classifySyncError` only; the scheduler asks it whether to retry.
 
-export class SyncError extends Error {
+export class SyncError extends AppError {
   override readonly name: string = 'SyncError'
-  readonly code: string = 'sync_error'
-  readonly retryable: boolean = false
-  /** Status for the trigger route. >= 500 means "our side or upstream", never a caller mistake. */
-  readonly status: number = 500
+  override readonly code: string = 'sync_error'
 }
 
 export class LinkNotFoundError extends SyncError {
@@ -135,8 +133,9 @@ export interface ErrorClassification {
   status: number
 }
 
+/** Also classifies webhook errors: both share the AppError base. */
 export function classifySyncError(error: unknown): ErrorClassification {
-  if (error instanceof SyncError) {
+  if (error instanceof AppError) {
     return { code: error.code, retryable: error.retryable, status: error.status }
   }
   if (error instanceof HttpError) {

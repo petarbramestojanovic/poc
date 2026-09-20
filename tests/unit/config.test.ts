@@ -20,6 +20,7 @@ describe('loadConfig', () => {
       logLevel: 'info',
       trustProxyHops: 0,
       syncSchedulerEnabled: true,
+      webhookSchedulerEnabled: true,
     })
   })
 

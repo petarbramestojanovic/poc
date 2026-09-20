@@ -11,6 +11,18 @@ import type { ConnectorRegistry } from './sync/registry.ts'
 // so a CLI run uses exactly the pool settings, HTTP client, connectors and pool share the nightly
 // job uses.
 
+/**
+ * The client that POSTs to client endpoints: one attempt, 10 s, and no retry inside the request.
+ * Webhook retries are the delivery ladder in the database (1 m, 5 m, 30 m, 2 h), which survives a
+ * restart; an in-process retry would not, and would hold the tick open for minutes.
+ */
+export function createWebhookHttpClient(logger: Logger): HttpClient {
+  return createHttpClient({ log: logger, maxRetries: 0, timeoutMs: WEBHOOK_TIMEOUT_MS })
+}
+
+/** RFC-002 §15.4: 10 s per attempt. */
+export const WEBHOOK_TIMEOUT_MS = 10_000
+
 export interface SyncRuntime {
   logger: Logger
   db: Db

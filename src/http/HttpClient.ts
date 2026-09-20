@@ -13,6 +13,11 @@ export interface HttpRequest {
   headers?: Record<string, string>
   /** JSON-encoded as the request body. */
   body?: unknown
+  /**
+   * Sent verbatim instead of `body`, for callers that must control the exact bytes on the wire —
+   * a webhook signature covers those bytes, so nothing may re-encode them on the way out.
+   */
+  bodyText?: string
   /** Requests sharing a credential are serialised (per-credential concurrency 1). */
   credentialKey: string
   /** Cancels the in-flight attempt, any backoff sleep, and requests still queued. */
@@ -286,7 +291,9 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
 
   async function attemptOnce(req: HttpRequest, attempt: number): Promise<HttpResponse> {
     const headers: Record<string, string> = { accept: 'application/json', ...req.headers }
-    if (req.body !== undefined) headers['content-type'] = 'application/json'
+    if ((req.body ?? req.bodyText) !== undefined && headers['content-type'] === undefined) {
+      headers['content-type'] = 'application/json'
+    }
 
     const timeout = AbortSignal.timeout(timeoutMs)
     const init: RequestInit = {
@@ -296,7 +303,8 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
       // A redirect would silently turn the NEXD POST into a body-less GET: fail loudly instead.
       redirect: 'error',
     }
-    if (req.body !== undefined) init.body = JSON.stringify(req.body)
+    if (req.bodyText !== undefined) init.body = req.bodyText
+    else if (req.body !== undefined) init.body = JSON.stringify(req.body)
 
     let response: Response
     let text: string

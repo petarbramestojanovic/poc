@@ -1,9 +1,11 @@
 import { buildApp } from './app.ts'
 import { loadConfig } from './config.ts'
 import { createLogger } from './log.ts'
-import { createSyncRuntime } from './runtime.ts'
+import { createSyncRuntime, createWebhookHttpClient } from './runtime.ts'
 import { createRunTracker, type SyncDeps } from './sync/engine.ts'
 import { startNightlyScheduler, type NightlyScheduler } from './sync/scheduler.ts'
+import { startWebhookScheduler, type WebhookScheduler } from './webhooks/scheduler.ts'
+import type { SendDeps } from './webhooks/send.ts'
 
 /** Render sends SIGTERM and kills the process 30 s later; finish well inside that. */
 const SHUTDOWN_DEADLINE_MS = 10_000
@@ -30,16 +32,28 @@ const sync: SyncDeps = {
   tracker,
 }
 
+// Webhook delivery shares the pool and the tracker, and gets its own HTTP client: one attempt,
+// 10 s, no in-process retry. The tracker lets app.close() wait for a send-now delivery in flight.
+const webhooks: SendDeps = {
+  db: runtime.db,
+  http: createWebhookHttpClient(logger),
+  log: logger,
+  signal: shutdown.signal,
+  tracker,
+}
+
 const app = buildApp({
   config,
   db: runtime.db,
   logger,
   tracker,
   sync,
+  webhooks,
   drainTimeoutMs: SHUTDOWN_DEADLINE_MS - 2_000,
 })
 
 let scheduler: NightlyScheduler | undefined
+let webhookScheduler: WebhookScheduler | undefined
 let shuttingDown = false
 
 async function stop(signal: NodeJS.Signals): Promise<void> {
@@ -55,7 +69,7 @@ async function stop(signal: NodeJS.Signals): Promise<void> {
   shutdown.abort(new Error(`received ${signal}`))
   try {
     // No new ticks. A pass already running stops before its next day and releases the lock.
-    await scheduler?.stop()
+    await Promise.all([scheduler?.stop(), webhookScheduler?.stop()])
     await app.close() // drains in-flight runs, then closes the pool (onClose hook)
     process.exitCode = 0
   } catch (err) {
@@ -75,4 +89,10 @@ if (!config.syncSchedulerEnabled) {
 } else if (!shutdown.signal.aborted) {
   // A signal can land while listen() is still pending; never start ticks after that.
   scheduler = startNightlyScheduler(sync)
+}
+
+if (!config.webhookSchedulerEnabled) {
+  logger.info('webhook scheduler disabled (WEBHOOK_SCHEDULER_ENABLED=false)')
+} else if (!shutdown.signal.aborted) {
+  webhookScheduler = startWebhookScheduler(webhooks)
 }

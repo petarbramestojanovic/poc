@@ -22,6 +22,7 @@ const REDACTED_PATHS = [
   'config.databaseSslCa',
   'config.adminToken',
   'webhook.secret',
+  'delivery.secret',
   // Bare properties.
   'authorization',
   'secret',

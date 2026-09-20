@@ -16,6 +16,7 @@ const config: Config = {
   logLevel: 'silent',
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
+  webhookSchedulerEnabled: false,
 }
 
 const localDb = (options: DbOptions = {}) => createDb(DATABASE_URL, { ssl: 'disable', ...options })

@@ -55,6 +55,8 @@ const serviceSchema = z
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
     /** Schedules the 04:00 nightly pass in this process. Every replica may; the leader lock picks one. */
     SYNC_SCHEDULER_ENABLED: z.stringbool().default(true),
+    /** Runs the minutely webhook tick in this process. Same leader-lock rule as the nightly pass. */
+    WEBHOOK_SCHEDULER_ENABLED: z.stringbool().default(true),
   })
   .superRefine(checkDatabase)
 
@@ -73,6 +75,7 @@ export interface Config extends RuntimeConfig {
   readonly port: number
   readonly trustProxyHops: number
   readonly syncSchedulerEnabled: boolean
+  readonly webhookSchedulerEnabled: boolean
 }
 
 export class ConfigError extends Error {
@@ -117,5 +120,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     logLevel: data.LOG_LEVEL,
     trustProxyHops: data.TRUST_PROXY_HOPS,
     syncSchedulerEnabled: data.SYNC_SCHEDULER_ENABLED,
+    webhookSchedulerEnabled: data.WEBHOOK_SCHEDULER_ENABLED,
   }
 }

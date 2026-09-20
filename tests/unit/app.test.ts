@@ -20,6 +20,7 @@ const config: Config = {
   logLevel: 'silent',
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
+  webhookSchedulerEnabled: false,
 }
 
 function fakeDb(query: Db['query'] = () => Promise.resolve([])): Db {

@@ -21,6 +21,7 @@ const config: Config = {
   logLevel: 'silent',
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
+  webhookSchedulerEnabled: false,
 }
 
 // Every case here is refused before the handler runs, so the database must never be reached.
@@ -104,5 +105,17 @@ describe('sync routes, refused before the handler', () => {
   it('rejects a malformed run id with 400', async () => {
     const res = await build().inject({ method: 'GET', url: '/sync/runs/42', headers: auth })
     expect(res.statusCode).toBe(400)
+  })
+
+  it('accepts a trigger with no body at all', async () => {
+    // A body-less POST arrives as null. It must reach the handler — which then fails on this
+    // file's deliberately broken database, not on validation.
+    const res = await build().inject({
+      method: 'POST',
+      url: `/sync/links/${LINK}/run`,
+      headers: auth,
+    })
+    expect(res.statusCode).toBe(500)
+    expect(res.json()).toEqual({ error: 'internal_error' })
   })
 })

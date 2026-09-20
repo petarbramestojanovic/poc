@@ -47,7 +47,8 @@ const triggerBody = z
       })
     }
   })
-  .optional()
+  // A POST with no body at all arrives as null, not undefined: a trigger without options is fine.
+  .nullish()
 
 type TriggerBody = NonNullable<z.infer<typeof triggerBody>>
 
@@ -69,7 +70,7 @@ const runResponse = z.object({
 })
 
 export const syncRoutes: FastifyPluginAsync<{ deps: SyncDeps }> = async (app, { deps }) => {
-  app.post<{ Params: z.infer<typeof linkParams>; Body: TriggerBody | undefined }>(
+  app.post<{ Params: z.infer<typeof linkParams>; Body: TriggerBody | null | undefined }>(
     '/links/:linkId/run',
     { schema: { params: linkParams, body: triggerBody, response: { 202: accepted } } },
     async (request, reply) => {

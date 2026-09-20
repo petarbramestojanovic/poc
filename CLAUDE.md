@@ -60,6 +60,14 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 - Batch work never takes the whole pool: wrap it with `limitDb(db, limiter)`. The failure record (`failRun`) goes through the unlimited pool.
 - Index every foreign-key column you add.
 
+## Webhooks (`src/webhooks/`)
+
+- One minutely tick (`runWebhookTick`) behind leader lock key 2, never a timer per webhook. It enqueues due webhooks and then delivers due deliveries, both inside the tick's own `limitDb` share.
+- The `app.webhook_delivery` row is the idempotency record: one per `(webhook, period)`, its id stamped into the payload at insert (`insert_delivery.sql`) and sent as `X-Delivery-Id`. It never changes across retries, and a delivered period is never re-queued.
+- Sign the exact bytes: `JSON.stringify` once, sign that string, send it as `bodyText`. Nothing may re-encode the body on the way out.
+- Delivery outcomes are data, not exceptions: a client's 500 is `pending` with the next rung of `RETRY_DELAYS_MS`; the 5th failure is `failed`. Only our own refusals throw (`src/webhooks/errors.ts`).
+- Every attempt re-checks the target with `assertPublicTarget`, including on retries. The payload shape is `webhookPayloadSchema` and the client contract is `docs/WEBHOOK-PAYLOAD-v1.md`: change all three together.
+
 ## HTTP client (`src/http/HttpClient.ts`)
 
 - Every outbound call goes through it: per-credential serialisation, streamed size cap, `redirect: 'error'`, typed errors (`HttpError`, `NetworkError` with cause code, `ResponseBodyError`, `ResponseTooLargeError`, `DeadlineExceededError`, `RetryBudgetExhaustedError`).
@@ -71,7 +79,7 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 - Secrets exist only in environment variables. `external.credential.secret_env_var` is a pointer and must match the credential shape enforced by `assertSecretPointer`; it can never name a variable the service itself reads.
 - The logger redacts **explicit paths** (`src/log.ts`). When you log a new object that can carry a secret, add its path and a case to `tests/unit/log.test.ts`. Pass unknown shapes through `redact()` first. Never log a presented token — log why it was refused.
 - Anything persisted or put in an error message (`sync_run.error`, `HttpError.message`, raw payloads) is redacted, including URL query parameters and body excerpts.
-- Throw typed errors from `src/sync/errors.ts` (stable `code`, `retryable`, `status`) and wrap foreign errors with `{ cause }`. The route layer maps through `classifySyncError`.
+- Throw typed errors with a stable `code`, `retryable` and `status`: they all extend `AppError` (`src/errors.ts`), per module in `src/sync/errors.ts` and `src/webhooks/errors.ts`. Wrap foreign errors with `{ cause }`. The route layer maps through `classifySyncError`.
 
 ## Fastify
 

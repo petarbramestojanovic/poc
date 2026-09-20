@@ -10,17 +10,15 @@ import {
 import type { ZodType } from 'zod'
 import type { Config } from './config.ts'
 import type { Db } from './db.ts'
+import { AppError } from './errors.ts'
 import type { Logger } from './log.ts'
 import { requireAdminToken } from './plugins/admin-auth.ts'
 import { healthRoutes } from './routes/health.ts'
 import { syncRoutes } from './routes/sync.ts'
+import { webhookRoutes } from './routes/webhooks.ts'
 import type { RunTracker, SyncDeps } from './sync/engine.ts'
-import {
-  classifySyncError,
-  InvalidLinkConfigError,
-  SyncError,
-  TooSoonError,
-} from './sync/errors.ts'
+import { classifySyncError, InvalidLinkConfigError, TooSoonError } from './sync/errors.ts'
+import type { SendDeps } from './webhooks/send.ts'
 
 export interface AppDeps {
   config: Config
@@ -31,6 +29,8 @@ export interface AppDeps {
   drainTimeoutMs?: number
   /** Sync machinery behind the /sync routes. The service passes it; without it /sync answers 404. */
   sync?: SyncDeps
+  /** Webhook machinery behind the /webhooks routes. Without it /webhooks answers 404. */
+  webhooks?: SendDeps
 }
 
 /** Admin prefixes: every method and path under these requires the operator token. */
@@ -43,6 +43,7 @@ export function buildApp({
   tracker,
   drainTimeoutMs = 8_000,
   sync,
+  webhooks,
 }: AppDeps): FastifyInstance {
   // Widen to Fastify's logger interface so its logger type parameter is not inferred as the
   // concrete pino type, which conflicts with Fastify's own child-logger factory typing.
@@ -101,6 +102,9 @@ export function buildApp({
           reply.code(404).send({ error: 'not_found' }),
         )
         if (prefix === '/sync' && sync) await admin.register(syncRoutes, { deps: sync })
+        if (prefix === '/webhooks' && webhooks) {
+          await admin.register(webhookRoutes, { deps: webhooks })
+        }
       },
       { prefix },
     )
@@ -118,7 +122,7 @@ async function rootErrorHandler(
     // Field paths and messages only; never the config values.
     return reply.code(422).send({ error: error.code, issues: error.issues })
   }
-  if (error instanceof SyncError && error.status < 500) {
+  if (error instanceof AppError && error.status < 500) {
     if (error instanceof TooSoonError) reply.header('retry-after', String(error.retryAfterSeconds))
     return reply.code(error.status).send({ error: error.code, message: error.message })
   }
