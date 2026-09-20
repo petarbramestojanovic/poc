@@ -18,8 +18,8 @@ Design of record: [RFC-004](docs/RFC-004-phase1-database-schema.md) (schema), [R
 │  sync/            connectors → mapper → engine → day-replace writer         │
 │    nightly pass   04:00 Europe/Zurich, leader lock key 1                    │
 │  webhooks/        minutely tick, leader lock key 2 → build, sign, deliver   │
-│  routes/          POST /sync/links/:id/run · GET /sync/runs/:id             │
-│                   POST /webhooks/:id/send-now        (bearer token)         │
+│  campaigns/       one setup service: a form, curl or a CRM push all use it  │
+│  routes/          /companies · /campaigns · /webhooks · /sync (bearer token)│
 │                   GET /healthz · GET /readyz                                │
 │  cli/             npm run sync -- …                                         │
 └───────────────────────────────┬─────────────────────────────────────────────┘
@@ -82,35 +82,24 @@ With real keys you can sync into your local database and inspect the rows direct
    npm run sync -- --source zeus --list-pixels
    ```
 
-4. Create a campaign and its links in Studio (http://127.0.0.1:54323) or psql. Replace every `<…>`.
+4. Create the campaign with the service running (`npm run dev`). One call creates the company, the campaign, the `clickthrough` CTA, a link per platform and its ids, in one transaction. Replace every `<…>`; leave out the platform you do not have.
 
-   ```sql
-   -- Campaign under the seeded company, plus the CTA Zeus clicks are written to.
-   INSERT INTO app.campaign (id, company_id, name, primary_source, starts_on, ends_on) VALUES
-     ('10000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000001',
-      '<campaign name>', 'zeus', '<YYYY-MM-DD>', '<YYYY-MM-DD>');
-   INSERT INTO analytics.cta (campaign_id, cta_id, name) VALUES
-     ('10000000-0000-4000-8000-000000000001', 'clickthrough', 'Click-out');
-
-   -- NEXD: one creative row per live id. campaign_tag names the creative in the breakdown.
-   INSERT INTO external.campaign_link (id, campaign_id, source_id, credential_id, language) VALUES
-     ('10000000-0000-4000-8000-000000000011', '10000000-0000-4000-8000-000000000001', 'nexd',
-      '00000000-0000-4000-8000-000000000011', '<language>');
-   INSERT INTO external.link_entity (link_id, source_id, level, external_id, label, campaign_tag) VALUES
-     ('10000000-0000-4000-8000-000000000011', 'nexd', 'creative', '<live id>', '<label>', '<live id>');
-
-   -- Zeus: the campaign, its creatives, and the engagement and finish pixels from step 3.
-   -- Set "campaign_id_param" to "internal_id" when the campaign id is Zeus's internal id.
-   INSERT INTO external.campaign_link (id, campaign_id, source_id, credential_id, language, config) VALUES
-     ('10000000-0000-4000-8000-000000000012', '10000000-0000-4000-8000-000000000001', 'zeus',
-      '00000000-0000-4000-8000-000000000012', '<language>',
-      '{"clickthrough_cta_id": "clickthrough", "campaign_id_param": "external_id"}');
-   INSERT INTO external.link_entity (link_id, source_id, level, external_id, role, label, campaign_tag) VALUES
-     ('10000000-0000-4000-8000-000000000012', 'zeus', 'campaign', '<campaign id>', NULL, NULL, ''),
-     ('10000000-0000-4000-8000-000000000012', 'zeus', 'creative', '<creative_id>', NULL, '<label>', '<tag>'),
-     ('10000000-0000-4000-8000-000000000012', 'zeus', 'pixel', '<pixel>', 'engagement', NULL, '<tag>'),
-     ('10000000-0000-4000-8000-000000000012', 'zeus', 'pixel', '<pixel>', 'finish', NULL, '<tag>');
+   ```sh
+   curl -X POST http://127.0.0.1:3000/campaigns \
+     -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{
+       "company": { "name": "<client>" },
+       "name": "<campaign name>",
+       "primarySource": "zeus",
+       "startsOn": "<YYYY-MM-DD>", "endsOn": "<YYYY-MM-DD>",
+       "sources": {
+         "zeus": { "campaignId": "<campaign id>", "idType": "internal_id",
+                   "pixels": [ { "code": "<pixel>", "role": "engagement" },
+                               { "code": "<pixel>", "role": "finish" } ] },
+         "nexd": { "creatives": [ { "liveId": "<live id>", "label": "<label>" } ] }
+       } }'
    ```
+
+   `idType` says which of Zeus's two ids `campaignId` is, and is never defaulted: the wrong one returns another campaign's rows or nothing. The response lists the link ids to sync. The same form is in the temporary console (`npm run sync-console`, Campaigns tab).
 
 5. Preview a window, then write it. `--trigger backfill` skips the five-minute cooldown between manual runs.
 
@@ -172,10 +161,27 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 | `WEBHOOK_SCHEDULER_ENABLED` | Run the minutely webhook tick in this process (default `true`)                                                 |
 | `TZ`                        | Always `UTC`; sources and schedules carry explicit timezones                                                   |
 
+## Campaign setup API
+
+Companies, campaigns and webhooks are created through admin routes (bearer token), never by SQL. All of them go through one service, `src/campaigns/`, whose input is platform-neutral: the routes, the console form and — later — a CRM adapter build the same `CampaignSetup` and call `setUpCampaign`.
+
+| Route                                                | What it does                                                                       |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `GET /companies` · `POST /companies`                 | List; create (or, with a known `externalRef`, rename)                              |
+| `GET /campaigns[?companyId=]` · `GET /campaigns/:id` | List with links; one campaign with its platform ids                                |
+| `POST /campaigns`                                    | Set a campaign up: `201` created, `200` when its `externalRef` was already known   |
+| `PATCH /campaigns/:id`                               | Edit name, dates, status, headline source, timezone, languages. There is no delete |
+| `GET /webhooks` · `POST /webhooks`                   | List (never a secret); create — the signing secret is in this response only        |
+
+**Pushing from another system.** Send `"externalRef": { "system": "salesforce", "id": "<its id>" }` (on the company too) and the call becomes repeatable: the second push finds the campaign it created, updates its own fields and **adds** any source, pixel or creative that is new. It never removes anything and cannot blank a field, so a half-filled CRM record cannot stop a working sync. Refusals are explicit: `409 entity_in_use` names the campaign that already owns a platform id, `409 company_name_exists` asks for `company.id` rather than guessing between namesakes, `422 primary_source_required` when a new campaign has no source or several.
+
+A new platform needs one preset in `src/campaigns/presets.ts`; a new CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
+
 ## Client report webhooks
 
-A webhook is a row in `app.webhook`: the client's HTTPS endpoint, a signing secret we generate, a
-cron expression with a timezone, and which campaigns it covers. A minutely tick enqueues the period
+A webhook is a row in `app.webhook`, created with `POST /webhooks`: the client's HTTPS endpoint, a
+signing secret we generate and show once, a cron expression with a timezone, and which campaigns it
+covers. A minutely tick enqueues the period
 that has closed, builds the body in Postgres, signs the exact bytes it sends and POSTs them; one
 `app.webhook_delivery` row per (webhook, period) is the idempotency record and its id is the
 `X-Delivery-Id` header. Failures retry at 1 min, 5 min, 30 min and 2 h, five attempts in all.

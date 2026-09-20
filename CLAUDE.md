@@ -23,6 +23,7 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 
 - **Ask first** before: changing anything RFC-004 defines (tables, columns, keys, seeds), adding a dependency outside the fixed stack (Fastify, pg, zod, pino, node-cron, cron-parser, Vitest, ESLint, Prettier, Supabase CLI), or building phase 2 work (dashboard, Supabase Auth users, RLS, own ingestion routes, `source = 'brame'` rows, HLL, CSV export, retention purge, backfill, device split).
 - **Additive migrations only.** New indexes are fine and must be flagged in the PR. Never edit an applied migration; add the next numbered file.
+- **Approved deviations from RFC-004** (the RFC files stay verbatim; the migration header is the record): `0004_external_refs.sql` adds `external_system` + `external_id` to `app.company` and `app.campaign` (2026-09-20), so another system can push the same record twice. They identify a row and never describe it: no CRM field belongs in the model.
 - Deferred because they need a new dependency: rate limiting on admin routes (`@fastify/rate-limit`), coverage (`@vitest/coverage-v8`), a metrics endpoint.
 
 ## Domain rules (non-negotiable)
@@ -59,6 +60,15 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 - Leader election uses `db.withAdvisoryLock` (two-integer keyspace, session lock). It needs a session: direct connection or Supavisor's **session** pooler (5432). Config rejects the transaction pooler (6543). Call `lease.assertHeld()` before irreversible work.
 - Batch work never takes the whole pool: wrap it with `limitDb(db, limiter)`. The failure record (`failRun`) goes through the unlimited pool.
 - Index every foreign-key column you add.
+
+## Campaign setup (`src/campaigns/`)
+
+- `setUpCampaign` is the only way a campaign, its links and its platform ids are written. The routes, the console form and any future CRM adapter build the same platform-neutral `CampaignSetup` (`input.ts`) and call it. No route or adapter writes those tables itself.
+- The service knows no platform by name. What a source accepts comes from its connector (`identity.levels`, `identity.roles`, `describe().configSchema`), checked by `checkSources` before the first statement. Platform conventions — the Zeus `clickthrough` CTA, the two standard NEXD events — live in `presets.ts`, one preset per platform.
+- A setup is repeatable by `externalRef`, and **a push only adds**: it updates the campaign's own fields and adds sources and entities that are new. It never removes an entity, never rewrites an existing one (a changed `campaign_tag` would split the rows) and cannot blank a field. Removing is a deliberate act by a person.
+- One transaction, locks taken company first, then campaign. A company name is never matched silently (`409 company_name_exists`): the company is the boundary a webhook reports across. A campaign never moves to another company.
+- `idType` for Zeus is required, never defaulted. There is no delete route: deleting a campaign cascades to its analytics.
+- A webhook's signing secret is minted in `createWebhook`, returned once, never listed and never logged.
 
 ## Webhooks (`src/webhooks/`)
 

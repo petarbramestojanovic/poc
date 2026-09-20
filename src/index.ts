@@ -1,4 +1,5 @@
 import { buildApp } from './app.ts'
+import type { CampaignDeps } from './campaigns/service.ts'
 import { loadConfig } from './config.ts'
 import { createLogger } from './log.ts'
 import { createSyncRuntime, createWebhookHttpClient } from './runtime.ts'
@@ -42,6 +43,9 @@ const webhooks: SendDeps = {
   tracker,
 }
 
+// Campaign setup validates against the same connectors the sync engine runs.
+const campaigns: CampaignDeps = { db: runtime.db, registry: runtime.registry, log: logger }
+
 const app = buildApp({
   config,
   db: runtime.db,
@@ -49,6 +53,7 @@ const app = buildApp({
   tracker,
   sync,
   webhooks,
+  campaigns,
   drainTimeoutMs: SHUTDOWN_DEADLINE_MS - 2_000,
 })
 

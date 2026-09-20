@@ -41,3 +41,10 @@ export class InvalidScheduleError extends WebhookError {
   override readonly code = 'invalid_schedule'
   override readonly status = 422
 }
+
+/** A webhook that could never work as configured: unknown company, or a campaign of another one. */
+export class InvalidWebhookError extends WebhookError {
+  override readonly name = 'InvalidWebhookError'
+  override readonly code = 'invalid_webhook'
+  override readonly status = 422
+}

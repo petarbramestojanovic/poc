@@ -49,18 +49,20 @@ npm run test:integration    # against the local stack
 `.env` needs `DATABASE_URL` (the direct URL `npx supabase status` prints), `DATABASE_SSL=disable`
 and a `SERVICE_ADMIN_TOKEN` of at least 32 characters (`openssl rand -base64 32`).
 
-Create a webhook for the seeded dev campaign, pointing at your endpoint:
+Create a webhook for the seeded dev company, pointing at your endpoint (service running:
+`npm run dev`):
 
-```sql
-INSERT INTO app.webhook (id, company_id, name, campaign_ids, url, secret, schedule_cron, timezone, next_run_at)
-VALUES ('20000000-0000-4000-8000-000000000001',
-        '00000000-0000-4000-8000-000000000001',
-        'test endpoint',
-        ARRAY['00000000-0000-4000-8000-000000000002'::uuid],  -- NULL = every campaign of the company
-        '<https://your-endpoint>',
-        '<a secret you generate: openssl rand -hex 32>',
-        '0 8 * * 1', 'Europe/Zurich', now());
+```sh
+curl -X POST http://127.0.0.1:3000/webhooks \
+  -H 'authorization: Bearer <SERVICE_ADMIN_TOKEN>' -H 'content-type: application/json' -d '{
+    "companyId": "00000000-0000-4000-8000-000000000001",
+    "name": "test endpoint",
+    "url": "<https://your-endpoint>",
+    "scheduleCron": "0 8 * * 1", "timezone": "Europe/Zurich" }'
 ```
+
+The response carries the webhook id and the **signing secret — once**. It is never listed again;
+losing it means rotating it (§5). Leaving out `campaignIds` covers every campaign of the company.
 
 Give the campaign something to report — either sync real data (§4) or insert a couple of rows by
 hand:
@@ -76,7 +78,7 @@ Then send it, with the service running (`npm run dev`). The period has to be one
 with the two rows above, yesterday and the day before:
 
 ```sh
-curl -X POST http://127.0.0.1:3000/webhooks/20000000-0000-4000-8000-000000000001/send-now \
+curl -X POST http://127.0.0.1:3000/webhooks/<webhook id>/send-now \
   -H 'authorization: Bearer <SERVICE_ADMIN_TOKEN>' -H 'content-type: application/json' \
   -d "{\"period_start\": \"$(date -d '2 days ago' +%F)\", \"period_end\": \"$(date -d yesterday +%F)\"}"
 ```
@@ -100,38 +102,63 @@ and `next_run_at = now()`: the tick within the next minute enqueues the period a
 
 ## 3. Adding a client
 
-Phase 1 has no admin UI; setup is SQL, and the ids come from the platforms.
+Through the admin API — or the Campaigns and Webhooks tabs of the temporary console
+(`npm run sync-console`), which calls the same routes. The ids come from the platforms.
 
-1. **Company and campaign.** `primary_source` is the platform whose numbers are the headline; every
-   other source is shown beside it and never added to it.
+1. **Check the keys first**: `npm run sync -- --check-connection zeus-main` (and `nexd-main`).
 
-   ```sql
-   INSERT INTO app.company (id, name) VALUES ('<uuid>', '<client>');
-   INSERT INTO app.campaign (id, company_id, name, primary_source, timezone, starts_on, ends_on)
-   VALUES ('<uuid>', '<company uuid>', '<campaign>', 'zeus', 'Europe/Zurich', '<start>', '<end>');
+2. **The campaign, in one call.** It creates the company, the campaign, the `clickthrough` CTA,
+   one link per platform and the platform ids, in a single transaction:
+
+   ```sh
+   curl -X POST http://127.0.0.1:3000/campaigns \
+     -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{
+       "company": { "name": "<client>" },
+       "name": "<campaign>",
+       "primarySource": "zeus",
+       "startsOn": "<start>", "endsOn": "<end>",
+       "sources": {
+         "zeus": { "campaignId": "<id>", "idType": "internal_id",
+                   "pixels": [ { "code": "<pixel>", "role": "engagement" },
+                               { "code": "<pixel>", "role": "finish" } ] },
+         "nexd": { "creatives": [ { "liveId": "<live id>", "label": "<label>" } ] }
+       } }'
    ```
 
-2. **Pages and CTAs** the creative reports, before any sync writes to them:
+   - `primarySource` is the platform whose numbers are the headline; every other source is shown
+     beside it and never added to it. It may be left out when there is exactly one source.
+   - `idType` (`internal_id` | `external_id`) says which Zeus id you typed. It is never defaulted:
+     the wrong one returns another campaign's rows, or nothing.
+   - The ATK pixels are what give an ATK campaign its game starts and finishes.
+   - For a second campaign of a client that exists, pass `"company": { "id": "<uuid>" }`
+     (`GET /companies`). A name alone is refused with `409 company_name_exists` rather than
+     matched: a company is the boundary a webhook reports across.
+   - `409 entity_in_use` means that platform id already belongs to the campaign it names.
 
-   ```sql
-   INSERT INTO analytics.cta (campaign_id, cta_id, name, is_internal_event, sort_order)
-   VALUES ('<campaign uuid>', 'clickthrough', 'Click-out', false, 1);
-   INSERT INTO analytics.page (campaign_id, page_id, name, sort_order)
-   VALUES ('<campaign uuid>', 'main', 'Main', 1);
-   ```
+3. **NEXD events.** `Unique [Touch]` and `Unique [Hover]` are mapped on creation. `Page seen […]`
+   and `CTR […]` are named per creative: after the first sync they are in
+   `external.unmapped_event` (§6); add the page or CTA and the `external.event_map` row, and sync
+   the window again.
 
-3. **A link per source and language**, then the external ids. The full statements, including the
-   Zeus pixels and the NEXD event map, are in the README under
-   "Sync against the real APIs locally" — they are the same for a real client.
+4. **Sync it**: one `--dry-run`, then a real window (§4). Creating a campaign never calls a
+   platform, so a wrong id shows up here, not at 04:00.
 
-4. **The webhook**, as in §2. Generate its secret with `openssl rand -hex 32`, store it in
-   `app.webhook.secret`, and give the client the secret and
-   [WEBHOOK-PAYLOAD-v1.md](WEBHOOK-PAYLOAD-v1.md). It is the one secret that lives in the database:
-   we mint it, it signs only our own payloads, and it is per client, so an environment variable
-   cannot hold it.
+5. **The webhook**, as in §2 (`POST /webhooks`). Give the client the secret from that response and
+   [WEBHOOK-PAYLOAD-v1.md](WEBHOOK-PAYLOAD-v1.md). Then `send-now` for a closed period and check
+   the delivery row (§6).
 
-5. **Check it end to end** before telling the client: `--check-connection`, one `--dry-run` sync,
-   one real sync, then `send-now` for a closed period.
+**Later changes.** `PATCH /campaigns/:id` edits name, dates, status, headline source, timezone and
+languages; `"status": "archived"` takes a campaign out of the nightly pass. There is no delete —
+it would erase the campaign's analytics. Adding a platform id to an existing campaign by hand is
+still SQL (`external.link_entity`); a system that pushes with an `externalRef` adds ids by pushing
+again.
+
+**A CRM pushing campaigns.** The same `POST /campaigns` with
+`"externalRef": { "system": "salesforce", "id": "<its id>" }` on the campaign (and on the company)
+is repeatable: `201` the first time, `200` afterwards. A re-push updates the campaign's own fields
+and adds sources, pixels and creatives that are new. It never removes anything and cannot blank a
+field — removing is done by a person. Two pushes of the same record at the same moment are
+serialised, not duplicated.
 
 ---
 
@@ -182,8 +209,9 @@ To point a credential at a differently named variable, update `secret_env_var` �
 shape the service enforces (`NEXD_API_KEY`, `ZEUS_API_TOKEN`, …) and can never name a variable the
 service itself reads, such as `DATABASE_URL`.
 
-**A webhook secret** rotates differently: it is one column, so generate a new one, update
-`app.webhook.secret`, and tell the client at the same moment — there is no overlap window in phase 1.
+**A webhook secret** rotates differently: it is one column and the API shows it only at creation,
+so generate a new one (`openssl rand -hex 32`), update `app.webhook.secret`, and tell the client at
+the same moment — there is no overlap window in phase 1.
 Two active secrets would need a second column (RFC-004 change, not done).
 
 ---

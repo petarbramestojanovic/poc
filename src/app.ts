@@ -10,9 +10,11 @@ import {
 import type { ZodType } from 'zod'
 import type { Config } from './config.ts'
 import type { Db } from './db.ts'
+import type { CampaignDeps } from './campaigns/service.ts'
 import { AppError } from './errors.ts'
 import type { Logger } from './log.ts'
 import { requireAdminToken } from './plugins/admin-auth.ts'
+import { campaignRoutes, companyRoutes } from './routes/campaigns.ts'
 import { healthRoutes } from './routes/health.ts'
 import { syncRoutes } from './routes/sync.ts'
 import { webhookRoutes } from './routes/webhooks.ts'
@@ -31,10 +33,12 @@ export interface AppDeps {
   sync?: SyncDeps
   /** Webhook machinery behind the /webhooks routes. Without it /webhooks answers 404. */
   webhooks?: SendDeps
+  /** Campaign setup behind /companies and /campaigns. Without it both answer 404. */
+  campaigns?: CampaignDeps
 }
 
 /** Admin prefixes: every method and path under these requires the operator token. */
-export const ADMIN_PREFIXES = ['/sync', '/webhooks'] as const
+export const ADMIN_PREFIXES = ['/sync', '/webhooks', '/companies', '/campaigns'] as const
 
 export function buildApp({
   config,
@@ -44,6 +48,7 @@ export function buildApp({
   drainTimeoutMs = 8_000,
   sync,
   webhooks,
+  campaigns,
 }: AppDeps): FastifyInstance {
   // Widen to Fastify's logger interface so its logger type parameter is not inferred as the
   // concrete pino type, which conflicts with Fastify's own child-logger factory typing.
@@ -104,6 +109,12 @@ export function buildApp({
         if (prefix === '/sync' && sync) await admin.register(syncRoutes, { deps: sync })
         if (prefix === '/webhooks' && webhooks) {
           await admin.register(webhookRoutes, { deps: webhooks })
+        }
+        if (prefix === '/companies' && campaigns) {
+          await admin.register(companyRoutes, { deps: campaigns })
+        }
+        if (prefix === '/campaigns' && campaigns) {
+          await admin.register(campaignRoutes, { deps: campaigns })
         }
       },
       { prefix },
