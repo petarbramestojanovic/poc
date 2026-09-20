@@ -341,7 +341,17 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
     })
     const durationMs = Date.now() - started
     runLog.info(
-      { daysWritten, rowsWritten, rowsDeleted, httpCalls, durationMs, warnings: warnings.length },
+      {
+        daysWritten,
+        rowsWritten,
+        rowsDeleted,
+        httpCalls,
+        durationMs,
+        warnings: warnings.length,
+        // How much of the pool this run left free: the first sign that batch work is crowding
+        // out the HTTP routes is a `waiting` that is never zero here.
+        pool: deps.db.stats(),
+      },
       'sync succeeded',
     )
     return {
@@ -364,7 +374,10 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
     await repo.failRun(deps.db, runId, failureMessage(error), warnings).catch((e: unknown) => {
       runLog.error({ err: e }, 'could not record run failure')
     })
-    runLog.error({ err: error, ...classifySyncError(error), httpCalls, durationMs }, 'sync failed')
+    runLog.error(
+      { err: error, ...classifySyncError(error), httpCalls, durationMs, pool: deps.db.stats() },
+      'sync failed',
+    )
     throw error
   }
 }

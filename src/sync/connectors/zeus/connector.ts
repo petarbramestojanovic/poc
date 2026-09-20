@@ -259,7 +259,9 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
 
     if (pixels.length > 0) {
       // The unfiltered tracker report is identical for every link on this credential: one
-      // download serves every link in the same run memo (a scheduler pass shares one).
+      // download serves every link in the same run memo (a scheduler pass shares one). The
+      // payload is captured by that one download, so `external.raw_payload` holds it under the
+      // first link's run of the pass, not under every link that read it.
       const tracker = await memo.getOrLoad(
         `zeus:tracker:${ctx.credential.id}:${window.from}:${window.to}`,
         () => get(requestContext(ctx), 'tracker', window, zeusTrackerRow, {}, state),
