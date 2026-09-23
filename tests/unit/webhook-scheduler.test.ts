@@ -141,24 +141,32 @@ describe('deliverDueDeliveries', () => {
     webhook_id: webhookRow().id,
     period_start: '2026-09-07',
     period_end: '2026-09-13',
-    attempts: 0,
+    attempts: 1, // counted by the claim
     payload: { version: 1 },
     url: 'https://client.example.com/hook',
     secret: 'whsec_test',
   })
 
-  it('attempts every due delivery', async () => {
-    const { deps: d } = deps((text) =>
-      text.includes('FROM app.webhook_delivery d') ? [dueRow('a'), dueRow('b')] : [],
-    )
+  /** Answers each claim with the next due row, then with nothing, like the real queue. */
+  const queue = (...ids: string[]) => {
+    const due = ids.map(dueRow)
+    return (text: string) => {
+      if (text.includes('SKIP LOCKED')) return due.splice(0, 1)
+      if (text.includes('UPDATE app.webhook_delivery')) return [{ id: 'recorded' }]
+      return []
+    }
+  }
+
+  it('claims and attempts every due delivery, one at a time', async () => {
+    const { deps: d, db } = deps(queue('a', 'b'))
 
     expect(await deliverDueDeliveries(d)).toEqual({ attempted: 2, delivered: 2 })
+    // Two claims that each returned a row, and a third that found the queue empty.
+    expect(db.matching('SKIP LOCKED')).toHaveLength(3)
   })
 
   it('stops where it is when the process is shutting down', async () => {
-    const { deps: d } = deps((text) =>
-      text.includes('FROM app.webhook_delivery d') ? [dueRow('a'), dueRow('b')] : [],
-    )
+    const { deps: d } = deps(queue('a', 'b'))
     const controller = new AbortController()
     controller.abort()
 

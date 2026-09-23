@@ -3,7 +3,7 @@ import { schedule as cronSchedule, type TaskOptions } from 'node-cron'
 import { limitDb, type LeaderLease } from '../db.ts'
 import { createLimiter } from '../limiter.ts'
 import type { Logger } from '../log.ts'
-import { deliverOnce, type DeliverDeps } from './deliver.ts'
+import { deliverOnce, leaseUntil, type DeliverDeps } from './deliver.ts'
 import { reportPeriod } from './periods.ts'
 import * as repo from './repo.ts'
 
@@ -100,15 +100,20 @@ export async function enqueueDueWebhooks(
   })
 }
 
-/** One attempt for each pending delivery that is due, oldest first. */
+/**
+ * One attempt for each pending delivery that is due, oldest first. Each row is claimed just before
+ * its attempt, so a row send-now or another replica is already sending is skipped, not repeated.
+ */
 export async function deliverDueDeliveries(deps: WebhookDeps): Promise<DeliverResult> {
-  const now = (deps.now ?? (() => new Date()))()
-  const due = await repo.loadDueDeliveries(deps.db, now, MAX_DELIVERIES_PER_TICK)
+  const clock = deps.now ?? (() => new Date())
   const result: DeliverResult = { attempted: 0, delivered: 0 }
 
-  for (const delivery of due) {
+  while (result.attempted < MAX_DELIVERIES_PER_TICK) {
     // Shutdown stops the queue where it is; the rows stay pending and the next tick resumes.
     if (deps.signal?.aborted) break
+    const now = clock()
+    const delivery = await repo.claimNextDelivery(deps.db, now, leaseUntil(now))
+    if (!delivery) break
     const outcome = await deliverOnce(deps, delivery)
     result.attempted += 1
     if (outcome.delivered) result.delivered += 1

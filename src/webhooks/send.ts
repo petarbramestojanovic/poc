@@ -1,6 +1,6 @@
 import type { DateWindow } from '../dates.ts'
 import type { RunTracker } from '../sync/engine.ts'
-import { deliverOnce } from './deliver.ts'
+import { deliverOnce, leaseUntil } from './deliver.ts'
 import { AlreadyDeliveredError, WebhookDisabledError, WebhookNotFoundError } from './errors.ts'
 import { reportPeriod } from './periods.ts'
 import * as repo from './repo.ts'
@@ -74,12 +74,13 @@ function alreadyDelivered(webhookId: string, period: DateWindow): AlreadyDeliver
 /**
  * Tries once, right away, so an operator testing an endpoint sees the result in seconds instead of
  * at the next tick. A failure here is an ordinary attempt: it is recorded on the row and the tick
- * picks up the retry.
+ * picks up the retry. It claims the row like a tick does, so the two never send it at once.
  */
 function attemptInBackground(deps: SendDeps, deliveryId: string): void {
   const attempt = (async () => {
-    const delivery = await repo.loadDelivery(deps.db, deliveryId)
-    // Already taken by a tick, or already delivered: nothing to do.
+    const now = (deps.now ?? (() => new Date()))()
+    const delivery = await repo.claimDelivery(deps.db, deliveryId, now, leaseUntil(now))
+    // Already claimed by a tick, or no longer pending: that attempt, or a later tick, sends it.
     if (delivery) await deliverOnce(deps, delivery)
   })().catch((error: unknown) => {
     deps.log.error({ err: error, deliveryId }, 'immediate webhook delivery failed')

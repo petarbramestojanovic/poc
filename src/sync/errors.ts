@@ -72,6 +72,13 @@ export class InvalidLinkConfigError extends SyncError {
   }
 }
 
+/** A requested window with no complete day in it yet: nothing could be synced, or trusted. */
+export class WindowNotCompleteError extends SyncError {
+  override readonly name = 'WindowNotCompleteError'
+  override readonly code = 'window_not_complete'
+  override readonly status = 422
+}
+
 export class UnknownTargetError extends SyncError {
   override readonly name = 'UnknownTargetError'
   override readonly code = 'unknown_target'

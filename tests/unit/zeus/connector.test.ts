@@ -160,20 +160,34 @@ describe('Zeus connector', () => {
     await expect(connector.fetchWindow(context(http))).rejects.toThrow(/answered for/)
   })
 
-  it('falls back from external_id to internal_id when the first filter matches nothing', async () => {
+  it('never retries with the other id param, where another campaign can share our id', async () => {
+    // Our campaign was quiet. Zeus has a different campaign (777) whose external id happens to
+    // be the internal id we typed: asking by external_id would return its rows as ours.
     const http = fixtureHttp({
-      creatives: (s) => (s.filter.internal_id ? fixtureFor(s) : empty(s)),
+      campaigns: (s) => {
+        if (!s.filter.external_id) return empty(s)
+        const fixture = fixtureFor(s)
+        return {
+          ...fixture,
+          rows: fixture.rows.map((r) => ({ ...r, campaign_id: 777, external_id: 'camp-ext-1' })),
+        }
+      },
     })
-    const result = await connector.fetchWindow(context(http))
-    expect(http.requests.map((r) => r.filter)).toEqual([
-      { external_id: 'camp-ext-1' },
-      { internal_id: 'camp-ext-1' },
-      {},
-    ])
+    const result = await connector.fetchWindow(
+      context(http, FIXTURE_WINDOW, [ENTITIES.campaign], {
+        ...DEFAULT_CONFIG,
+        campaign_id_param: 'internal_id',
+      }),
+    )
+
+    expect(http.requests.map((r) => r.filter)).toEqual([{ internal_id: 'camp-ext-1' }])
+    expect(result.rows).toEqual([])
+    // The covered days are still replaced (a quiet campaign is cleared, never kept stale), and
+    // the empty answer is visible on the run in case the idType is what is wrong.
+    expect(result.covered).toEqual(FIXTURE_WINDOW)
     expect(result.warnings).toEqual([
-      'creatives: no rows for external_id=camp-ext-1, matched with internal_id instead',
+      "campaigns: no rows for internal_id=camp-ext-1 (if the campaign delivered in this window, check the link's idType)",
     ])
-    expect(result.rows.filter((r) => r.campaignTag === 'mpu_v1')).toHaveLength(3)
   })
 
   it('refuses campaign rows that belong to another campaign instead of attributing them to ours', async () => {
@@ -184,9 +198,7 @@ describe('Zeus connector', () => {
         rows: fixture.rows.map((r) => ({ ...r, campaign_id: 777, external_id: 'other-campaign' })),
       }
     }
-    const viaCampaigns = fixtureHttp({
-      campaigns: (s) => (s.filter.internal_id ? stranger(s) : empty(s)),
-    })
+    const viaCampaigns = fixtureHttp({ campaigns: stranger })
     await expect(
       connector.fetchWindow(context(viaCampaigns, FIXTURE_WINDOW, [ENTITIES.campaign])),
     ).rejects.toThrow(/belong elsewhere/)
@@ -227,6 +239,42 @@ describe('Zeus connector', () => {
     )
     expect(http.requests.filter((r) => r.report === 'tracker')).toHaveLength(1)
     expect(http.requests.filter((r) => r.report === 'creatives')).toHaveLength(2)
+  })
+
+  it('narrows every link that reads the shared tracker to the last day Zeus served', async () => {
+    // Zeus has not closed 09-03 for the tracker yet, while creatives are complete. Link b reads
+    // the tracker from the memo; it must not claim 09-03 either, or that day would be written
+    // without its pixel fires and marked complete.
+    const trackerThrough0902 = (s: Parameters<typeof empty>[0]) =>
+      fixtureFor({ ...s, window: { from: s.window.from, to: '2026-09-02' } })
+    const http = fixtureHttp({ tracker: trackerThrough0902 })
+    const memo = createRunMemo()
+    const run = (linkId: string) =>
+      connector.fetchWindow(
+        context(http, FIXTURE_WINDOW, ALL_ENTITIES, DEFAULT_CONFIG, { memo, linkId }),
+      )
+
+    const a = await run('a')
+    const b = await run('b')
+
+    expect(http.requests.filter((r) => r.report === 'tracker')).toHaveLength(1)
+    for (const result of [a, b]) {
+      expect(result.covered).toEqual({ from: '2026-09-01', to: '2026-09-02' })
+      expect(result.rows.every((r) => r.date <= '2026-09-02')).toBe(true)
+      expect(result.warnings).toContain(
+        'Zeus served some reports only through 2026-09-02; 2026-09-03..2026-09-03 is left for the next run',
+      )
+    }
+  })
+
+  it('covers nothing when Zeus served none of the requested days', async () => {
+    const http = fixtureHttp({
+      campaigns: (s) => ({ from: s.window.from, to: '2026-08-31', rows: [] }),
+    })
+    const result = await connector.fetchWindow(
+      context(http, { from: '2026-09-01', to: '2026-09-01' }, [ENTITIES.campaign]),
+    )
+    expect(result).toMatchObject({ rows: [], covered: null })
   })
 
   it('makes no request once the run signal is aborted', async () => {

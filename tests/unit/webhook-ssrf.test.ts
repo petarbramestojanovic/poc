@@ -18,6 +18,8 @@ describe('isPublicAddress', () => {
     '172.32.0.1', // just outside the private 172.16/12 block
     '100.128.0.1', // just outside carrier-grade NAT
     '2606:4700:4700::1111',
+    '::ffff:8.8.8.8', // IPv4-mapped public, dotted
+    '::ffff:808:808', // the same address in hex
   ])('accepts the public address %s', (address) => {
     expect(isPublicAddress(address)).toBe(true)
   })
@@ -42,6 +44,16 @@ describe('isPublicAddress', () => {
     ['ff02::1', 'IPv6 multicast'],
     ['::ffff:127.0.0.1', 'IPv4-mapped loopback'],
     ['::ffff:10.0.0.1', 'IPv4-mapped private'],
+    // The URL parser writes a mapped literal in hex, so hex must be judged by the IPv4 inside.
+    ['::ffff:7f00:1', 'IPv4-mapped loopback, hex'],
+    ['::ffff:a9fe:a9fe', 'IPv4-mapped metadata, hex'],
+    ['::ffff:a00:1', 'IPv4-mapped private, hex'],
+    ['::127.0.0.1', 'IPv4-compatible loopback'],
+    ['::7f00:1', 'IPv4-compatible loopback, hex'],
+    ['fe80::1.2.3.4', 'link-local with a dotted tail'],
+    ['fc00::8.8.8.8', 'unique local with a public-looking dotted tail'],
+    ['2001:db8::1', 'documentation'],
+    ['4000::1', 'outside global unicast'],
     ['64:ff9b::169.254.169.254', 'NAT64-wrapped metadata'],
     ['2002:7f00:1::', '6to4'],
   ])('refuses %s (%s)', (address) => {
@@ -76,6 +88,17 @@ describe('assertPublicTarget', () => {
     await expect(assertPublicTarget('https://[::1]/hook', never)).rejects.toBeInstanceOf(
       BlockedTargetError,
     )
+  })
+
+  it.each([
+    'https://[::ffff:127.0.0.1]/hook',
+    'https://[::ffff:169.254.169.254]/latest/meta-data/',
+    'https://[::ffff:10.0.0.1]/hook',
+    'https://[::127.0.0.1]/hook',
+    'https://[fe80::1.2.3.4]/hook',
+  ])('refuses the IPv6 literal in %s, however the URL parser rewrites it', async (url) => {
+    const never: Lookup = () => Promise.reject(new Error('DNS must not be consulted'))
+    await expect(assertPublicTarget(url, never)).rejects.toBeInstanceOf(BlockedTargetError)
   })
 
   it('refuses a host that resolves to the metadata endpoint', async () => {

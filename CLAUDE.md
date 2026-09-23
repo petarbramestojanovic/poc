@@ -43,7 +43,8 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 - Read the **validated** config from `ctx.config`. Never re-parse `ctx.link.config`.
 - Pass `signal: ctx.signal` and `log: ctx.log` to every request. Call `ctx.signal.throwIfAborted()` between chunks and entities.
 - Persist raw responses with `await ctx.capture(raw)` **right after parsing each response**, never batched at the end — failed runs must keep their payloads. Redact the request before capturing.
-- Verify every row belongs to the entity you asked for. Id filters are ambiguous (`external_id` vs `internal_id`); a row for another campaign is a `ConnectorContractError`, never silently attributed.
+- Verify every row belongs to the entity you asked for. Id filters are ambiguous (`external_id` vs `internal_id`); a row for another campaign is a `ConnectorContractError`, never silently attributed. Ask with the configured id param only: retrying the other one can return a different campaign that owns our id there.
+- A response shared through `ctx.memo` must still narrow every reader's `covered` window (Zeus's own end-date clamp), not only the first link's.
 - Check invariants on **every** report consumed: one row per entity per day, ratios (`clicks ≤ impressions`, …), non-negative integer counts, and the returned window equals the requested one. A contradiction the platform produces routinely on a never-summed per-day scalar (Zeus: `unique_clicks > clicks`) is a run warning and the value is stored as reported. Never clamp it.
 - Errors: shape surprises extend `ConnectorContractError`; numbers that do not add up extend `VerificationError`.
 - Responses identical across links (e.g. Zeus's unfiltered tracker) go through `ctx.memo.getOrLoad(key, …)`, keyed by credential, report and window.
@@ -52,9 +53,10 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 
 ## Engine and database
 
-- `runSync` is the only entry point (scheduler, route, CLI). Pass one process-wide `limiter` (`createLimiter(SYNC_MAX_CONNECTIONS)`), and in the service the shutdown `signal` and `tracker`.
+- `runSync` is the only entry point (scheduler, route, CLI). It cuts a requested window at the newest complete day in the source's day zone (`completeDays`) and refuses one with none (`422 window_not_complete`): no connector is ever asked for a day still being counted. Pass one process-wide `limiter` (`createLimiter(SYNC_MAX_CONNECTIONS)`), and in the service the shutdown `signal` and `tracker`.
 - Runs are opened through `repo.openRun`: gate lock + status check + insert in one transaction. Never check-then-insert in separate statements.
 - SQL lives in `sql/<name>.sql` beside the module and is loaded with `loadSql(import.meta.url, [...] as const)` at import time. Parameters only; bulk writes via `unnest` with typed arrays. If a statement's column order is positional (e.g. `METRIC_IDS` ↔ `insert_advanced.sql`), a test must read every column back by name.
+- Session timeouts are set per connection in the pool's `onConnect` hook, never as startup parameters (a pooler may drop those). A test asserts `pg_settings.source = 'session'`.
 - Go through `createDb`: it sets TLS verification, the idle-client error listener, `keepAlive`, max connection lifetime, statement / lock / idle-in-transaction timeouts, `application_name`, and DATE-as-string parsing. Do not construct `pg.Pool` elsewhere.
 - A connection whose ROLLBACK or unlock failed is destroyed, never returned to the pool.
 - Leader election uses `db.withAdvisoryLock` (two-integer keyspace, session lock). It needs a session: direct connection or Supavisor's **session** pooler (5432). Config rejects the transaction pooler (6543). Call `lease.assertHeld()` before irreversible work.
@@ -73,6 +75,7 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 ## Webhooks (`src/webhooks/`)
 
 - One minutely tick (`runWebhookTick`) behind leader lock key 2, never a timer per webhook. It enqueues due webhooks and then delivers due deliveries, both inside the tick's own `limitDb` share.
+- Every attempt starts from a claim (`claim_next_delivery.sql`, `claim_delivery.sql`): a lease in `next_attempt_at` and the attempt counted, taken with `SKIP LOCKED`. `record_attempt.sql` lands only while the row is `pending` with that count. Never send from a plain SELECT.
 - The `app.webhook_delivery` row is the idempotency record: one per `(webhook, period)`, its id stamped into the payload at insert (`insert_delivery.sql`) and sent as `X-Delivery-Id`. It never changes across retries, and a delivered period is never re-queued.
 - Sign the exact bytes: `JSON.stringify` once, sign that string, send it as `bodyText`. Nothing may re-encode the body on the way out.
 - Delivery outcomes are data, not exceptions: a client's 500 is `pending` with the next rung of `RETRY_DELAYS_MS`; the 5th failure is `failed`. Only our own refusals throw (`src/webhooks/errors.ts`).

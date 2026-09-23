@@ -26,7 +26,8 @@ import {
 
 // Zeus (ATK): three GETs per ≤31-day chunk. `creatives` filtered by the link's campaign id,
 // `tracker` fetched unfiltered and matched locally (code → external_id → name, RFC-003 §2.3),
-// `campaigns` only when the link has no creative entity.
+// `campaigns` only when the link has no creative entity. The id is sent in the one parameter the
+// link's `campaign_id_param` names, never retried in the other: see getFiltered.
 
 export const ZEUS_MAX_WINDOW_DAYS = 31
 const DEFAULT_BASE_URL = 'https://t.zeus.ad'
@@ -79,6 +80,23 @@ interface FetchState {
   servedTo: IsoDate | undefined
 }
 
+/** One report as Zeus answered it: its rows, and the last day it answered for. */
+interface Served<Row> {
+  rows: Row[]
+  to: IsoDate
+}
+
+/**
+ * Zeus may answer for fewer days than asked (its own clamp on days it has not closed). The run
+ * then covers only the days EVERY report served. Applied by each caller to what it read, so a
+ * report shared through the run memo narrows every link that reads it, not only the first.
+ */
+function noteServed(state: FetchState, window: DateWindow, servedTo: IsoDate): void {
+  if (servedTo < window.to && (state.servedTo === undefined || servedTo < state.servedTo)) {
+    state.servedTo = servedTo
+  }
+}
+
 export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusConnector {
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const now = options.now ?? (() => new Date())
@@ -100,9 +118,8 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     window: DateWindow,
     rowSchema: T,
     filter: Record<string, string> = {},
-    state?: FetchState,
     extra: { deadlineMs?: number } = {},
-  ): Promise<z.infer<T>[]> {
+  ): Promise<Served<z.infer<T>>> {
     const url = new URL(`${baseUrl}/api/v1/reports/${report}`)
     url.searchParams.set('from', window.from)
     url.searchParams.set('to', window.to)
@@ -129,26 +146,21 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
         `Zeus ${report} answered for ${data.from}..${data.to}, requested ${window.from}..${window.to}`,
       )
     }
-    if (
-      state &&
-      data.to < window.to &&
-      (state.servedTo === undefined || data.to < state.servedTo)
-    ) {
-      state.servedTo = data.to
-    }
     await ctx.capture?.({
       request: redact({ method: 'GET', url: url.toString() }),
       response: data,
       status: response.status,
       fetchedAt: new Date().toISOString(),
     })
-    return data.rows
+    return { rows: data.rows, to: data.to }
   }
 
   /**
-   * Filtered by the configured id param; if that yields nothing, retried with the other one.
-   * Every returned row must belong to the requested entity: a value that happens to collide
-   * with ANOTHER campaign's id in the other parameter would otherwise be written under ours.
+   * Filtered by the configured id param only. Never retried with the other one: when our campaign
+   * delivered nothing in the window, the other param can match a DIFFERENT campaign whose id in
+   * that namespace happens to equal ours, and its rows would be written under ours. The param is
+   * the operator's statement of which id they typed (`idType`, required, never defaulted).
+   * Every returned row must still belong to the requested entity.
    */
   async function getFiltered<T extends z.ZodType>(
     ctx: SyncContext<ZeusLinkConfig>,
@@ -161,26 +173,25 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     describeRow: (row: z.infer<T>) => string,
     state: FetchState,
   ): Promise<z.infer<T>[]> {
-    const other = param === 'external_id' ? 'internal_id' : 'external_id'
-    for (const used of [param, other] as const) {
-      const rows = await get(requestContext(ctx), report, window, rowSchema, { [used]: id }, state)
-      if (rows.length === 0) continue
-      const stranger = rows.find((row) => !belongs(row))
-      if (stranger !== undefined) {
-        const count = rows.filter((row) => !belongs(row)).length
-        throw new ZeusContractError(
-          `${report}: ${count} row(s) returned for ${used}=${id} belong elsewhere (e.g. ${describeRow(stranger)}); refusing to attribute them`,
-        )
-      }
-      // Recorded on every run until step 14 confirms which parameter Zeus actually honours.
-      state.warnings.add(
-        used === param
-          ? `${report}: rows matched with ${used}=${id}`
-          : `${report}: no rows for ${param}=${id}, matched with ${other} instead`,
+    const { rows, to } = await get(requestContext(ctx), report, window, rowSchema, {
+      [param]: id,
+    })
+    noteServed(state, window, to)
+    const strangers = rows.filter((row) => !belongs(row))
+    const [stranger] = strangers
+    if (stranger !== undefined) {
+      throw new ZeusContractError(
+        `${report}: ${strangers.length} row(s) returned for ${param}=${id} belong elsewhere (e.g. ${describeRow(stranger)}); refusing to attribute them`,
       )
-      return rows
     }
-    return []
+    // Recorded on every run until step 14 confirms which parameter Zeus actually honours. An
+    // empty answer is legitimate for a quiet campaign, and the only sign of a wrong idType.
+    state.warnings.add(
+      rows.length > 0
+        ? `${report}: rows matched with ${param}=${id}`
+        : `${report}: no rows for ${param}=${id} (if the campaign delivered in this window, check the link's idType)`,
+    )
+    return rows
   }
 
   const campaignOf =
@@ -264,9 +275,10 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
       // first link's run of the pass, not under every link that read it.
       const tracker = await memo.getOrLoad(
         `zeus:tracker:${ctx.credential.id}:${window.from}:${window.to}`,
-        () => get(requestContext(ctx), 'tracker', window, zeusTrackerRow, {}, state),
+        () => get(requestContext(ctx), 'tracker', window, zeusTrackerRow),
       )
-      for (const row of tracker) {
+      noteServed(state, window, tracker.to)
+      for (const row of tracker.rows) {
         const entity = matchPixel(row, pixels)
         if (entity) input.tracker.push({ entity, row })
         else
@@ -294,9 +306,16 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     async checkConnection(ctx): Promise<ConnectionCheck> {
       const day = yesterdayIn(ctx.dayTimezone, now())
       try {
-        await get(ctx, 'campaigns', { from: day, to: day }, zeusCampaignsRow, {}, undefined, {
-          deadlineMs: PROBE_DEADLINE_MS,
-        })
+        await get(
+          ctx,
+          'campaigns',
+          { from: day, to: day },
+          zeusCampaignsRow,
+          {},
+          {
+            deadlineMs: PROBE_DEADLINE_MS,
+          },
+        )
         return { ok: true, message: 'Zeus accepted the token' }
       } catch (error) {
         if (error instanceof HttpError) {
@@ -344,16 +363,26 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
       }
 
       checkZeusInvariants(input, (warning) => state.warnings.add(warning))
-      const warnings = [...state.warnings]
-      const rows = mapZeusRows(input, (w) => warnings.push(w))
       const coveredTo = state.servedTo ?? window.to
+      if (coveredTo < window.to) {
+        state.warnings.add(
+          `Zeus served some reports only through ${coveredTo}; ${addDays(coveredTo, 1)}..${window.to} is left for the next run`,
+        )
+      }
+      const warnings = [...state.warnings]
+      if (coveredTo < window.from) return { rows: [], warnings, covered: null }
+      // A day after the last one every report served is incomplete (impressions without the
+      // pixel fires, say): it is neither written nor claimed, and the next run picks it up.
+      const rows = mapZeusRows(input, (w) => warnings.push(w)).filter(
+        (row) => row.date <= coveredTo,
+      )
       return { rows, warnings, covered: { from: window.from, to: coveredTo } }
     },
 
     /** Discovery for onboarding: every pixel the token can see, with fires over the last 7 days. */
     async listPixels(ctx): Promise<PixelSummary[]> {
       const to = yesterdayIn(ctx.dayTimezone, now())
-      const rows = await get(ctx, 'tracker', { from: addDays(to, -6), to }, zeusTrackerRow)
+      const { rows } = await get(ctx, 'tracker', { from: addDays(to, -6), to }, zeusTrackerRow)
       const byPixel = new Map<string, PixelSummary>()
       for (const row of rows) {
         const entry = byPixel.get(row.pixel_id) ?? {

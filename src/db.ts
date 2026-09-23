@@ -108,6 +108,20 @@ function stripSslParams(connectionString: string): string {
 export function createDb(connectionString: string, options: DbOptions = {}): Db {
   const logger = options.logger ?? createLogger('error')
   const sslMode = options.ssl ?? 'verify-full'
+  const sessionSettings = [
+    String(options.statementTimeoutMs ?? DEFAULTS.statementTimeoutMs),
+    String(options.lockTimeoutMs ?? DEFAULTS.lockTimeoutMs),
+    String(options.idleInTransactionTimeoutMs ?? DEFAULTS.idleInTransactionTimeoutMs),
+  ]
+
+  const applySessionSettings = async (client: pg.ClientBase): Promise<void> => {
+    await client.query(
+      `SELECT set_config('statement_timeout', $1, false),
+              set_config('lock_timeout', $2, false),
+              set_config('idle_in_transaction_session_timeout', $3, false)`,
+      sessionSettings,
+    )
+  }
 
   const pool = new pg.Pool({
     connectionString: stripSslParams(connectionString),
@@ -122,10 +136,13 @@ export function createDb(connectionString: string, options: DbOptions = {}): Db 
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
     application_name: options.applicationName ?? DEFAULTS.applicationName,
-    statement_timeout: options.statementTimeoutMs ?? DEFAULTS.statementTimeoutMs,
-    lock_timeout: options.lockTimeoutMs ?? DEFAULTS.lockTimeoutMs,
-    idle_in_transaction_session_timeout:
-      options.idleInTransactionTimeoutMs ?? DEFAULTS.idleInTransactionTimeoutMs,
+    // The timeouts are set on every new connection, not sent as startup parameters: a pooler
+    // (Supavisor) may drop or refuse startup parameters it does not know, and the guards would
+    // then silently not exist. A statement goes through any session pooler. pg-pool (^3.14,
+    // required by the pinned pg) awaits the hook's promise and closes a connection the hook fails
+    // on instead of handing it out without its limits; @types/pg still types the hook as void.
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises -- awaited by pg-pool, see above
+    onConnect: applySessionSettings,
     types: dateAsStringTypes,
   })
 

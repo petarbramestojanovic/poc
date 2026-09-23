@@ -11,8 +11,8 @@ const sql = loadSql(import.meta.url, [
   'insert_delivery',
   'load_delivery_for_period',
   'requeue_delivery',
-  'load_due_deliveries',
-  'load_delivery',
+  'claim_next_delivery',
+  'claim_delivery',
   'record_attempt',
 ] as const)
 
@@ -35,12 +35,13 @@ export interface DeliveryRecord {
   attempts: number
 }
 
-/** A delivery waiting to go out, with everything one attempt needs. */
+/** A delivery claimed for one attempt, with everything that attempt needs. */
 export interface DueDelivery {
   id: string
   webhookId: string
   period: DateWindow
-  attempts: number
+  /** This attempt's number (1 = the first), counted when the row was claimed. */
+  attempt: number
   payload: unknown
   url: string
   secret: string
@@ -140,25 +141,40 @@ const toDueDelivery = (row: DueDeliveryRow): DueDelivery => ({
   id: row.id,
   webhookId: row.webhook_id,
   period: { from: row.period_start, to: row.period_end },
-  attempts: row.attempts,
+  attempt: row.attempts,
   payload: row.payload,
   url: row.url,
   secret: row.secret,
 })
 
-/** One pending delivery by id; undefined once it is delivered or failed. */
-export async function loadDelivery(db: Db, id: string): Promise<DueDelivery | undefined> {
-  const rows = await db.query<DueDeliveryRow>(sql.load_delivery, [id])
+/**
+ * Claims the oldest due delivery for one attempt until `leaseUntil`; undefined when none is due.
+ * A claimed row is invisible to every other claimer while the attempt is in flight.
+ */
+export async function claimNextDelivery(
+  db: Db,
+  now: Date,
+  leaseUntil: Date,
+): Promise<DueDelivery | undefined> {
+  const rows = await db.query<DueDeliveryRow>(sql.claim_next_delivery, [now, leaseUntil])
   return rows[0] ? toDueDelivery(rows[0]) : undefined
 }
 
-export async function loadDueDeliveries(db: Db, now: Date, limit: number): Promise<DueDelivery[]> {
-  const rows = await db.query<DueDeliveryRow>(sql.load_due_deliveries, [now, limit])
-  return rows.map(toDueDelivery)
+/** Claims one delivery by id; undefined when it is not pending, not due, or already in flight. */
+export async function claimDelivery(
+  db: Db,
+  id: string,
+  now: Date,
+  leaseUntil: Date,
+): Promise<DueDelivery | undefined> {
+  const rows = await db.query<DueDeliveryRow>(sql.claim_delivery, [id, now, leaseUntil])
+  return rows[0] ? toDueDelivery(rows[0]) : undefined
 }
 
 export interface AttemptRecord {
   id: string
+  /** The attempt's number from its claim: the row must still carry it for the record to land. */
+  attempt: number
   at: Date
   status: 'pending' | 'delivered' | 'failed'
   nextAttemptAt: Date | null
@@ -166,13 +182,16 @@ export interface AttemptRecord {
   excerpt: string | null
 }
 
-export async function recordAttempt(db: Db, attempt: AttemptRecord): Promise<void> {
-  await db.query(sql.record_attempt, [
+/** False when the row moved on while the attempt was in flight; nothing was written then. */
+export async function recordAttempt(db: Db, attempt: AttemptRecord): Promise<boolean> {
+  const rows = await db.query<{ id: string }>(sql.record_attempt, [
     attempt.id,
     attempt.at,
     attempt.status,
     attempt.nextAttemptAt,
     attempt.responseCode,
     attempt.excerpt,
+    attempt.attempt,
   ])
+  return rows.length > 0
 }

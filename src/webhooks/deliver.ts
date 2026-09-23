@@ -11,6 +11,11 @@ import { assertPublicTarget, type Lookup } from './ssrf.ts'
 // at-least-once: the delivery row is the idempotency record, its id travels in the header and
 // inside the signed body, and it does not change between attempts.
 //
+// Every attempt starts from a claim (repo.claimNextDelivery / claimDelivery), which counts it and
+// leases the row, so a tick, another replica and send-now never send the same row at once. The
+// outcome lands only while the row still carries that count: a stale attempt can neither turn a
+// delivered row back to pending nor overwrite a row a re-send has re-queued.
+//
 // A client's endpoint being down is not an error of ours: it is an outcome written to the row,
 // with the next slot on the ladder. Only the 5th failure ends the delivery as `failed`.
 
@@ -25,6 +30,18 @@ export const RETRY_DELAYS_MS = [
 
 /** Attempts before a delivery is given up on. */
 export const MAX_ATTEMPTS = 5
+
+/**
+ * How long a claimed row stays out of every other claimer's reach: far longer than one attempt
+ * (a 10 s timeout, behind at most one other attempt to the same webhook), short enough that an
+ * attempt that died in flight is retried within minutes.
+ */
+export const DELIVERY_LEASE_MS = 5 * 60_000
+
+/** The end of the lease for a claim made at `now`. */
+export function leaseUntil(now: Date): Date {
+  return new Date(now.getTime() + DELIVERY_LEASE_MS)
+}
 
 /** Enough of the client's answer to debug with, stored redacted (app.webhook_delivery). */
 const EXCERPT_CHARS = 1024
@@ -41,6 +58,8 @@ export interface DeliverDeps {
 }
 
 export interface AttemptOutcome {
+  /** False when the row moved on while this attempt was in flight, so nothing was recorded. */
+  recorded: boolean
   delivered: boolean
   status: 'delivered' | 'pending' | 'failed'
   responseCode: number | null
@@ -56,8 +75,8 @@ export function nextAttemptAt(attempts: number, now: Date): Date | null {
 }
 
 /**
- * Sends one delivery and records the attempt. Never throws for a refused or failed delivery: the
- * outcome is the return value, already persisted.
+ * Sends one claimed delivery and records the attempt. Never throws for a refused or failed
+ * delivery: the outcome is the return value, already persisted.
  */
 export async function deliverOnce(
   deps: DeliverDeps,
@@ -71,8 +90,8 @@ export async function deliverOnce(
   const at = now()
   const result = await attempt(deps, delivery, body, at, log)
 
-  const attempts = delivery.attempts + 1
-  const outcome: AttemptOutcome = result.delivered
+  const attempts = delivery.attempt // counted when the row was claimed
+  const outcome: Omit<AttemptOutcome, 'recorded'> = result.delivered
     ? {
         delivered: true,
         status: 'delivered',
@@ -88,14 +107,24 @@ export async function deliverOnce(
         nextAttemptAt: nextAttemptAt(attempts, at),
       }
 
-  await repo.recordAttempt(deps.db, {
+  const recorded = await repo.recordAttempt(deps.db, {
     id: delivery.id,
+    attempt: attempts,
     at,
     status: outcome.status,
     nextAttemptAt: outcome.nextAttemptAt,
     responseCode: outcome.responseCode,
     excerpt: outcome.excerpt,
   })
+  if (!recorded) {
+    // Re-queued by a re-send, or finished by another attempt, while this one was in flight. The
+    // row already says what happens next; this attempt's outcome is only logged.
+    log.warn(
+      { status: outcome.status, attempt: attempts },
+      'webhook attempt not recorded: the delivery changed while it was in flight',
+    )
+    return { ...outcome, recorded }
+  }
 
   log.info(
     {
@@ -106,7 +135,7 @@ export async function deliverOnce(
     },
     outcome.delivered ? 'webhook delivered' : 'webhook delivery attempt failed',
   )
-  return outcome
+  return { ...outcome, recorded }
 }
 
 interface AttemptResult {

@@ -282,6 +282,40 @@ describe('sync engine', () => {
     })
   })
 
+  it('syncs a window that runs into today only through yesterday, and refuses one with no complete day', async () => {
+    // 10:00 UTC on 09-02: that day is still being counted, so 09-01 is the newest complete one.
+    const now = () => new Date('2026-09-02T10:00:00Z')
+    let asked: { from: string; to: string } | undefined
+    script = (ctx) => {
+      asked = ctx.window
+      return { rows: [row('2026-09-01', 'mpu_v1')], warnings: [], covered: ctx.window }
+    }
+
+    const summary = await sync({}, { now })
+
+    expect(asked).toEqual({ from: '2026-09-01', to: '2026-09-01' })
+    expect(summary.warnings).toContain(
+      'window end 2026-09-02 is not a complete day yet; synced through 2026-09-01 (UTC)',
+    )
+    expect((await state())?.data_complete_through).toBe('2026-09-01')
+    const [recorded] = await db.query<{ window_to: string }>(
+      'SELECT window_to FROM external.sync_run WHERE id = $1',
+      [summary.syncRunId],
+    )
+    expect(recorded?.window_to).toBe('2026-09-01')
+
+    await expect(
+      sync({ window: { from: '2026-09-02', to: '2026-09-30' } }, { now }),
+    ).rejects.toMatchObject({ code: 'window_not_complete', status: 422 })
+    // Refused before a run was opened: the only run is the first one.
+    const [runs] = await db.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM external.sync_run WHERE link_id = $1',
+      [SEED.zeusLinkId],
+    )
+    expect(runs?.n).toBe(1)
+    expect((await state())?.data_complete_through).toBe('2026-09-01')
+  })
+
   it('records the deep flag and the triggering user', async () => {
     const userId = '00000000-0000-4000-8000-0000000000aa'
     const summary = await sync({ deep: true, trigger: 'backfill', triggeredBy: userId })

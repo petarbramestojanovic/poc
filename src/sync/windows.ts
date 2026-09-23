@@ -22,3 +22,18 @@ export function lookbackWindow(
   const to = yesterdayIn(source.dayTimezone, options.now)
   return { from: addDays(to, -(days - 1)), to }
 }
+
+/**
+ * A requested window cut at the newest complete day in the source's day zone, or null when none of
+ * its days is complete yet. Today is still being counted and a future day has nothing: syncing
+ * either would mark it complete in sync_state, which only ever moves forward.
+ */
+export function completeDays(
+  window: DateWindow,
+  source: Pick<SourceRecord, 'dayTimezone'>,
+  now: Date,
+): DateWindow | null {
+  const newest = yesterdayIn(source.dayTimezone, now)
+  if (window.from > newest) return null
+  return window.to > newest ? { from: window.from, to: newest } : window
+}

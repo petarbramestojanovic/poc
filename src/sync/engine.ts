@@ -1,5 +1,12 @@
 import { limitDb, type Db, type Queryable } from '../db.ts'
-import { assertIsoDate, daysInclusive, eachDay, type DateWindow, type IsoDate } from '../dates.ts'
+import {
+  assertIsoDate,
+  daysInclusive,
+  eachDay,
+  yesterdayIn,
+  type DateWindow,
+  type IsoDate,
+} from '../dates.ts'
 import type { HttpClient } from '../http/HttpClient.ts'
 import { redact } from '../http/redact.ts'
 import type { Limiter } from '../limiter.ts'
@@ -16,12 +23,13 @@ import {
   SyncAbortedError,
   SyncError,
   UnknownTargetError,
+  WindowNotCompleteError,
 } from './errors.ts'
 import { groupByDate, mergeRows } from './merge.ts'
 import { assertRegistryMatchesSources, type ConnectorRegistry } from './registry.ts'
 import * as repo from './repo.ts'
 import { createRunMemo, type CanonicalDailyRow, type RunMemo, type SyncContext } from './types.ts'
-import { lookbackWindow } from './windows.ts'
+import { completeDays, lookbackWindow } from './windows.ts'
 import { diffDay, writeDay, type DayDiff } from './writer.ts'
 
 export * from './errors.ts'
@@ -198,9 +206,27 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
     )
   }
 
-  const window =
-    request.window ??
-    lookbackWindow(ctx.source, { deep: request.deep ?? false, now: (deps.now ?? currentTime)() })
+  // Every window ends at the newest complete day, whoever asked for it: a connector is never
+  // asked for a day still being counted, so none can claim one as complete.
+  const now = (deps.now ?? currentTime)()
+  const notes: string[] = []
+  let window: DateWindow
+  if (request.window) {
+    const complete = completeDays(request.window, ctx.source, now)
+    if (!complete) {
+      throw new WindowNotCompleteError(
+        `${request.window.from}..${request.window.to} has no complete ${ctx.link.sourceId} day yet: the newest is ${yesterdayIn(ctx.source.dayTimezone, now)} (${ctx.source.dayTimezone})`,
+      )
+    }
+    if (complete.to !== request.window.to) {
+      notes.push(
+        `window end ${request.window.to} is not a complete day yet; synced through ${complete.to} (${ctx.source.dayTimezone})`,
+      )
+    }
+    window = complete
+  } else {
+    window = lookbackWindow(ctx.source, { deep: request.deep ?? false, now })
+  }
 
   const runId = await repo.openRun(
     db,
@@ -220,7 +246,7 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
     source: ctx.link.sourceId,
     dryRun,
   })
-  const warnings: string[] = []
+  const warnings: string[] = [...notes]
   let httpCalls = 0
 
   try {

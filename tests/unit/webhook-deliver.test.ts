@@ -23,7 +23,7 @@ const delivery = (over: Partial<DueDelivery> = {}): DueDelivery => ({
   id: '9c9f2f2a-6c1e-4a61-9d1a-4a3a5e2b77d1',
   webhookId: '00000000-0000-4000-8000-0000000009b0',
   period: { from: '2026-09-07', to: '2026-09-13' },
-  attempts: 0,
+  attempt: 1,
   payload: { version: 1, delivery_id: '9c9f2f2a-6c1e-4a61-9d1a-4a3a5e2b77d1' },
   url: 'https://client.example.com/hook',
   secret: SECRET,
@@ -32,8 +32,12 @@ const delivery = (over: Partial<DueDelivery> = {}): DueDelivery => ({
 
 const publicLookup: Lookup = () => Promise.resolve([{ address: '93.184.216.34' }])
 
-function setup(answer: Answer, lookup: Lookup = publicLookup) {
-  const db = fakeDb()
+/** The row still carries the attempt's claim, so record_attempt lands (one row back). */
+const recordLands = (text: string) =>
+  text.includes('UPDATE app.webhook_delivery') ? [{ id: delivery().id }] : []
+
+function setup(answer: Answer, lookup: Lookup = publicLookup, respond = recordLands) {
+  const db = fakeDb(respond)
   const http = fakeHttp(answer)
   const deps: DeliverDeps = {
     db: db.db,
@@ -45,7 +49,7 @@ function setup(answer: Answer, lookup: Lookup = publicLookup) {
   return { deps, db, http }
 }
 
-/** The parameters record_attempt was called with: [id, at, status, nextAttemptAt, code, excerpt]. */
+/** record_attempt's parameters: [id, at, status, nextAttemptAt, code, excerpt, attempt]. */
 const attemptParams = (db: ReturnType<typeof fakeDb>) => at(db.matching('webhook_delivery')).params
 
 describe('nextAttemptAt', () => {
@@ -78,6 +82,24 @@ describe('deliverOnce', () => {
     expect(attemptParams(db)[3]).toBeNull()
   })
 
+  it('records only against the attempt number its claim counted', async () => {
+    const { deps, db } = setup(() => response(200))
+    const outcome = await deliverOnce(deps, delivery({ attempt: 3 }))
+    expect(outcome.recorded).toBe(true)
+    expect(attemptParams(db)[6]).toBe(3)
+  })
+
+  it('keeps nothing when the row moved on while the attempt was in flight', async () => {
+    // A re-send re-queued the row, or another attempt finished it: record_attempt matches nothing.
+    const { deps } = setup(
+      () => response(200),
+      publicLookup,
+      () => [],
+    )
+    const outcome = await deliverOnce(deps, delivery())
+    expect(outcome).toMatchObject({ recorded: false, delivered: true })
+  })
+
   it('serialises one webhook against itself', async () => {
     const { deps, http } = setup(() => response(200))
     await deliverOnce(deps, delivery())
@@ -102,7 +124,7 @@ describe('deliverOnce', () => {
       throw new HttpError(503, 'https://client.example.com/hook', 'still down')
     })
 
-    const outcome = await deliverOnce(deps, delivery({ attempts: MAX_ATTEMPTS - 1 }))
+    const outcome = await deliverOnce(deps, delivery({ attempt: MAX_ATTEMPTS }))
 
     expect(outcome).toMatchObject({ delivered: false, status: 'failed', nextAttemptAt: null })
     expect(attemptParams(db)[2]).toBe('failed')
@@ -149,7 +171,7 @@ describe('deliverOnce', () => {
       throw new TypeError('fetch failed')
     })
 
-    const outcome = await deliverOnce(deps, delivery({ attempts: 1 }))
+    const outcome = await deliverOnce(deps, delivery({ attempt: 2 }))
 
     expect(outcome).toMatchObject({ delivered: false, status: 'pending', responseCode: null })
     expect(outcome.nextAttemptAt?.getTime()).toBe(NOW.getTime() + RETRY_DELAYS_MS[1])

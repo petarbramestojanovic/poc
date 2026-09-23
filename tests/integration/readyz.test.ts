@@ -110,6 +110,26 @@ describe('db helpers', () => {
     }
   })
 
+  it('sets the timeouts as session settings, which a session pooler passes through', async () => {
+    // Startup parameters show up as source 'client', and a pooler may drop them on the way; a
+    // setting made by a statement on the connection shows up as 'session'.
+    const db = localDb({ max: 1 })
+    try {
+      const rows = await db.query<{ name: string; source: string }>(
+        `SELECT name, source FROM pg_settings
+          WHERE name IN ('statement_timeout', 'lock_timeout', 'idle_in_transaction_session_timeout')
+          ORDER BY name`,
+      )
+      expect(rows).toEqual([
+        { name: 'idle_in_transaction_session_timeout', source: 'session' },
+        { name: 'lock_timeout', source: 'session' },
+        { name: 'statement_timeout', source: 'session' },
+      ])
+    } finally {
+      await db.close()
+    }
+  })
+
   it('survives an idle connection being terminated by the server instead of crashing the process', async () => {
     const lines: string[] = []
     const logger = createLogger('error', { write: (line: string) => void lines.push(line) })

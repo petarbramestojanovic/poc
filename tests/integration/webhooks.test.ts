@@ -1,11 +1,12 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../../src/app.ts'
 import type { Config } from '../../src/config.ts'
 import { createDb, type Db } from '../../src/db.ts'
 import { createHttpClient, type HttpClient } from '../../src/http/HttpClient.ts'
 import { createLogger } from '../../src/log.ts'
-import { MAX_ATTEMPTS } from '../../src/webhooks/deliver.ts'
+import { DELIVERY_LEASE_MS, leaseUntil, MAX_ATTEMPTS } from '../../src/webhooks/deliver.ts'
 import { webhookPayloadSchema } from '../../src/webhooks/payload.ts'
+import * as repo from '../../src/webhooks/repo.ts'
 import {
   deliverDueDeliveries,
   enqueueDueWebhooks,
@@ -263,6 +264,91 @@ describe('webhook scheduling and delivery', () => {
     expect(row.status).toBe('pending')
     expect(row.response_code).toBeNull()
     expect(row.response_excerpt).toContain('127.0.0.1')
+  })
+
+  it('lets exactly one claimer send a delivery, while its attempt is in flight', async () => {
+    const stub = stubReceiver(() => new Response('ok'))
+    const { promise: gate, resolve: release } = Promise.withResolvers<undefined>()
+    let calls = 0
+    const held: typeof fetch = async (input, init) => {
+      calls += 1
+      await gate
+      return stub.fetchStub(input, init)
+    }
+    await enqueueDueWebhooks(deps(stub.fetchStub))
+
+    // The first tick claims the row and its POST stays open.
+    const first = deliverDueDeliveries(deps(held))
+    await vi.waitFor(() => {
+      expect(calls).toBe(1)
+    })
+    const { id } = await deliveryRow()
+
+    // Meanwhile a second tick (another replica) and send-now's immediate try find nothing to take.
+    expect(await deliverDueDeliveries(deps(stub.fetchStub))).toEqual({
+      attempted: 0,
+      delivered: 0,
+    })
+    expect(await repo.claimDelivery(db, id, MONDAY, leaseUntil(MONDAY))).toBeUndefined()
+
+    release(undefined)
+    expect(await first).toEqual({ attempted: 1, delivered: 1 })
+    expect(stub.received).toHaveLength(1)
+    expect(await deliveryRow()).toMatchObject({ status: 'delivered', attempts: 1 })
+  })
+
+  it('never lets a late outcome overwrite a delivered row or a re-queued one', async () => {
+    const stub = stubReceiver(() => new Response('ok'))
+    await enqueueDueWebhooks(deps(stub.fetchStub))
+    const claimed = await repo.claimNextDelivery(db, MONDAY, leaseUntil(MONDAY))
+    if (!claimed) throw new Error('nothing claimed')
+    expect(claimed.attempt).toBe(1)
+    const outcome = (status: 'delivered' | 'pending', responseCode: number) => ({
+      id: claimed.id,
+      attempt: claimed.attempt,
+      at: MONDAY,
+      status,
+      nextAttemptAt: null,
+      responseCode,
+      excerpt: null,
+    })
+
+    expect(await repo.recordAttempt(db, outcome('delivered', 200))).toBe(true)
+    // Anything arriving after that cannot turn the period back to pending.
+    expect(await repo.recordAttempt(db, outcome('pending', 504))).toBe(false)
+    expect(await deliveryRow()).toMatchObject({ status: 'delivered', response_code: 200 })
+
+    // A re-send re-queues a failed period while an old attempt is still out: the old one's
+    // outcome must not land on the fresh row.
+    await db.query(`UPDATE app.webhook_delivery SET status = 'failed' WHERE id = $1`, [claimed.id])
+    expect(await repo.requeueDelivery(db, claimed.id)).toBe(claimed.id)
+    expect(await repo.recordAttempt(db, outcome('pending', 504))).toBe(false)
+    expect(await deliveryRow()).toMatchObject({
+      status: 'pending',
+      attempts: 0,
+      response_code: null,
+      next_attempt_at: null,
+    })
+  })
+
+  it('claims a delivery again once the lease of an attempt that died in flight runs out', async () => {
+    const stub = stubReceiver(() => new Response('ok'))
+    await enqueueDueWebhooks(deps(stub.fetchStub))
+    // Claimed, then the process dies before the attempt records anything.
+    await repo.claimNextDelivery(db, MONDAY, leaseUntil(MONDAY))
+
+    const withinLease = new Date(MONDAY.getTime() + 60_000)
+    expect(await deliverDueDeliveries(deps(stub.fetchStub, withinLease))).toEqual({
+      attempted: 0,
+      delivered: 0,
+    })
+    const afterLease = new Date(MONDAY.getTime() + DELIVERY_LEASE_MS + 1_000)
+    expect(await deliverDueDeliveries(deps(stub.fetchStub, afterLease))).toEqual({
+      attempted: 1,
+      delivered: 1,
+    })
+    // Both attempts are counted: the lost one and the one that went out.
+    expect(await deliveryRow()).toMatchObject({ status: 'delivered', attempts: 2 })
   })
 
   it('runs both halves of a tick under the leader lock', async () => {

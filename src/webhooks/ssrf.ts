@@ -82,27 +82,36 @@ function isPublicV4(address: string): boolean {
 }
 
 function isPublicV6(address: string): boolean {
-  // An IPv4-mapped or IPv4-embedded address is only as public as the IPv4 address inside it.
-  const embedded = /:((?:\d{1,3}\.){3}\d{1,3})$/.exec(address)
-  if (embedded?.[1] !== undefined) return isPublicV4(embedded[1])
-
+  // Judged on the eight groups, never on how the address was written: the URL parser turns
+  // [::ffff:127.0.0.1] into [::ffff:7f00:1], and fe80::1.2.3.4 is link-local whatever its tail.
   const groups = expandV6(address)
   if (groups === undefined) return false
-  const [first = 0, second = 0] = groups
-  if (groups.every((group) => group === 0)) return false // ::
-  if (groups.slice(0, 7).every((group) => group === 0) && groups[7] === 1) return false // ::1
-  if ((first & 0xfe00) === 0xfc00) return false // unique local fc00::/7
-  if ((first & 0xffc0) === 0xfe80) return false // link-local fe80::/10
-  if ((first & 0xff00) === 0xff00) return false // multicast
-  if (first === 0x0064 && second === 0xff9b) return false // NAT64, wraps an IPv4 destination
-  if (first === 0x0100) return false // discard-only 100::/64
+  const [first = 0, second = 0, , , , sixth = 0, seventh = 0, eighth = 0] = groups
+  // IPv4-mapped ::ffff:0:0/96 is only as public as the IPv4 address in its last 32 bits.
+  if (groups.slice(0, 5).every((group) => group === 0) && sixth === 0xffff) {
+    return isPublicV4(`${seventh >> 8}.${seventh & 0xff}.${eighth >> 8}.${eighth & 0xff}`)
+  }
+  // Every public IPv6 destination is global unicast, 2000::/3. Loopback, unspecified,
+  // IPv4-compatible, NAT64, discard-only, unique local, link-local and multicast all lie outside
+  // it, and so does anything IANA has not assigned yet.
+  if ((first & 0xe000) !== 0x2000) return false
   if (first === 0x2001 && second <= 0x01ff) return false // teredo and IETF protocol assignments
+  if (first === 0x2001 && second === 0x0db8) return false // documentation
   if (first === 0x2002) return false // 6to4, wraps an IPv4 destination
   return true
 }
 
 /** The eight groups of an IPv6 address, or undefined if it is not one we understand. */
 function expandV6(address: string): number[] | undefined {
+  // A dotted IPv4 tail (::ffff:127.0.0.1) is the last two groups written in decimal.
+  const dotted = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address)
+  if (dotted) {
+    const [, head = '', ...parts] = dotted
+    const octets = parts.map(Number)
+    const [a = 0, b = 0, c = 0, d = 0] = octets
+    if (octets.some((octet) => octet > 255)) return undefined
+    return expandV6(`${head}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`)
+  }
   const halves = address.split('::')
   if (halves.length > 2) return undefined
   const parse = (part: string): number[] =>
