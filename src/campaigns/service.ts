@@ -104,7 +104,10 @@ export async function setUpCampaign(
   return result
 }
 
-/** An edit of the campaign's own fields. `null` clears a date; a field left out is untouched. */
+/**
+ * An edit of the campaign's own fields. `null` clears a date or the price; a field left out is
+ * untouched.
+ */
 export async function editCampaign(
   deps: CampaignDeps,
   id: string,
@@ -122,6 +125,7 @@ export async function editCampaign(
       startsOn: patch.startsOn === undefined ? current.startsOn : patch.startsOn,
       endsOn: patch.endsOn === undefined ? current.endsOn : patch.endsOn,
       status: patch.status ?? current.status,
+      price: patch.price === undefined ? current.price : patch.price,
     }
     // The patch alone was checked by its schema; this checks it against what is stored.
     if (next.startsOn !== null && next.endsOn !== null && next.startsOn > next.endsOn) {
@@ -235,6 +239,7 @@ async function createCampaign(
     startsOn: setup.startsOn ?? null,
     endsOn: setup.endsOn ?? null,
     status: setup.status,
+    price: setup.price ?? null,
     externalRef: setup.externalRef,
   })
 }
@@ -256,6 +261,7 @@ async function applyPush(
     startsOn: setup.startsOn ?? current.startsOn,
     endsOn: setup.endsOn ?? current.endsOn,
     status: setup.status ?? current.status,
+    price: setup.price ?? current.price,
   }
   const unchanged = (Object.keys(next) as (keyof repo.CampaignValues)[]).every(
     (key) => JSON.stringify(next[key]) === JSON.stringify(current[key]),

@@ -1,7 +1,7 @@
 -- One campaign with everything that was set up for it.
 SELECT c.id, c.company_id, co.name AS company_name, c.name, c.primary_source, c.timezone,
-       c.languages, c.starts_on, c.ends_on, c.status, c.external_system, c.external_id,
-       c.created_at, c.updated_at,
+       c.languages, c.starts_on, c.ends_on, c.status, c.price, c.currency, c.external_system,
+       c.external_id, c.created_at, c.updated_at,
        coalesce(
          (SELECT jsonb_agg(
                    jsonb_build_object(

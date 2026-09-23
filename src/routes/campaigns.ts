@@ -45,6 +45,7 @@ const campaignResponse = z.object({
   startsOn: z.iso.date().nullable(),
   endsOn: z.iso.date().nullable(),
   status: z.enum(['draft', 'active', 'archived']),
+  price: z.object({ value: z.number(), currency: z.string() }).nullable(),
   externalRef: externalRefResponse,
   createdAt: z.date(),
   updatedAt: z.date(),

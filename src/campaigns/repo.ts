@@ -1,7 +1,7 @@
 import type { Queryable } from '../db.ts'
 import type { IsoDate } from '../dates.ts'
 import { loadSql } from '../sql-file.ts'
-import type { EntitySetup, ExternalRef, SourceSetup } from './input.ts'
+import type { EntitySetup, ExternalRef, Price, SourceSetup } from './input.ts'
 
 // Every campaign-setup statement, one function each. SQL lives in ./sql/*.sql and is read at
 // import time. Rows are turned into the camelCase records the service and the routes speak.
@@ -48,6 +48,7 @@ export interface CampaignRecord {
   startsOn: IsoDate | null
   endsOn: IsoDate | null
   status: CampaignStatus
+  price: Price | null
   externalRef: ExternalRef | null
   createdAt: Date
   updatedAt: Date
@@ -62,6 +63,7 @@ export interface CampaignValues {
   startsOn: IsoDate | null
   endsOn: IsoDate | null
   status: CampaignStatus
+  price: Price | null
 }
 
 interface ExternalRefColumns {
@@ -95,6 +97,9 @@ interface CampaignRow extends ExternalRefColumns {
   starts_on: IsoDate | null
   ends_on: IsoDate | null
   status: CampaignStatus
+  /** numeric comes back as its decimal text, e.g. '15.5876' (numeric(12,4) pads to '20.4000'). */
+  price: string | null
+  currency: string | null
   created_at: Date
   updated_at: Date
 }
@@ -109,6 +114,11 @@ const toCampaign = (row: CampaignRow): CampaignRecord => ({
   startsOn: row.starts_on,
   endsOn: row.ends_on,
   status: row.status,
+  // The table keeps price and currency both set or both NULL (campaign_price_pair).
+  price:
+    row.price !== null && row.currency !== null
+      ? { value: Number(row.price), currency: row.currency }
+      : null,
   externalRef: toRef(row),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -196,6 +206,7 @@ export interface NewCampaign {
   startsOn: IsoDate | null
   endsOn: IsoDate | null
   status: CampaignStatus | undefined
+  price: Price | null
   externalRef: ExternalRef | undefined
 }
 
@@ -211,6 +222,7 @@ export async function insertCampaign(q: Queryable, campaign: NewCampaign): Promi
     campaign.status ?? null,
     campaign.externalRef?.system ?? null,
     campaign.externalRef?.id ?? null,
+    ...priceParams(campaign.price),
   ])
   return toCampaign(required(rows[0], 'insert_campaign'))
 }
@@ -229,9 +241,14 @@ export async function updateCampaign(
     values.startsOn,
     values.endsOn,
     values.status,
+    ...priceParams(values.price),
   ])
   return toCampaign(required(rows[0], 'update_campaign'))
 }
+
+/** The price as its decimal text, so the numeric column stores exactly what was validated. */
+const priceParams = (price: Price | null): [string | null, string | null] =>
+  price === null ? [null, null] : [String(price.value), price.currency]
 
 export interface LinkSummary {
   id: string

@@ -165,15 +165,17 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 
 Companies, campaigns and webhooks are created through admin routes (bearer token), never by SQL. All of them go through one service, `src/campaigns/`, whose input is platform-neutral: the routes, the console form and — later — a CRM adapter build the same `CampaignSetup` and call `setUpCampaign`.
 
-| Route                                                | What it does                                                                       |
-| ---------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `GET /companies` · `POST /companies`                 | List; create (or, with a known `externalRef`, rename)                              |
-| `GET /campaigns[?companyId=]` · `GET /campaigns/:id` | List with links; one campaign with its platform ids                                |
-| `POST /campaigns`                                    | Set a campaign up: `201` created, `200` when its `externalRef` was already known   |
-| `PATCH /campaigns/:id`                               | Edit name, dates, status, headline source, timezone, languages. There is no delete |
-| `GET /webhooks` · `POST /webhooks`                   | List (never a secret); create — the signing secret is in this response only        |
+| Route                                                | What it does                                                                              |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `GET /companies` · `POST /companies`                 | List; create (or, with a known `externalRef`, rename)                                     |
+| `GET /campaigns[?companyId=]` · `GET /campaigns/:id` | List with links; one campaign with its platform ids                                       |
+| `POST /campaigns`                                    | Set a campaign up: `201` created, `200` when its `externalRef` was already known          |
+| `PATCH /campaigns/:id`                               | Edit name, dates, price, status, headline source, timezone, languages. There is no delete |
+| `GET /webhooks` · `POST /webhooks`                   | List (never a secret); create — the signing secret is in this response only               |
 
 **Pushing from another system.** Send `"externalRef": { "system": "salesforce", "id": "<its id>" }` (on the company too) and the call becomes repeatable: the second push finds the campaign it created, updates its own fields and **adds** any source, pixel or creative that is new. It never removes anything and cannot blank a field, so a half-filled CRM record cannot stop a working sync. Refusals are explicit: `409 entity_in_use` names the campaign that already owns a platform id, `409 company_name_exists` asks for `company.id` rather than guessing between namesakes, `422 primary_source_required` when a new campaign has no source or several.
+
+**Price.** `"price": { "value": 20.4, "currency": "EUR" }` is what the client pays for 1000 impressions (CPM, the only pricing model), up to four decimals, currency as an ISO 4217 code. It is optional and stored as `NULL` when not given, never as 0. `PATCH` with `"price": null` clears it; a push cannot.
 
 A new platform needs one preset in `src/campaigns/presets.ts`; a new CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
 

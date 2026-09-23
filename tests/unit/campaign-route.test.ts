@@ -102,6 +102,42 @@ describe('campaign setup routes, refused before the service', () => {
       message: 'slug',
     },
     { name: 'an unknown field', payload: { ...valid, industry: 'food' }, message: 'industry' },
+    {
+      name: 'a price without its currency',
+      payload: { ...valid, price: { value: 20.4 } },
+      message: 'currency',
+    },
+    {
+      name: 'a currency that is not a code',
+      payload: { ...valid, price: { value: 20.4, currency: 'eur' } },
+      message: 'ISO 4217',
+    },
+    {
+      name: 'a currency code that does not exist',
+      payload: { ...valid, price: { value: 20.4, currency: 'EUX' } },
+      message: 'ISO 4217',
+    },
+    {
+      // The column holds four decimals and Postgres would round a fifth without a word.
+      name: 'a price with a fifth decimal',
+      payload: { ...valid, price: { value: 15.58761, currency: 'EUR' } },
+      message: '4 decimal places',
+    },
+    {
+      name: 'a negative price',
+      payload: { ...valid, price: { value: -1, currency: 'EUR' } },
+      message: 'price',
+    },
+    {
+      name: 'a price sent as text',
+      payload: { ...valid, price: { value: '20.4', currency: 'EUR' } },
+      message: 'price',
+    },
+    {
+      name: 'the total instead of the unit price',
+      payload: { ...valid, price: { amount: 8160, currency: 'EUR' } },
+      message: 'amount',
+    },
   ])('POST /campaigns rejects $name with 400', async ({ payload, message }) => {
     const res = await build().inject({ method: 'POST', url: '/campaigns', headers: auth, payload })
     expect(res.statusCode).toBe(400)
@@ -113,6 +149,11 @@ describe('campaign setup routes, refused before the service', () => {
     { name: 'a patch that touches links', payload: { sources: {} } },
     { name: 'a patch that moves the campaign', payload: { company: { id: ID } } },
     { name: 'dates out of order', payload: { startsOn: '2026-09-30', endsOn: '2026-06-30' } },
+    { name: 'a price without its currency', payload: { price: { value: 20.4 } } },
+    {
+      name: 'a price with a fifth decimal',
+      payload: { price: { value: 0.12345, currency: 'EUR' } },
+    },
   ])('PATCH /campaigns/:id rejects $name with 400', async ({ payload }) => {
     const res = await build().inject({
       method: 'PATCH',

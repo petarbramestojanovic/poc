@@ -23,7 +23,7 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 
 - **Ask first** before: changing anything RFC-004 defines (tables, columns, keys, seeds), adding a dependency outside the fixed stack (Fastify, pg, zod, pino, node-cron, cron-parser, Vitest, ESLint, Prettier, Supabase CLI), or building phase 2 work (dashboard, Supabase Auth users, RLS, own ingestion routes, `source = 'brame'` rows, HLL, CSV export, retention purge, backfill, device split).
 - **Additive migrations only.** New indexes are fine and must be flagged in the PR. Never edit an applied migration; add the next numbered file.
-- **Approved deviations from RFC-004** (the RFC files stay verbatim; the migration header is the record): `0004_external_refs.sql` adds `external_system` + `external_id` to `app.company` and `app.campaign` (2026-09-20), so another system can push the same record twice. They identify a row and never describe it: no CRM field belongs in the model.
+- **Approved deviations from RFC-004** (the RFC files stay verbatim; the migration header is the record): `0004_external_refs.sql` adds `external_system` + `external_id` to `app.company` and `app.campaign` (2026-09-20), so another system can push the same record twice. They identify a row and never describe it: no CRM field belongs in the model. `0005_campaign_price.sql` adds `price` + `currency` to `app.campaign` (2026-09-22): the CPM the campaign is sold at, both or neither, `NULL` when not known (never 0).
 - Deferred because they need a new dependency: rate limiting on admin routes (`@fastify/rate-limit`), coverage (`@vitest/coverage-v8`), a metrics endpoint.
 
 ## Domain rules (non-negotiable)

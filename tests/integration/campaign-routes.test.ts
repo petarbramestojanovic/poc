@@ -187,6 +187,23 @@ describe('campaign admin API', () => {
     expect((await get('/campaigns/00000000-0000-4000-8000-00000000dead')).statusCode).toBe(404)
   })
 
+  it('carries the price through create, list, detail and edit', async () => {
+    const price = { value: 20.4, currency: 'EUR' }
+    const { campaign } = (await post('/campaigns', body({ price }))).json<SetupResponse>()
+
+    const listed = (await get('/campaigns')).json<{ id: string; price: unknown }[]>()
+    expect(listed.find((row) => row.id === campaign.id)?.price).toEqual(price)
+    expect((await get(`/campaigns/${campaign.id}`)).json()).toMatchObject({ price })
+
+    const patch = (payload: Record<string, unknown>) =>
+      app.inject({ method: 'PATCH', url: `/campaigns/${campaign.id}`, headers: auth, payload })
+    const repriced = await patch({ price: { value: 15.5876, currency: 'CHF' } })
+    const cleared = await patch({ price: null })
+
+    expect(repriced.json()).toMatchObject({ price: { value: 15.5876, currency: 'CHF' } })
+    expect(cleared.json()).toMatchObject({ price: null })
+  })
+
   it('creates a company once per external reference and lists it with its campaigns', async () => {
     const externalRef = { system: 'salesforce', id: 'it-routes-001' }
     const first = await post('/companies', { name: 'IT Routes Account', externalRef })

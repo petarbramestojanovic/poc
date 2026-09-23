@@ -7,7 +7,9 @@ UPDATE app.campaign
        starts_on = $6::date,
        ends_on = $7::date,
        status = $8,
+       price = $9::numeric,
+       currency = $10,
        updated_at = now()
  WHERE id = $1
 RETURNING id, company_id, name, primary_source, timezone, languages, starts_on, ends_on, status,
-          external_system, external_id, created_at, updated_at;
+          price, currency, external_system, external_id, created_at, updated_at;

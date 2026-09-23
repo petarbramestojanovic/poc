@@ -78,6 +78,29 @@ export const sourceSetupSchema = z.strictObject({
 })
 export type SourceSetup = z.infer<typeof sourceSetupSchema>
 
+const KNOWN_CURRENCIES = new Set(Intl.supportedValuesOf('currency'))
+
+/**
+ * What the client pays for 1000 impressions (CPM), in `currency`. `value` is a JSON number with
+ * at most four decimals: that is what app.campaign.price (numeric(12,4)) holds exactly, and
+ * Postgres would round a fifth silently. Its decimal text is what gets stored, so 15.5876 reads
+ * back as 15.5876.
+ */
+export const priceSchema = z.strictObject({
+  value: z
+    .number()
+    .min(0)
+    .max(99_999_999.9999)
+    .refine((value) => /^\d+(\.\d{1,4})?$/.test(String(value)), {
+      error: 'at most 4 decimal places',
+    }),
+  currency: z
+    .string()
+    .regex(/^[A-Z]{3}$/, 'an ISO 4217 code such as "EUR"')
+    .refine((code) => KNOWN_CURRENCIES.has(code), { error: 'not an ISO 4217 currency' }),
+})
+export type Price = z.infer<typeof priceSchema>
+
 export const CAMPAIGN_STATUSES = ['draft', 'active', 'archived'] as const
 
 /** The campaign's own fields: shared by a setup and by an edit. */
@@ -90,6 +113,8 @@ export const campaignFields = {
   startsOn: z.iso.date().nullable().optional(),
   endsOn: z.iso.date().nullable().optional(),
   status: z.enum(CAMPAIGN_STATUSES).optional(),
+  /** null clears it in an edit; a push, like with the dates, never can. */
+  price: priceSchema.nullable().optional(),
 }
 
 /** Shared by every schema that carries both dates. */

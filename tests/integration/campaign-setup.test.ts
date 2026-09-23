@@ -58,6 +58,15 @@ describe('campaign setup', () => {
     await db.close()
   })
 
+  /** The stored columns themselves, by name: the insert and update pass them positionally. */
+  const storedPrice = async (campaignId: string) =>
+    at(
+      await db.query<{ price: string | null; currency: string | null }>(
+        'SELECT price::text AS price, currency FROM app.campaign WHERE id = $1',
+        [campaignId],
+      ),
+    )
+
   const entitiesOf = (linkId: string) =>
     db.query<{ level: string; external_id: string; role: string | null; campaign_tag: string }>(
       `SELECT level, external_id, role, campaign_tag FROM external.link_entity
@@ -149,6 +158,22 @@ describe('campaign setup', () => {
       const result = await setUpCampaign(deps, setup({ primarySource: 'nexd', status: 'draft' }))
       expect(result.links).toEqual([])
       expect(result.campaign).toMatchObject({ primarySource: 'nexd', status: 'draft' })
+    })
+
+    it('stores the price exactly, and no price as NULL rather than 0', async () => {
+      const priced = await setUpCampaign(
+        deps,
+        setup({ price: { value: 15.5876, currency: 'EUR' } }, zeus()),
+      )
+      const unpriced = await setUpCampaign(
+        deps,
+        setup({ name: 'IT Setup Unpriced', company: { id: priced.company.id } }, nexd),
+      )
+
+      expect(priced.campaign.price).toEqual({ value: 15.5876, currency: 'EUR' })
+      expect(await storedPrice(priced.campaign.id)).toEqual({ price: '15.5876', currency: 'EUR' })
+      expect(unpriced.campaign.price).toBeNull()
+      expect(await storedPrice(unpriced.campaign.id)).toEqual({ price: null, currency: null })
     })
 
     it('derives the campaign languages from its links', async () => {
@@ -287,17 +312,38 @@ describe('campaign setup', () => {
     })
 
     it('cannot blank a field by leaving it out or sending null', async () => {
-      const first = await push({ primarySource: 'zeus' })
-      const second = await push({ startsOn: null, endsOn: undefined })
+      const first = await push({ primarySource: 'zeus', price: { value: 20.4, currency: 'EUR' } })
+      const second = await push({ startsOn: null, endsOn: undefined, price: null })
+      const third = await push({})
 
       expect(second.campaign.startsOn).toBe(first.campaign.startsOn)
       expect(second.campaign.endsOn).toBe(first.campaign.endsOn)
       expect(second.campaign.primarySource).toBe('zeus')
+      expect(third.campaign.price).toEqual({ value: 20.4, currency: 'EUR' })
+      expect(await storedPrice(first.campaign.id)).toEqual({ price: '20.4000', currency: 'EUR' })
+    })
+
+    it('changes the price a push states, such as a renegotiated one', async () => {
+      const first = await push({ primarySource: 'zeus' })
+      const priced = await push({ price: { value: 20.4, currency: 'EUR' } })
+      const repriced = await push({ price: { value: 18.9, currency: 'CHF' } })
+
+      expect(first.campaign.price).toBeNull()
+      expect(priced.campaign.price).toEqual({ value: 20.4, currency: 'EUR' })
+      expect(repriced.campaign.price).toEqual({ value: 18.9, currency: 'CHF' })
+      expect(await storedPrice(first.campaign.id)).toEqual({ price: '18.9000', currency: 'CHF' })
     })
 
     it('writes nothing when the push changes nothing', async () => {
-      const first = await push({ primarySource: 'zeus' }, zeus())
-      const again = await push({ primarySource: 'zeus' }, zeus())
+      const first = await push(
+        { primarySource: 'zeus', price: { value: 20.4, currency: 'EUR' } },
+        zeus(),
+      )
+      // The same price with its keys in the other order is the same price.
+      const again = await push(
+        { primarySource: 'zeus', price: { currency: 'EUR', value: 20.4 } },
+        zeus(),
+      )
 
       expect(again.campaign.updatedAt).toEqual(first.campaign.updatedAt)
       expect(at(again.links)).toMatchObject({ created: false, entitiesAdded: 0 })
@@ -381,6 +427,21 @@ describe('campaign setup', () => {
       expect(edited.endsOn).toBeNull()
     })
 
+    it('sets, changes and clears the price', async () => {
+      const { campaign } = await setUpCampaign(deps, setup({}, zeus()))
+
+      const priced = await editCampaign(deps, campaign.id, {
+        price: { value: 12.8235, currency: 'EUR' },
+      })
+      const renamed = await editCampaign(deps, campaign.id, { name: 'IT Setup Renamed' })
+      expect(priced.price).toEqual({ value: 12.8235, currency: 'EUR' })
+      expect(renamed.price).toEqual({ value: 12.8235, currency: 'EUR' })
+
+      const cleared = await editCampaign(deps, campaign.id, { price: null })
+      expect(cleared.price).toBeNull()
+      expect(await storedPrice(campaign.id)).toEqual({ price: null, currency: null })
+    })
+
     it('checks a new date against the stored one', async () => {
       const { campaign } = await setUpCampaign(deps, setup({}, zeus()))
       await expect(editCampaign(deps, campaign.id, { endsOn: '2026-01-01' })).rejects.toMatchObject(
@@ -399,6 +460,31 @@ describe('campaign setup', () => {
       await expect(
         editCampaign(deps, '00000000-0000-4000-8000-00000000dead', { name: 'x' }),
       ).rejects.toMatchObject({ code: 'campaign_not_found', status: 404 })
+    })
+  })
+
+  describe('migration 0005_campaign_price', () => {
+    // One statement, so a refused campaign takes its company with it.
+    const insertCampaign = (price: string | null, currency: string | null) =>
+      db.query(
+        `WITH company AS (INSERT INTO app.company (name) VALUES ('IT Setup Raw') RETURNING id)
+         INSERT INTO app.campaign (company_id, name, primary_source, price, currency)
+         SELECT id, 'IT Setup Raw', 'zeus', $1::numeric, $2 FROM company`,
+        [price, currency],
+      )
+
+    it('wants a price and its currency together, or neither', async () => {
+      expect(await sqlstateOf(() => insertCampaign('20.4', null))).toBe('23514')
+      expect(await sqlstateOf(() => insertCampaign(null, 'EUR'))).toBe('23514')
+      expect(await sqlstateOf(() => insertCampaign(null, null))).toBeUndefined()
+      expect(await sqlstateOf(() => insertCampaign('20.4', 'EUR'))).toBeUndefined()
+    })
+
+    it('wants a price of 0 or more and a currency code in capitals', async () => {
+      expect(await sqlstateOf(() => insertCampaign('-0.01', 'EUR'))).toBe('23514')
+      expect(await sqlstateOf(() => insertCampaign('20.4', 'eur'))).toBe('23514')
+      expect(await sqlstateOf(() => insertCampaign('20.4', 'EURO'))).toBe('23514')
+      expect(await sqlstateOf(() => insertCampaign('0', 'EUR'))).toBeUndefined()
     })
   })
 
