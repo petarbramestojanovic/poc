@@ -2,7 +2,7 @@
 
 Phase 1 of the standalone analytics product for playable-ad campaigns. Some creatives are served by third-party ad platforms that own the analytics: **NEXD** and **Zeus** (the adserver behind our ATK tracking pixels). This service pulls those numbers into our own Postgres nightly and on demand, stores them as day-replaced rows per source (never summed across sources), and pushes a signed, versioned JSON report to each client's HTTPS endpoint on a per-client schedule. It is one Node service on Render plus one Supabase Postgres project; there is no UI in phase 1, operators use the CLI.
 
-Design of record: [RFC-004](docs/RFC-004-phase1-database-schema.md) (schema), [RFC-003](docs/RFC-003-external-analytics-adapter.md) (connectors and sync), [RFC-002](docs/RFC-002-standalone-analytics-app-supabase.md) (platform), and the [phase 1 plan](docs/PHASE1-PLAN-PROMPT.md). Working rules for contributors and coding agents: [CLAUDE.md](CLAUDE.md).
+Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (platform), and the phase 1 plan. This repo holds the application only; those documents, the runbook and the client payload contract live in a `docs/` folder beside it that is deliberately not committed. Working rules for contributors and coding agents: [CLAUDE.md](CLAUDE.md).
 
 ## Architecture
 
@@ -41,9 +41,8 @@ database holds only the _name_ of the variable — with one deliberate exception
 secret, which we mint per client and which signs nothing but our own payloads.
 
 Reads never sum across sources: every function answers for one source, and a campaign's
-`primary_source` is its headline. The details that a client's integration depends on are in
-[docs/WEBHOOK-PAYLOAD-v1.md](docs/WEBHOOK-PAYLOAD-v1.md); how to operate all of it is in
-[docs/RUNBOOK.md](docs/RUNBOOK.md).
+`primary_source` is its headline. The details that a client's integration depends on are in `docs/WEBHOOK-PAYLOAD-v1.md`; how to
+operate all of it is in `docs/RUNBOOK.md`. Both are kept outside this repo.
 
 ## Stack
 
@@ -196,8 +195,7 @@ curl -X POST http://127.0.0.1:3000/webhooks/<webhook id>/send-now \
 ```
 
 The body a client receives, and the rules for reading its numbers, are documented for them in
-[docs/WEBHOOK-PAYLOAD-v1.md](docs/WEBHOOK-PAYLOAD-v1.md). Setting one up from scratch is
-[docs/RUNBOOK.md §2–3](docs/RUNBOOK.md).
+`docs/WEBHOOK-PAYLOAD-v1.md`. Setting one up from scratch is `docs/RUNBOOK.md` §2–3.
 
 ## Branches
 

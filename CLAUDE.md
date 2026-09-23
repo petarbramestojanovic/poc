@@ -2,7 +2,9 @@
 
 Phase 1 of the standalone analytics product: nightly and on-demand sync of **NEXD** and **Zeus (ATK)** analytics into Postgres, then signed, scheduled report webhooks to clients. One Node service (Render) plus one Supabase Postgres project. No UI in phase 1.
 
-Design of record, in order of precedence: [RFC-004](docs/RFC-004-phase1-database-schema.md) (schema), [RFC-003](docs/RFC-003-external-analytics-adapter.md) (connectors, sync), [RFC-002](docs/RFC-002-standalone-analytics-app-supabase.md) (platform), [phase 1 plan](docs/PHASE1-PLAN-PROMPT.md) (steps and done-when criteria). When this file and an RFC disagree, the RFC wins; say so instead of picking silently.
+Design of record, in order of precedence: `docs/RFC-004-phase1-database-schema.md` (schema), `docs/RFC-003-external-analytics-adapter.md` (connectors, sync), `docs/RFC-002-standalone-analytics-app-supabase.md` (platform), `docs/PHASE1-PLAN-PROMPT.md` (steps and done-when criteria). When this file and an RFC disagree, the RFC wins; say so instead of picking silently.
+
+**The repo is the application only.** `docs/` (those four, plus `RUNBOOK.md` and the client contract `WEBHOOK-PAYLOAD-v1.md`) and `dev/` (the throwaway console and webhook receiver) are git-ignored: they exist on the maintainer's machine, so read them from disk and keep them up to date there, but never expect them in a clone or add them back to the repo.
 
 The rules below are distilled from the September 2026 code review of steps 1–7 (69 findings). Most of them exist because a guard was declared but did not hold under the condition it was written for. Keep the guards real.
 

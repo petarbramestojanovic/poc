@@ -10,6 +10,12 @@ coverage/
 # supabase local stack
 supabase/.temp/
 supabase/.branches/
+supabase/snippets/
+
+# not part of the application: the design docs (RFC-002/003/004, the runbook, the client payload
+# contract) and the throwaway local tools. Kept on disk, never committed.
+docs/
+dev/
 
 *.log
 .DS_Store
