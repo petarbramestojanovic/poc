@@ -12,6 +12,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/copy-sql.ts",
     "build:smoke": "node scripts/smoke-build.ts",
+    "check:migrations": "node scripts/check-migrations.ts",
     "start": "node --enable-source-maps dist/index.js",
     "sync": "node --enable-source-maps --env-file-if-exists=.env src/cli/sync.ts",
     "typecheck": "tsc --noEmit",
@@ -37,7 +38,7 @@
   },
   "dependencies": {
     "cron-parser": "5.10.1",
-    "fastify": "5.12.4",
+    "fastify": "5.12.5",
     "node-cron": "4.6.0",
     "pg": "8.23.0",
     "pino": "10.3.1",

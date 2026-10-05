@@ -126,20 +126,21 @@ The trigger answers `202` with the run id as soon as the run is open, `429` insi
 
 ## Scripts
 
-| Script                     | What it does                                                      |
-| -------------------------- | ----------------------------------------------------------------- |
-| `npm run dev`              | Run `src/index.ts` on Node with `--watch`, loading `.env`         |
-| `npm run build`            | Clean `dist/`, compile `src/`, copy the `sql/` directories        |
-| `npm run build:smoke`      | Import the built modules, proving every `.sql` file was copied    |
-| `npm start`                | Run the compiled service with source maps (`dist/index.js`)       |
-| `npm run sync -- …`        | Operator sync CLI: one link, the nightly pass, key checks, pixels |
-| `npm run typecheck`        | `tsc --noEmit` over `src/`, `tests/` and config files             |
-| `npm run lint`             | ESLint (type-aware) + Prettier check                              |
-| `npm run lint:fix`         | Same, applying fixes                                              |
-| `npm test`                 | Unit tests (Vitest project `unit`, no database needed)            |
-| `npm run test:integration` | Integration tests against the local Supabase Postgres             |
-| `npm run test:all`         | Both Vitest projects                                              |
-| `npm run db:reset`         | `supabase db reset`: recreate the local DB from migrations + seed |
+| Script                     | What it does                                                        |
+| -------------------------- | ------------------------------------------------------------------- |
+| `npm run dev`              | Run `src/index.ts` on Node with `--watch`, loading `.env`           |
+| `npm run build`            | Clean `dist/`, compile `src/`, copy the `sql/` directories          |
+| `npm run build:smoke`      | Import the built modules, proving every `.sql` file was copied      |
+| `npm run check:migrations` | `-- <base-ref>`: fail if a migration on the base was edited/removed |
+| `npm start`                | Run the compiled service with source maps (`dist/index.js`)         |
+| `npm run sync -- …`        | Operator sync CLI: one link, the nightly pass, key checks, pixels   |
+| `npm run typecheck`        | `tsc --noEmit` over `src/`, `tests/` and config files               |
+| `npm run lint`             | ESLint (type-aware) + Prettier check                                |
+| `npm run lint:fix`         | Same, applying fixes                                                |
+| `npm test`                 | Unit tests (Vitest project `unit`, no database needed)              |
+| `npm run test:integration` | Integration tests against the local Supabase Postgres               |
+| `npm run test:all`         | Both Vitest projects                                                |
+| `npm run db:reset`         | `supabase db reset`: recreate the local DB from migrations + seed   |
 
 ## Environment variables
 
@@ -158,6 +159,7 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 | `TRUST_PROXY_HOPS`          | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                            |
 | `SYNC_SCHEDULER_ENABLED`    | Run the 04:00 Europe/Zurich nightly pass in this process (default `true`)                                      |
 | `WEBHOOK_SCHEDULER_ENABLED` | Run the minutely webhook tick in this process (default `true`)                                                 |
+| `RENDER_GIT_COMMIT`         | Set by Render; `/healthz` reports it so a deploy can wait for its own commit                                   |
 | `TZ`                        | Always `UTC`; sources and schedules carry explicit timezones                                                   |
 
 ## Campaign setup API
@@ -197,6 +199,16 @@ curl -X POST http://127.0.0.1:3000/webhooks/<webhook id>/send-now \
 The body a client receives, and the rules for reading its numbers, are documented for them in
 `docs/WEBHOOK-PAYLOAD-v1.md`. Setting one up from scratch is `docs/RUNBOOK.md` §2–3.
 
+## CI/CD
+
+GitHub Actions, in `.github/workflows/`:
+
+- **`ci.yml`**, on every pull request to `main`: the migration guard (`check:migrations` against the base), `typecheck`, `lint`, unit tests, `build` + `build:smoke`, `npm audit --audit-level=high`, and the integration tests against a Postgres-only local Supabase stack that applies every migration from zero plus `seed.sql`. It needs no secrets.
+- **`deploy-staging.yml`**, on every push to `main`: runs `ci.yml` on the merged commit, applies new migrations to the staging database (`supabase db push`, never the seed), deploys that commit through Render's deploy hook, and waits until `/healthz` reports it. Render's own auto-deploy is off, so code never starts before its migration.
+- **Dependabot** opens weekly grouped updates for npm and the actions.
+
+Setup, secrets and rollback are in `docs/RUNBOOK.md` §10.
+
 ## Branches
 
-`main` is the dev environment, `prod` is production; both change through pull requests only. Each build step lands on its own feature branch with a green `typecheck`, `lint` and `test`.
+`main` is staging: it changes through pull requests only, and every merge deploys. Production comes later from a `release` branch that `main` is merged into once staging is tested; it is not set up yet. Each build step lands on its own feature branch with a green `typecheck`, `lint` and `test`.

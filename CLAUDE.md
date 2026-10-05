@@ -17,9 +17,12 @@ npm test                   # unit tests, no database
 npm run test:integration   # needs `npx supabase start` and DATABASE_URL (see .env.example)
 npm run build && npm run build:smoke   # compile, copy sql/, import the built modules
 npx supabase migration up  # apply new migrations locally; `npm run db:reset` recreates + seeds
+npm run check:migrations -- origin/main   # the CI migration guard: append-only against a base
 ```
 
 A change is done when `typecheck`, `lint`, `test` and `test:integration` are all green. Run `build:smoke` whenever you add, rename or move a `.sql` file or touch the build.
+
+CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `npm audit`, on every PR to `main`, with no secrets. Every merge to `main` deploys **staging** (`deploy-staging.yml`: CI, `supabase db push`, Render deploy hook, wait for `/healthz` to report the commit). Production will come from a `release` branch and is not built yet: do not add prod jobs unasked. Setup and rollback: `docs/RUNBOOK.md` §10.
 
 ## Scope and change control
 

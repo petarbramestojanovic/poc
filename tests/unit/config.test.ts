@@ -41,6 +41,15 @@ describe('loadConfig', () => {
     )
   })
 
+  it('reads the deployed commit from RENDER_GIT_COMMIT, absent locally', () => {
+    const sha = '3d3c42e5aac5ba805825da76410c181273ba90b1'
+    expect(loadConfig({ ...valid, RENDER_GIT_COMMIT: sha }).commit).toBe(sha)
+    expect(loadConfig({ ...valid, RENDER_GIT_COMMIT: '' })).not.toHaveProperty('commit')
+    expect(() => loadConfig({ ...valid, RENDER_GIT_COMMIT: 'main; rm -rf' })).toThrow(
+      'RENDER_GIT_COMMIT',
+    )
+  })
+
   it('ignores unrelated variables and empty values', () => {
     expect(() => loadConfig({ ...valid, NEXD_API_KEY: '', HOME: '/x' })).not.toThrow()
   })

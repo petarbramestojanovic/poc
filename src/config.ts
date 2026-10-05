@@ -57,6 +57,11 @@ const serviceSchema = z
     SYNC_SCHEDULER_ENABLED: z.stringbool().default(true),
     /** Runs the minutely webhook tick in this process. Same leader-lock rule as the nightly pass. */
     WEBHOOK_SCHEDULER_ENABLED: z.stringbool().default(true),
+    /** Set by Render to the deployed commit. /healthz reports it so a deploy can see it is live. */
+    RENDER_GIT_COMMIT: z
+      .string()
+      .regex(/^[0-9a-f]{7,40}$/, 'must be a git commit SHA')
+      .optional(),
   })
   .superRefine(checkDatabase)
 
@@ -76,6 +81,8 @@ export interface Config extends RuntimeConfig {
   readonly trustProxyHops: number
   readonly syncSchedulerEnabled: boolean
   readonly webhookSchedulerEnabled: boolean
+  /** The deployed commit, when the host tells us (Render does). */
+  readonly commit?: string
 }
 
 export class ConfigError extends Error {
@@ -121,5 +128,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxyHops: data.TRUST_PROXY_HOPS,
     syncSchedulerEnabled: data.SYNC_SCHEDULER_ENABLED,
     webhookSchedulerEnabled: data.WEBHOOK_SCHEDULER_ENABLED,
+    ...(data.RENDER_GIT_COMMIT === undefined ? {} : { commit: data.RENDER_GIT_COMMIT }),
   }
 }

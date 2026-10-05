@@ -48,6 +48,14 @@ describe('app', () => {
     const app = build({ db: fakeDb(() => Promise.reject(new Error('down'))) })
     const res = await app.inject({ method: 'GET', url: '/healthz' })
     expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ status: 'ok', commit: null })
+  })
+
+  it('/healthz reports the deployed commit, which the deploy waits for', async () => {
+    const commit = '3d3c42e5aac5ba805825da76410c181273ba90b1'
+    const app = build({ config: { ...config, commit } })
+    const res = await app.inject({ method: 'GET', url: '/healthz' })
+    expect(res.json()).toEqual({ status: 'ok', commit })
   })
 
   it('/readyz is 503 when the database query fails', async () => {
