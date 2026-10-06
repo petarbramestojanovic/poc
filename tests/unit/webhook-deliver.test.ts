@@ -53,15 +53,17 @@ function setup(answer: Answer, lookup: Lookup = publicLookup, respond = recordLa
 const attemptParams = (db: ReturnType<typeof fakeDb>) => at(db.matching('webhook_delivery')).params
 
 describe('nextAttemptAt', () => {
-  it('walks the ladder', () => {
-    const waits = [1, 2, 3, 4].map((attempts) => {
+  it('walks every rung of the ladder, 12 h included', () => {
+    const waits = [1, 2, 3, 4, 5].map((attempts) => {
       const next = nextAttemptAt(attempts, NOW)
       return (next?.getTime() ?? 0) - NOW.getTime()
     })
-    expect(waits).toEqual(RETRY_DELAYS_MS.slice(0, 4))
+    expect(waits).toEqual([60_000, 300_000, 1_800_000, 7_200_000, 43_200_000])
+    expect(waits).toEqual([...RETRY_DELAYS_MS])
   })
 
-  it('ends after the last attempt', () => {
+  it('ends after the sixth attempt', () => {
+    expect(MAX_ATTEMPTS).toBe(6)
     expect(nextAttemptAt(MAX_ATTEMPTS, NOW)).toBeNull()
   })
 })
@@ -75,9 +77,14 @@ describe('deliverOnce', () => {
     expect(outcome).toMatchObject({ delivered: true, status: 'delivered', responseCode: 200 })
     const sent = at(http.requests)
     expect(sent.bodyText).toBe(JSON.stringify(delivery().payload))
-    expect(verifyBody(sent.bodyText ?? '', SECRET, sent.headers?.['x-signature'])).toBe(true)
+    const timestamp = sent.headers?.['x-timestamp']
+    expect(timestamp).toBe(String(NOW.getTime() / 1000))
+    // The signature covers the timestamp header too: the client verifies both together.
+    expect(verifyBody(timestamp, sent.bodyText ?? '', SECRET, sent.headers?.['x-signature'])).toBe(
+      true,
+    )
     expect(sent.headers?.['x-delivery-id']).toBe(delivery().id)
-    expect(sent.headers?.['x-timestamp']).toBe(String(NOW.getTime() / 1000))
+    expect(sent.headers?.['x-payload-version']).toBe('1')
     expect(attemptParams(db)[2]).toBe('delivered')
     expect(attemptParams(db)[3]).toBeNull()
   })
@@ -119,7 +126,7 @@ describe('deliverOnce', () => {
     expect(String(attemptParams(db)[5])).toContain('upstream boom')
   })
 
-  it('gives up after the fifth attempt', async () => {
+  it('gives up after the sixth attempt', async () => {
     const { deps, db } = setup(() => {
       throw new HttpError(503, 'https://client.example.com/hook', 'still down')
     })
@@ -128,6 +135,23 @@ describe('deliverOnce', () => {
 
     expect(outcome).toMatchObject({ delivered: false, status: 'failed', nextAttemptAt: null })
     expect(attemptParams(db)[2]).toBe('failed')
+  })
+
+  it('schedules the last retry 12 h after the fifth failure', async () => {
+    const { deps } = setup(() => {
+      throw new HttpError(503, 'https://client.example.com/hook', 'still down')
+    })
+
+    const outcome = await deliverOnce(deps, delivery({ attempt: MAX_ATTEMPTS - 1 }))
+
+    expect(outcome).toMatchObject({ delivered: false, status: 'pending' })
+    expect(outcome.nextAttemptAt?.getTime()).toBe(NOW.getTime() + 12 * 3_600_000)
+  })
+
+  it('sends no version header for a body that carries none', async () => {
+    const { deps, http } = setup(() => response(200))
+    await deliverOnce(deps, delivery({ payload: { delivery_id: 'x' } }))
+    expect(at(http.requests).headers).not.toHaveProperty('x-payload-version')
   })
 
   it('treats a 3xx the client answered with as undelivered', async () => {

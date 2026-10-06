@@ -3,14 +3,22 @@ import type { Db } from '../db.ts'
 import { redactUrl } from '../http/redact.ts'
 import type { Logger } from '../log.ts'
 import { loadSql } from '../sql-file.ts'
-import { InvalidScheduleError, InvalidWebhookError } from './errors.ts'
+import { InvalidScheduleError, InvalidWebhookError, WebhookNotFoundError } from './errors.ts'
+import {
+  fieldWarnings,
+  loadScope,
+  validateFields,
+  type CompiledFields,
+  type PayloadFields,
+} from './fields.ts'
 import type { ReportWindow } from './periods.ts'
 import { nextRunAfter } from './scheduler.ts'
 import { assertPublicTarget, type Lookup } from './ssrf.ts'
 
-// Creating and listing client webhooks (RFC-002 §15.3). Everything that can make a webhook
-// undeliverable is refused here, when a person is looking, instead of at its first tick: a cron
-// that does not parse, a target that is not public HTTPS, a campaign of another company.
+// Creating, listing and changing client webhooks (RFC-002 §15.3). Everything that can make a
+// webhook undeliverable is refused here, when a person is looking, instead of at its first tick: a
+// cron that does not parse, a target that is not public HTTPS, a campaign of another company, a
+// formula that cannot be read or can never have a value (src/webhooks/fields.ts).
 //
 // The signing secret is minted here and returned exactly once. It is the one secret this service
 // keeps in the database (RFC-002 §15.5): it is per client, we generate it, and it signs nothing
@@ -20,6 +28,7 @@ const sql = loadSql(import.meta.url, [
   'insert_webhook',
   'list_webhooks',
   'company_campaigns',
+  'update_payload_fields',
 ] as const)
 
 export interface WebhookAdminDeps {
@@ -42,6 +51,8 @@ export interface NewWebhook {
   includeCheckSources?: boolean | undefined
   includeCreatives?: boolean | undefined
   enabled?: boolean | undefined
+  /** What the body carries (fields.ts). Omitted or null = the full v1 body. */
+  fields?: PayloadFields | null | undefined
 }
 
 export interface WebhookSummary {
@@ -59,6 +70,8 @@ export interface WebhookSummary {
   enabled: boolean
   nextRunAt: Date
   createdAt: Date
+  /** The stored field list; null = the full v1 body. */
+  fields: Record<string, unknown> | null
   lastDelivery: {
     id: string
     status: 'pending' | 'delivered' | 'failed'
@@ -115,6 +128,8 @@ export async function createWebhook(
       `not campaigns of company ${input.companyId}: ${foreign.join(', ')}`,
     )
   }
+  const fields = input.fields ?? null
+  const compiled = fields === null ? null : await validateFields(deps.db, fields)
 
   const secret = mintSecret()
   const [row] = await deps.db.query<{ id: string }>(sql.insert_webhook, [
@@ -130,6 +145,7 @@ export async function createWebhook(
     input.includeCreatives ?? true,
     input.enabled ?? true,
     nextRunAt,
+    fields === null ? null : JSON.stringify(fields),
   ])
   if (!row) throw new Error('insert_webhook returned no row')
 
@@ -140,7 +156,58 @@ export async function createWebhook(
     { webhookId: webhook.id, companyId: webhook.companyId, url: redactUrl(webhook.url), nextRunAt },
     'webhook created',
   )
-  return { webhook, secret, warnings: scheduleWarnings(nextRunAt, timezone) }
+  return {
+    webhook,
+    secret,
+    warnings: [
+      ...scheduleWarnings(nextRunAt, timezone),
+      ...(await warningsFor(deps.db, compiled, input.companyId, wanted)),
+    ],
+  }
+}
+
+export interface UpdatedWebhook {
+  webhook: WebhookSummary
+  warnings: string[]
+}
+
+/**
+ * Replaces what a webhook delivers; null goes back to the full v1 body. Validated like at
+ * creation. Applies from the next body built: a delivery already queued keeps the body it has.
+ */
+export async function updateWebhookFields(
+  deps: WebhookAdminDeps,
+  id: string,
+  fields: PayloadFields | null,
+): Promise<UpdatedWebhook> {
+  const compiled = fields === null ? null : await validateFields(deps.db, fields)
+  const [target] = await deps.db.query<{ company_id: string; campaign_ids: string[] | null }>(
+    sql.update_payload_fields,
+    [id, fields === null ? null : JSON.stringify(fields)],
+  )
+  if (!target) throw new WebhookNotFoundError(`webhook ${id} does not exist`)
+
+  const [webhook] = await listWebhooks(deps.db, id)
+  if (!webhook) throw new WebhookNotFoundError(`webhook ${id} does not exist`)
+
+  deps.log.info(
+    { webhookId: id, calculated: fields?.calculated.map((field) => field.name) ?? [] },
+    'webhook field list changed',
+  )
+  return {
+    webhook,
+    warnings: await warningsFor(deps.db, compiled, target.company_id, target.campaign_ids),
+  }
+}
+
+async function warningsFor(
+  db: Db,
+  fields: CompiledFields | null,
+  companyId: string,
+  campaignIds: readonly string[] | null,
+): Promise<string[]> {
+  if (fields === null || fields.calculated.length === 0) return []
+  return fieldWarnings(fields, await loadScope(db, companyId, campaignIds))
 }
 
 export async function listWebhooks(db: Db, id?: string): Promise<WebhookSummary[]> {
@@ -159,6 +226,7 @@ export async function listWebhooks(db: Db, id?: string): Promise<WebhookSummary[
     enabled: boolean
     next_run_at: Date
     created_at: Date
+    payload_fields: Record<string, unknown> | null
     last_delivery: WebhookSummary['lastDelivery']
   }>(sql.list_webhooks, [id ?? null])
   return rows.map((row) => ({
@@ -176,6 +244,7 @@ export async function listWebhooks(db: Db, id?: string): Promise<WebhookSummary[
     enabled: row.enabled,
     nextRunAt: row.next_run_at,
     createdAt: row.created_at,
+    fields: row.payload_fields,
     lastDelivery: row.last_delivery,
   }))
 }

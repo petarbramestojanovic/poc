@@ -48,3 +48,24 @@ export class InvalidWebhookError extends WebhookError {
   override readonly code = 'invalid_webhook'
   override readonly status = 422
 }
+
+/**
+ * The payload builder produced a body outside contract v1 (src/webhooks/payload.ts). A bug on our
+ * side, never the caller's: a field list is only applied to a body the contract recognises.
+ */
+export class PayloadContractError extends WebhookError {
+  override readonly name = 'PayloadContractError'
+  override readonly code = 'payload_contract'
+  override readonly status = 500
+}
+
+/**
+ * A calculated field that cannot be computed as written: its formula does not parse, names a
+ * variable that does not exist, or uses a metric its source does not measure. The message says
+ * which field and, for a syntax error, at which character.
+ */
+export class InvalidFormulaError extends WebhookError {
+  override readonly name = 'InvalidFormulaError'
+  override readonly code = 'invalid_formula'
+  override readonly status = 422
+}

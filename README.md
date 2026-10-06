@@ -185,11 +185,23 @@ A new platform needs one preset in `src/campaigns/presets.ts`; a new CRM needs o
 A webhook is a row in `app.webhook`, created with `POST /webhooks`: the client's HTTPS endpoint, a
 signing secret we generate and show once, a cron expression with a timezone, and which campaigns it
 covers. A minutely tick enqueues the period
-that has closed, builds the body in Postgres, signs the exact bytes it sends and POSTs them; one
-`app.webhook_delivery` row per (webhook, period) is the idempotency record and its id is the
-`X-Delivery-Id` header. Failures retry at 1 min, 5 min, 30 min and 2 h, five attempts in all.
+that has closed, builds the body in Postgres, signs the timestamp and the exact bytes it sends and
+POSTs them; one `app.webhook_delivery` row per (webhook, period) is the idempotency record and its id
+is the `X-Delivery-Id` header. Failures retry at 1 min, 5 min, 30 min, 2 h and 12 h, six attempts in
+all.
+
+**What it delivers** can be narrowed per webhook with a field list (`fields` on `POST /webhooks` or
+`PATCH /webhooks/:id`): which metrics, which lists, and calculated fields written as formulas, e.g.
+`{ "name": "cost", "formula": "impressions / 1000 * price", "source": "zeus" }`. Formulas are parsed,
+never evaluated as code, checked against what their source measures before they are saved, and
+computed exactly at every level of the report (`src/webhooks/fields.ts`, `formula.ts`).
 
 ```sh
+# the body a delivery of this period would carry; stores and sends nothing
+curl -X POST http://127.0.0.1:3000/webhooks/<webhook id>/preview \
+  -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+  -d '{"period_start": "2026-09-07", "period_end": "2026-09-13"}'
+
 # an out-of-schedule delivery, e.g. to test a new endpoint
 curl -X POST http://127.0.0.1:3000/webhooks/<webhook id>/send-now \
   -H 'authorization: Bearer <token>' -H 'content-type: application/json' \

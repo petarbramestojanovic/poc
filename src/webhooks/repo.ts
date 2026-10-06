@@ -27,6 +27,9 @@ export interface WebhookRecord {
   reportWindow: ReportWindow
   enabled: boolean
   nextRunAt: Date
+  includeCreatives: boolean
+  /** app.webhook.payload_fields as stored; fields.ts reads it (readStoredFields). */
+  payloadFields: unknown
 }
 
 export interface DeliveryRecord {
@@ -59,6 +62,8 @@ interface WebhookRow {
   report_window: ReportWindow
   enabled: boolean
   next_run_at: Date
+  include_creatives: boolean
+  payload_fields: unknown
 }
 
 const toWebhook = (row: WebhookRow): WebhookRecord => ({
@@ -71,6 +76,8 @@ const toWebhook = (row: WebhookRow): WebhookRecord => ({
   reportWindow: row.report_window,
   enabled: row.enabled,
   nextRunAt: row.next_run_at,
+  includeCreatives: row.include_creatives,
+  payloadFields: row.payload_fields,
 })
 
 export async function loadWebhook(q: Queryable, id: string): Promise<WebhookRecord | undefined> {
@@ -91,18 +98,23 @@ export async function updateNextRun(q: Queryable, id: string, nextRunAt: Date): 
   await q.query(sql.update_next_run, [id, nextRunAt])
 }
 
-/** Inserts the delivery and its payload; undefined when the period already has a row. */
+/**
+ * Inserts the delivery with the body it will send (build.ts), its id stamped in; undefined when
+ * the period already has a row.
+ */
 export async function insertDelivery(
   q: Queryable,
   webhookId: string,
   period: DateWindow,
   trigger: DeliveryTrigger,
+  payload: unknown,
 ): Promise<string | undefined> {
   const rows = await q.query<{ id: string }>(sql.insert_delivery, [
     webhookId,
     period.from,
     period.to,
     trigger,
+    JSON.stringify(payload),
   ])
   return rows[0]?.id
 }
@@ -121,8 +133,12 @@ export async function loadDeliveryForPeriod(
 }
 
 /** Re-queues a pending or failed delivery with a rebuilt payload; undefined if it was delivered. */
-export async function requeueDelivery(q: Queryable, id: string): Promise<string | undefined> {
-  const rows = await q.query<{ id: string }>(sql.requeue_delivery, [id])
+export async function requeueDelivery(
+  q: Queryable,
+  id: string,
+  payload: unknown,
+): Promise<string | undefined> {
+  const rows = await q.query<{ id: string }>(sql.requeue_delivery, [id, JSON.stringify(payload)])
   return rows[0]?.id
 }
 

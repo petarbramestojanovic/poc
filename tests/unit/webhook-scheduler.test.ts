@@ -72,8 +72,10 @@ describe('nextRunAfter', () => {
 
 describe('enqueueDueWebhooks', () => {
   it('creates the delivery and moves the schedule on, in one transaction', async () => {
+    const built = { version: 1, delivery_id: null, campaigns: [] }
     const { deps: d, db } = deps((text) => {
       if (text.includes('WHERE enabled AND next_run_at')) return [webhookRow()]
+      if (text.includes('app.build_webhook_payload')) return [{ payload: built }]
       if (text.includes('INSERT INTO app.webhook_delivery')) return [{ id: 'delivery-1' }]
       return []
     })
@@ -82,14 +84,41 @@ describe('enqueueDueWebhooks', () => {
 
     expect(result).toEqual({ enqueued: 1, due: 1 })
     // The period is the week that closed yesterday, in the webhook's timezone.
-    expect(at(db.matching('INSERT INTO app.webhook_delivery')).params.slice(0, 4)).toEqual([
+    expect(at(db.matching('app.build_webhook_payload')).params).toEqual([
+      webhookRow().id,
+      '2026-09-07',
+      '2026-09-13',
+    ])
+    // Without a field list, the body stored is exactly the one Postgres built.
+    expect(at(db.matching('INSERT INTO app.webhook_delivery')).params).toEqual([
       webhookRow().id,
       '2026-09-07',
       '2026-09-13',
       'schedule',
+      JSON.stringify(built),
     ])
     const [, nextRunAt] = at(db.matching('SET next_run_at = $2')).params
     expect((nextRunAt as Date).toISOString()).toBe('2026-09-21T06:00:00.000Z')
+  })
+
+  it('postpones a webhook whose stored field list cannot be read, and enqueues the others', async () => {
+    const broken = webhookRow({ id: 'broken', payload_fields: { calculated: 'cost' } })
+    const { deps: d, db } = deps((text) => {
+      if (text.includes('WHERE enabled AND next_run_at')) return [broken, webhookRow()]
+      if (text.includes('INSERT INTO app.webhook_delivery')) return [{ id: 'delivery-1' }]
+      return []
+    })
+
+    const result = await enqueueDueWebhooks(d)
+
+    expect(result).toEqual({ enqueued: 1, due: 2 })
+    // Nothing was built or stored for the broken one: it is pushed an hour out instead.
+    expect(db.matching('app.build_webhook_payload').map((q) => q.params[0])).toEqual([
+      webhookRow().id,
+    ])
+    const moves = db.matching('SET next_run_at = $2').map((q) => q.params)
+    const brokenMove = moves.find(([id]) => id === 'broken')
+    expect((brokenMove?.[1] as Date).getTime()).toBe(NOW.getTime() + 3_600_000)
   })
 
   it('does not count a period that already has a row', async () => {

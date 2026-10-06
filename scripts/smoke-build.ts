@@ -14,6 +14,8 @@ const modules = [
   'routes/webhooks.js',
   'routes/campaigns.js',
   'webhooks/admin.js',
+  'webhooks/build.js',
+  'webhooks/fields.js',
 ]
 for (const module of modules) {
   await import(new URL(`../dist/${module}`, import.meta.url).href)
