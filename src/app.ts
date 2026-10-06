@@ -94,7 +94,7 @@ export function buildApp({
     await db.close()
   })
 
-  app.register(healthRoutes, { db })
+  app.register(healthRoutes, { db, commit: config.commit })
 
   // Each admin prefix is its own encapsulated scope whose auth hook is registered BEFORE its
   // not-found handler, so an unknown method or path under the prefix is authenticated first

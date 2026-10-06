@@ -1,0 +1,84 @@
+# main → staging: CI on the merged commit, then migrations, then the code, then a smoke check.
+# Migrations go first because they are additive: the running build keeps working on the new
+# schema, and a rollback only ever rolls back code. Render's auto-deploy is off, so nothing
+# starts ahead of its migration. Setup and secrets: docs/RUNBOOK.md §10.
+name: Deploy staging
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # redeploy main as it is, e.g. after changing an env var on Render
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never cancel one halfway through a migration.
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Migrate and deploy
+    needs: ci
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: staging
+      url: ${{ vars.SERVICE_URL }}
+    steps:
+      - name: Staging is configured
+        run: |
+          missing=""
+          [ -n "$SUPABASE_DB_URL" ] || missing="$missing SUPABASE_DB_URL"
+          [ -n "$DEPLOY_HOOK" ] || missing="$missing RENDER_DEPLOY_HOOK_URL"
+          [ -n "$SERVICE_URL" ] || missing="$missing SERVICE_URL"
+          if [ -n "$missing" ]; then
+            echo "::error::the staging environment lacks:$missing (docs/RUNBOOK.md §10)"
+            exit 1
+          fi
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+          SERVICE_URL: ${{ vars.SERVICE_URL }}
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+
+      # The session pooler (5432): GitHub's runners have no IPv6, and the direct host is
+      # IPv6-only. Never --include-seed: seed.sql is local development data.
+      - name: Apply migrations
+        run: npx supabase db push --db-url "$SUPABASE_DB_URL" --yes
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+
+      - name: Deploy this commit on Render
+        run: curl --fail-with-body --silent --show-error --request POST "$DEPLOY_HOOK&ref=$GITHUB_SHA"
+        env:
+          DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
+      # Render switches traffic only after /readyz passes on the new instance, so /healthz
+      # reporting this commit means the build is live and reached Postgres.
+      - name: Wait for this commit to go live
+        run: |
+          deadline=$((SECONDS + 900))
+          until [ "$(curl -fsS --max-time 10 "$SERVICE_URL/healthz" | jq -r '.commit // empty' || true)" = "$GITHUB_SHA" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::$GITHUB_SHA is not live after 15 minutes; check the deploy on Render"
+              exit 1
+            fi
+            sleep 15
+          done
+          curl -fsS --max-time 10 --retry 3 --retry-all-errors "$SERVICE_URL/readyz"
+        env:
+          SERVICE_URL: ${{ vars.SERVICE_URL }}
