@@ -28,7 +28,7 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 
 - **Ask first** before: changing anything RFC-004 defines (tables, columns, keys, seeds), adding a dependency outside the fixed stack (Fastify, pg, zod, pino, node-cron, cron-parser, Vitest, ESLint, Prettier, Supabase CLI), or building phase 2 work (dashboard, Supabase Auth users, RLS, own ingestion routes, `source = 'brame'` rows, HLL, CSV export, retention purge, backfill, device split).
 - **Additive migrations only.** New indexes are fine and must be flagged in the PR. Never edit an applied migration; add the next numbered file.
-- **Approved deviations from RFC-004** (the RFC files stay verbatim; the migration header is the record): `0004_external_refs.sql` adds `external_system` + `external_id` to `app.company` and `app.campaign` (2026-09-20), so another system can push the same record twice. They identify a row and never describe it: no CRM field belongs in the model. `0005_campaign_price.sql` adds `price` + `currency` to `app.campaign` (2026-09-22): the CPM the campaign is sold at, both or neither, `NULL` when not known (never 0).
+- **Approved deviations from RFC-004** (the RFC files stay verbatim; the migration header is the record): `0004_external_refs.sql` adds `external_system` + `external_id` to `app.company` and `app.campaign` (2026-09-20), so another system can push the same record twice. They identify a row and never describe it: no CRM field belongs in the model. `0005_campaign_price.sql` adds `price` + `currency` to `app.campaign` (2026-09-22): the CPM the campaign is sold at, both or neither, `NULL` when not known (never 0). `0006_rls_and_reader_grants.sql` (2026-09-23) turns RLS on and grants a logged-in reader — phase-2 work brought forward so the local React console can read analytics through supabase-js, as RFC-002 §15 plans for the dashboard. No table, column or key changes.
 - Deferred because they need a new dependency: rate limiting on admin routes (`@fastify/rate-limit`), coverage (`@vitest/coverage-v8`), a metrics endpoint.
 
 ## Domain rules (non-negotiable)
@@ -67,6 +67,7 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 - Leader election uses `db.withAdvisoryLock` (two-integer keyspace, session lock). It needs a session: direct connection or Supavisor's **session** pooler (5432). Config rejects the transaction pooler (6543). Call `lease.assertHeld()` before irreversible work.
 - Batch work never takes the whole pool: wrap it with `limitDb(db, limiter)`. The failure record (`failRun`) goes through the unlimited pool.
 - Index every foreign-key column you add.
+- **Row level security (0006).** Every table has RLS on; the service owns them and bypasses it. A new table needs its own `ENABLE ROW LEVEL SECURITY` in the migration that creates it. `authenticated` (a logged-in console user) may only SELECT the analytics tables, the operational tables the console shows, and `app.campaign`; `anon` has nothing. Never grant `external.credential`, `external.raw_payload`, or anything in `app` beyond `campaign` — `app.webhook` holds the signing secret. Every logged-in user reads every company until a user↔company mapping exists, so anonymous sign-ins and public sign-ups stay off.
 
 ## Campaign setup (`src/campaigns/`)
 
