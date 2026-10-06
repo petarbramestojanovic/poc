@@ -3,7 +3,9 @@ import { schedule as cronSchedule, type TaskOptions } from 'node-cron'
 import { limitDb, type LeaderLease } from '../db.ts'
 import { createLimiter } from '../limiter.ts'
 import type { Logger } from '../log.ts'
+import { buildPayload } from './build.ts'
 import { deliverOnce, leaseUntil, type DeliverDeps } from './deliver.ts'
+import { readStoredFields, type CompiledFields } from './fields.ts'
 import { reportPeriod } from './periods.ts'
 import * as repo from './repo.ts'
 
@@ -28,8 +30,11 @@ const MAX_DELIVERIES_PER_TICK = 10
 /** RFC-002 §15.1: webhooks are batch work and never take more than their share of the pool. */
 const WEBHOOK_MAX_CONNECTIONS = 2
 
-/** How far a webhook with an unparseable cron is pushed out, so it is not retried every minute. */
-const BAD_CRON_RETRY_MS = 3_600_000
+/**
+ * How far a webhook with an unparseable cron or field list is pushed out, so it is not retried
+ * every minute. Both are checked when a webhook is saved; this only catches a row edited by hand.
+ */
+const BAD_CONFIG_RETRY_MS = 3_600_000
 
 export type WebhookDeps = DeliverDeps
 
@@ -80,12 +85,24 @@ export async function enqueueDueWebhooks(
       } catch (error) {
         // An unusable schedule must not stall the tick or shout every minute.
         log.error({ err: error }, 'webhook schedule cannot be parsed; postponing')
-        await repo.updateNextRun(tx, webhook.id, new Date(now.getTime() + BAD_CRON_RETRY_MS))
+        await repo.updateNextRun(tx, webhook.id, new Date(now.getTime() + BAD_CONFIG_RETRY_MS))
+        continue
+      }
+
+      // Read before any statement for this webhook runs: a failure here leaves the transaction
+      // usable, so the other due webhooks still go out.
+      let fields: CompiledFields | null
+      try {
+        fields = readStoredFields(webhook.payloadFields)
+      } catch (error) {
+        log.error({ err: error }, 'webhook field list cannot be read; postponing')
+        await repo.updateNextRun(tx, webhook.id, new Date(now.getTime() + BAD_CONFIG_RETRY_MS))
         continue
       }
 
       const period = reportPeriod(webhook.reportWindow, webhook.timezone, now)
-      const deliveryId = await repo.insertDelivery(tx, webhook.id, period, 'schedule')
+      const payload = await buildPayload(tx, webhook, period, fields)
+      const deliveryId = await repo.insertDelivery(tx, webhook.id, period, 'schedule', payload)
       await repo.updateNextRun(tx, webhook.id, next)
 
       if (deliveryId === undefined) {

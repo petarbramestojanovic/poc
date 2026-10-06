@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { METRIC_IDS } from '../../src/sync/types.ts'
-import { metricsSchema, webhookPayloadSchema } from '../../src/webhooks/payload.ts'
+import {
+  metricsSchema,
+  PAYLOAD_SECTIONS,
+  webhookPayloadSchema,
+  webhookPayloadSchemaFor,
+} from '../../src/webhooks/payload.ts'
 import { at } from '../helpers.ts'
 
 // The contract the database answers to. Every case below is one valid v1 body with one thing
@@ -98,5 +103,62 @@ describe('webhook payload contract v1', () => {
 
   it('rejects a field the contract does not describe', () => {
     expect(reasons(payload({ clicks: 12 }))).not.toBe('')
+  })
+})
+
+describe('webhookPayloadSchemaFor', () => {
+  const full = webhookPayloadSchemaFor({ sections: PAYLOAD_SECTIONS, calculated: [], price: false })
+  const costed = webhookPayloadSchemaFor({ sections: ['daily'], calculated: ['cost'], price: true })
+
+  /** The body a Tchibo-style field list produces: cost everywhere, a price, no ctas or pages. */
+  const costedBody = (block: Overrides = {}, campaign: Overrides = {}): Overrides => {
+    const body = payload({
+      metrics_available: ['impressions', 'cost'],
+      totals: { impressions: 900, cost: 14.03 },
+      daily: [{ date: '2026-09-07', language: 'de', impressions: 900, cost: 14.03 }],
+      creatives: [{ campaign_tag: 'mpu', label: null, totals: { impressions: 900, cost: 14.03 } }],
+      ctas: undefined,
+      pages: undefined,
+      ...block,
+    })
+    const [first] = body.campaigns as Overrides[]
+    return { ...body, campaigns: [{ ...first, price: 15.5876, currency: 'EUR', ...campaign }] }
+  }
+  const strip = (body: Overrides): unknown => JSON.parse(JSON.stringify(body))
+
+  it('describes the same body as the full schema when nothing is narrowed', () => {
+    expect(full.safeParse(payload()).success).toBe(true)
+    expect(
+      full.safeParse(payload({ totals: { impressions: 900, unique_clicks_reported: 84 } })).success,
+    ).toBe(false)
+    expect(full.safeParse(payload({ clicks: 12 })).success).toBe(false)
+  })
+
+  it('accepts the body a field list produces', () => {
+    expect(costed.parse(strip(costedBody()))).toBeDefined()
+  })
+
+  it('refuses a list the field list leaves out', () => {
+    expect(costed.safeParse(strip(costedBody({ ctas: [] }))).success).toBe(false)
+  })
+
+  it('refuses a calculated key the field list does not define', () => {
+    const totals = { impressions: 900, cost: 14.03, ctr: 0.01 }
+    expect(costed.safeParse(strip(costedBody({ totals }))).success).toBe(false)
+  })
+
+  it('still refuses a summed per-day unique, in totals and in a creative', () => {
+    const totals = { impressions: 900, cost: 14.03, unique_clicks_reported: 84 }
+    expect(costed.safeParse(strip(costedBody({ totals }))).success).toBe(false)
+    const creatives = [{ campaign_tag: 'mpu', label: null, totals }]
+    expect(costed.safeParse(strip(costedBody({ creatives }))).success).toBe(false)
+  })
+
+  it('requires the price beside a formula that uses it, and nothing else on the campaign', () => {
+    const withoutPrice = strip(costedBody()) as { campaigns: Record<string, unknown>[] }
+    delete withoutPrice.campaigns[0]?.price
+    expect(costed.safeParse(withoutPrice).success).toBe(false)
+    expect(full.safeParse(strip(payload())).success).toBe(true)
+    expect(costed.safeParse(strip(costedBody({}, { budget: 1 }))).success).toBe(false)
   })
 })

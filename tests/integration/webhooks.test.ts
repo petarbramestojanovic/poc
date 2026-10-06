@@ -48,7 +48,12 @@ function stubReceiver(reply: (received: Received) => Response) {
     const entry: Received = {
       body,
       headers,
-      verified: verifyBody(body, SECRET, headers.get('x-signature') ?? undefined),
+      verified: verifyBody(
+        headers.get('x-timestamp') ?? undefined,
+        body,
+        SECRET,
+        headers.get('x-signature') ?? undefined,
+      ),
     }
     received.push(entry)
     return Promise.resolve(reply(entry))
@@ -179,6 +184,7 @@ describe('webhook scheduling and delivery', () => {
     const received = at(stub.received)
     expect(received.verified).toBe(true)
     expect(received.headers.get('content-type')).toBe('application/json; charset=utf-8')
+    expect(received.headers.get('x-payload-version')).toBe('1')
 
     const row = await deliveryRow()
     expect(row.status).toBe('delivered')
@@ -221,13 +227,19 @@ describe('webhook scheduling and delivery', () => {
     ])
   })
 
-  it('gives up after the fifth failure', async () => {
+  it('gives up after the sixth failure, the last one 12 h after the fifth', async () => {
     const stub = stubReceiver(() => new Response('boom', { status: 503 }))
     await enqueueDueWebhooks(deps(stub.fetchStub))
 
     let now = MONDAY
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
       await deliverDueDeliveries(deps(stub.fetchStub, now))
+      if (attempt === MAX_ATTEMPTS - 1) {
+        // The fifth failure waits the longest rung before the last try.
+        const fifth = await deliveryRow()
+        expect(fifth.status).toBe('pending')
+        expect((fifth.next_attempt_at?.getTime() ?? 0) - now.getTime()).toBe(12 * 3_600_000)
+      }
       now = new Date(now.getTime() + 13 * 3_600_000) // past every rung of the ladder
     }
 
@@ -321,7 +333,7 @@ describe('webhook scheduling and delivery', () => {
     // A re-send re-queues a failed period while an old attempt is still out: the old one's
     // outcome must not land on the fresh row.
     await db.query(`UPDATE app.webhook_delivery SET status = 'failed' WHERE id = $1`, [claimed.id])
-    expect(await repo.requeueDelivery(db, claimed.id)).toBe(claimed.id)
+    expect(await repo.requeueDelivery(db, claimed.id, claimed.payload)).toBe(claimed.id)
     expect(await repo.recordAttempt(db, outcome('pending', 504))).toBe(false)
     expect(await deliveryRow()).toMatchObject({
       status: 'pending',

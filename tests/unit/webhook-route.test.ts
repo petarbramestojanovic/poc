@@ -5,6 +5,7 @@ import type { Config } from '../../src/config.ts'
 import type { Db } from '../../src/db.ts'
 import { createLogger } from '../../src/log.ts'
 import type { SendDeps } from '../../src/webhooks/send.ts'
+import { at } from '../helpers.ts'
 import { fakeDb, fakeHttp, response } from './webhook-fakes.ts'
 
 const TOKEN = 'a-long-enough-operator-token-0123456789'
@@ -174,5 +175,120 @@ describe('POST /webhooks/:id/send-now', () => {
     expect(res.statusCode).toBe(409)
     expect(res.json()).toMatchObject({ error: 'already_delivered' })
     expect(db.matching('UPDATE app.webhook_delivery')).toEqual([])
+  })
+})
+
+describe('PATCH /webhooks/:id and POST /webhooks/:id/preview, refused before the handler', () => {
+  it.each([
+    ['PATCH', `/webhooks/${WEBHOOK}`],
+    ['POST', `/webhooks/${WEBHOOK}/preview`],
+  ] as const)('%s %s needs the operator token', async (method, url) => {
+    const res = await build().inject({ method, url, payload: { fields: null } })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it.each([
+    ['no fields key at all', {}],
+    ['a metric the catalog does not have', { fields: { metrics: ['clicks'] } }],
+    [
+      'a calculated name that is already a metric',
+      {
+        fields: { calculated: [{ name: 'impressions', formula: 'impressions * 2' }] },
+      },
+    ],
+    [
+      'too many decimals',
+      {
+        fields: { calculated: [{ name: 'cost', formula: 'impressions', decimals: 9 }] },
+      },
+    ],
+    ['an unknown key', { fields: null, enabled: false }],
+  ])('PATCH answers 400 for %s', async (_name, payload) => {
+    const res = await build().inject({
+      method: 'PATCH',
+      url: `/webhooks/${WEBHOOK}`,
+      payload,
+      headers: auth,
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it('preview answers 400 for a period start without an end', async () => {
+    const res = await build().inject({
+      method: 'POST',
+      url: `/webhooks/${WEBHOOK}/preview`,
+      payload: { period_start: '2026-09-07' },
+      headers: auth,
+    })
+    expect(res.statusCode).toBe(400)
+  })
+})
+
+describe('PATCH /webhooks/:id', () => {
+  it('answers 422 with the field and the position of a formula that does not parse', async () => {
+    const db = fakeDb()
+    const res = await build(db.db).inject({
+      method: 'PATCH',
+      url: `/webhooks/${WEBHOOK}`,
+      payload: {
+        fields: { calculated: [{ name: 'cost', formula: 'impressions / 1000 * price)' }] },
+      },
+      headers: auth,
+    })
+
+    expect(res.statusCode).toBe(422)
+    expect(res.json()).toEqual({
+      error: 'invalid_formula',
+      message: 'calculated field "cost": unexpected ")" at 27',
+    })
+    expect(db.matching('SET payload_fields')).toEqual([])
+  })
+
+  it('answers 404 for a webhook that does not exist', async () => {
+    const res = await build(fakeDb().db).inject({
+      method: 'PATCH',
+      url: `/webhooks/${WEBHOOK}`,
+      payload: { fields: null },
+      headers: auth,
+    })
+    expect(res.statusCode).toBe(404)
+    expect(res.json()).toMatchObject({ error: 'webhook_not_found' })
+  })
+})
+
+describe('POST /webhooks/:id/preview', () => {
+  it('answers with the body a delivery would carry, and stores nothing', async () => {
+    const body = { version: 1, delivery_id: null, campaigns: [] }
+    const db = fakeDb((text) => {
+      if (text.includes('FROM app.webhook\n WHERE id')) return [webhookRow({ enabled: false })]
+      if (text.includes('app.build_webhook_payload')) return [{ payload: body }]
+      return []
+    })
+
+    const res = await build(db.db).inject({
+      method: 'POST',
+      url: `/webhooks/${WEBHOOK}/preview`,
+      payload: { period_start: '2026-09-07', period_end: '2026-09-13' },
+      headers: auth,
+    })
+
+    // A disabled webhook can be previewed: that is how a field list is checked before it goes live.
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual(body)
+    expect(at(db.matching('app.build_webhook_payload')).params).toEqual([
+      WEBHOOK,
+      '2026-09-07',
+      '2026-09-13',
+    ])
+    expect(db.matching('webhook_delivery')).toEqual([])
+  })
+
+  it('answers 404 for a webhook that does not exist', async () => {
+    const res = await build(fakeDb().db).inject({
+      method: 'POST',
+      url: `/webhooks/${WEBHOOK}/preview`,
+      headers: auth,
+    })
+    expect(res.statusCode).toBe(404)
   })
 })

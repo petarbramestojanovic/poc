@@ -17,9 +17,13 @@ import { assertPublicTarget, type Lookup } from './ssrf.ts'
 // delivered row back to pending nor overwrite a row a re-send has re-queued.
 //
 // A client's endpoint being down is not an error of ours: it is an outcome written to the row,
-// with the next slot on the ladder. Only the 5th failure ends the delivery as `failed`.
+// with the next slot on the ladder. Only the 6th failure ends the delivery as `failed`, about
+// 15 h after the first (1 m, 5 m, 30 m, 2 h, 12 h between them).
 
-/** Waits between attempts (RFC-002 §15.4). The 12 h step is reached only if MAX_ATTEMPTS grows. */
+/**
+ * Waits after each failed attempt (RFC-002 §15.4, RFC-004 app.webhook_delivery.next_attempt_at):
+ * the first retry a minute after the first failure, the last one 12 h after the fifth.
+ */
 export const RETRY_DELAYS_MS = [
   60_000, // 1 min
   300_000, // 5 min
@@ -28,8 +32,8 @@ export const RETRY_DELAYS_MS = [
   43_200_000, // 12 h
 ] as const
 
-/** Attempts before a delivery is given up on. */
-export const MAX_ATTEMPTS = 5
+/** Attempts before a delivery is given up on: the first, then one after every rung of the ladder. */
+export const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1
 
 /**
  * How long a claimed row stays out of every other claimer's reach: far longer than one attempt
@@ -155,6 +159,9 @@ async function attempt(
     // Re-checked every attempt: DNS moves, and a row can be edited between them.
     await assertPublicTarget(delivery.url, deps.lookup)
 
+    // The timestamp is part of what is signed, so it is fixed once and sent exactly as signed.
+    const timestamp = String(Math.floor(at.getTime() / 1000))
+    const version = payloadVersion(delivery.payload)
     const response = await deps.http.request({
       method: 'POST',
       url: delivery.url,
@@ -162,8 +169,9 @@ async function attempt(
       headers: {
         'content-type': 'application/json; charset=utf-8',
         'x-delivery-id': delivery.id,
-        'x-timestamp': String(Math.floor(at.getTime() / 1000)),
-        'x-signature': signBody(body, delivery.secret),
+        'x-timestamp': timestamp,
+        'x-signature': signBody(timestamp, body, delivery.secret),
+        ...(version === undefined ? {} : { 'x-payload-version': version }),
         'user-agent': 'analytics-be-webhooks/1',
       },
       // One webhook is never delivered twice at the same time.
@@ -178,6 +186,12 @@ async function attempt(
   } catch (error) {
     return failureOf(error)
   }
+}
+
+/** The contract version inside a stored body, for X-Payload-Version (phase 1 plan). */
+function payloadVersion(payload: unknown): string | undefined {
+  const version = (payload as { version?: unknown } | null)?.version
+  return typeof version === 'number' ? String(version) : undefined
 }
 
 function failureOf(error: unknown): AttemptResult {

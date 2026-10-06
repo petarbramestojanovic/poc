@@ -13,8 +13,8 @@ import type { ConnectorRegistry } from './sync/registry.ts'
 
 /**
  * The client that POSTs to client endpoints: one attempt, 10 s, and no retry inside the request.
- * Webhook retries are the delivery ladder in the database (1 m, 5 m, 30 m, 2 h), which survives a
- * restart; an in-process retry would not, and would hold the tick open for minutes.
+ * Webhook retries are the delivery ladder in the database (1 m, 5 m, 30 m, 2 h, 12 h), which
+ * survives a restart; an in-process retry would not, and would hold the tick open for minutes.
  */
 export function createWebhookHttpClient(logger: Logger): HttpClient {
   return createHttpClient({ log: logger, maxRetries: 0, timeoutMs: WEBHOOK_TIMEOUT_MS })
