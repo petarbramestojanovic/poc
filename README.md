@@ -18,8 +18,10 @@ Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (plat
 │  sync/            connectors → mapper → engine → day-replace writer         │
 │    nightly pass   04:00 Europe/Zurich, leader lock key 1                    │
 │  webhooks/        minutely tick, leader lock key 2 → build, sign, deliver   │
-│  campaigns/       one setup service: a form, curl or a CRM push all use it  │
+│  campaigns/       one setup service; people set platform ids only           │
+│  salesforce/      the daily report → campaigns (POST /inbound/campaigns)    │
 │  routes/          /companies · /campaigns · /webhooks · /sync (bearer token)│
+│                   /inbound/campaigns (its own bearer token)                 │
 │                   GET /healthz · GET /readyz                                │
 │  cli/             npm run sync -- …                                         │
 └───────────────────────────────┬─────────────────────────────────────────────┘
@@ -81,24 +83,29 @@ With real keys you can sync into your local database and inspect the rows direct
    npm run sync -- --source zeus --list-pixels
    ```
 
-4. Create the campaign with the service running (`npm run dev`). One call creates the company, the campaign, the `clickthrough` CTA, a link per platform and its ids, in one transaction. Replace every `<…>`; leave out the platform you do not have.
+4. With the service running (`npm run dev`, `INBOUND_CAMPAIGNS_TOKEN` set in `.env`), create the campaign the way production does: push a one-row Salesforce report, then give the campaign its platform ids. Replace every `<…>`; leave out the platform you do not have.
 
    ```sh
-   curl -X POST http://127.0.0.1:3000/campaigns \
-     -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{
-       "company": { "name": "<client>" },
-       "name": "<campaign name>",
-       "primarySource": "zeus",
-       "startsOn": "<YYYY-MM-DD>", "endsOn": "<YYYY-MM-DD>",
-       "sources": {
-         "zeus": { "campaignId": "<campaign id>", "idType": "internal_id",
-                   "pixels": [ { "code": "<pixel>", "role": "engagement" },
-                               { "code": "<pixel>", "role": "finish" } ] },
-         "nexd": { "creatives": [ { "liveId": "<live id>", "label": "<label>" } ] }
-       } }'
+   curl -X POST http://127.0.0.1:3000/inbound/campaigns \
+     -H 'authorization: Bearer <inbound token>' -H 'content-type: application/json' -d '{
+       "source": "salesforce_report", "record_count": 1, "campaigns": [ {
+         "opportunity_id": "006<12 or 15 letters and digits>", "opportunity_name": "<AT2610 name>",
+         "account_name": "<client>", "campaign_start_date": "<YYYY-MM-DD>",
+         "campaign_end_date": "<YYYY-MM-DD>", "creative_languages": "German",
+         "nn_price": <CPM>, "currency": "EUR" } ] }'
+
+   curl -X PUT http://127.0.0.1:3000/campaigns/<campaign id>/platforms/zeus \
+     -H 'authorization: Bearer <admin token>' -H 'content-type: application/json' -d '{
+       "campaignId": "<campaign id>", "idType": "internal_id",
+       "pixels": [ { "code": "<pixel>", "role": "engagement" },
+                   { "code": "<pixel>", "role": "finish" } ] }'
+
+   curl -X PUT http://127.0.0.1:3000/campaigns/<campaign id>/platforms/nexd \
+     -H 'authorization: Bearer <admin token>' -H 'content-type: application/json' -d '{
+       "creatives": [ { "liveId": "<live id>", "label": "<label>" } ] }'
    ```
 
-   `idType` says which of Zeus's two ids `campaignId` is, and is never defaulted: the wrong one returns another campaign's rows or nothing. The response lists the link ids to sync. The same form is in the temporary console (`npm run sync-console`, Campaigns tab).
+   `GET /campaigns` gives the campaign id. `idType` says which of Zeus's two ids `campaignId` is, and is never defaulted: the wrong one returns another campaign's rows or nothing. The `PUT` answers with the campaign and its link ids to sync. The console (`dev/console`) has the same id forms.
 
 5. Preview a window, then write it. `--trigger backfill` skips the five-minute cooldown between manual runs.
 
@@ -154,6 +161,7 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 | `NEXD_API_KEY`              | NEXD bearer key                                                                                                |
 | `ZEUS_API_TOKEN`            | Zeus bearer token                                                                                              |
 | `SERVICE_ADMIN_TOKEN`       | Bearer token for `/sync/*` and `/webhooks/*` routes, at least 32 characters                                    |
+| `INBOUND_CAMPAIGNS_TOKEN`   | Bearer token of `POST /inbound/campaigns`, different from the admin token; unset = no such route               |
 | `PORT`                      | HTTP port                                                                                                      |
 | `LOG_LEVEL`                 | pino level                                                                                                     |
 | `TRUST_PROXY_HOPS`          | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                            |
@@ -162,23 +170,37 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 | `RENDER_GIT_COMMIT`         | Set by Render; `/healthz` reports it so a deploy can wait for its own commit                                   |
 | `TZ`                        | Always `UTC`; sources and schedules carry explicit timezones                                                   |
 
-## Campaign setup API
+## Campaigns
 
-Companies, campaigns and webhooks are created through admin routes (bearer token), never by SQL. All of them go through one service, `src/campaigns/`, whose input is platform-neutral: the routes, the console form and — later — a CRM adapter build the same `CampaignSetup` and call `setUpCampaign`.
+**Campaigns come from Salesforce.** Every morning another of our apps posts the "Media Solutions - Committed Opps - Daily" report to `POST /inbound/campaigns`, with its own bearer token (`INBOUND_CAMPAIGNS_TOKEN`), never the admin one. Each row becomes a campaign through the one setup service, `src/campaigns/` (`setUpCampaign`); `src/salesforce/` is the adapter, and Salesforce's field names stop there.
 
-| Route                                                | What it does                                                                              |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `GET /companies` · `POST /companies`                 | List; create (or, with a known `externalRef`, rename)                                     |
-| `GET /campaigns[?companyId=]` · `GET /campaigns/:id` | List with links; one campaign with its platform ids                                       |
-| `POST /campaigns`                                    | Set a campaign up: `201` created, `200` when its `externalRef` was already known          |
-| `PATCH /campaigns/:id`                               | Edit name, dates, price, status, headline source, timezone, languages. There is no delete |
-| `GET /webhooks` · `POST /webhooks`                   | List (never a secret); create — the signing secret is in this response only               |
+| Report field                               | Campaign                                                                                                                    |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `opportunity_id`                           | `externalRef` `salesforce:<id>`: the same opportunity tomorrow updates the same campaign                                    |
+| `opportunity_name`                         | name, as sold (`AT2610 …`: market and month stay in the name)                                                               |
+| `account_name`                             | company; its id is the name in snake_case (`Kaffeerösterei GmbH` → `kaffeeroesterei_gmbh`), as the report has no account id |
+| `campaign_start_date`, `campaign_end_date` | flight                                                                                                                      |
+| `creative_languages`                       | languages (`German` → `de`)                                                                                                 |
+| `nn_price` + `currency`                    | price: always a CPM, whatever the billing type                                                                              |
 
-**Pushing from another system.** Send `"externalRef": { "system": "salesforce", "id": "<its id>" }` (on the company too) and the call becomes repeatable: the second push finds the campaign it created, updates its own fields and **adds** any source, pixel or creative that is new. It never removes anything and cannot blank a field, so a half-filled CRM record cannot stop a working sync. Refusals are explicit: `409 entity_in_use` names the campaign that already owns a platform id, `409 company_name_exists` asks for `company.id` rather than guessing between namesakes, `422 primary_source_required` when a new campaign has no source or several.
+Everything else in a row is ignored and never stored. A push only creates and updates: a campaign missing from today's report is left alone (the report drops campaigns once they start), a field it leaves out is never cleared, and a campaign never moves to another company. The answer is `200` with what happened to each row (`created`, `updated`, `unchanged`, `rejected` with a reason, `warnings`); the same report sent twice changes nothing.
 
-**Price.** `"price": { "value": 20.4, "currency": "EUR" }` is what the client pays for 1000 impressions (CPM, the only pricing model), up to four decimals, currency as an ISO 4217 code. It is optional and stored as `NULL` when not given, never as 0. `PATCH` with `"price": null` clears it; a push cannot.
+**People set platform ids, and nothing else.** A campaign arrives without NEXD or Zeus ids:
 
-A new platform needs one preset in `src/campaigns/presets.ts`; a new CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
+| Route (admin token)                                  | What it does                                                                |
+| ---------------------------------------------------- | --------------------------------------------------------------------------- |
+| `GET /companies`                                     | Companies with their campaign counts                                        |
+| `GET /campaigns[?companyId=]` · `GET /campaigns/:id` | List with links; one campaign with its platform ids                         |
+| `PUT /campaigns/:id/platforms/zeus`                  | The Zeus ids: `{ campaignId, idType, pixels?, creatives? }`                 |
+| `PUT /campaigns/:id/platforms/nexd`                  | The NEXD ids: `{ creatives: [{ liveId }] }`                                 |
+| `DELETE /campaigns/:id/platforms/:platform`          | Takes the platform off the campaign                                         |
+| `GET /webhooks` · `POST /webhooks`                   | List (never a secret); create — the signing secret is in this response only |
+
+A `PUT` is the whole id list for that platform. Adding ids always works. Changing or dropping one, or a `DELETE`, answers `409 platform_has_data` once that platform has written analytics for the campaign (the rows would stay attributed to the wrong ids), and `409 sync_in_progress` while a sync is fetching. Before that, the link is rebuilt from the request and its sync state forgotten. The headline source follows the ids: Zeus if the campaign has Zeus ids, otherwise NEXD, and Zeus while it has none. There is no create, edit or delete of a campaign by hand.
+
+**Price** is what the client pays for 1000 impressions, up to four decimals, currency as an ISO 4217 code; `NULL` when the report has none, never 0.
+
+A new platform needs one preset in `src/campaigns/presets.ts`; another CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
 
 ## Client report webhooks
 

@@ -50,6 +50,14 @@ const serviceSchema = z
     SERVICE_ADMIN_TOKEN: z
       .string()
       .min(32, 'must be at least 32 characters (generate with: openssl rand -base64 32)'),
+    /**
+     * The bearer token of POST /inbound/campaigns, the daily Salesforce report another of our apps
+     * pushes. Its own token, so that app can never reach an admin route. Unset = no /inbound route.
+     */
+    INBOUND_CAMPAIGNS_TOKEN: z
+      .string()
+      .min(32, 'must be at least 32 characters (generate with: openssl rand -base64 32)')
+      .optional(),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     /** Number of reverse proxies in front of the service (Render = 1, Cloudflare + Render = 2). */
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
@@ -64,6 +72,15 @@ const serviceSchema = z
       .optional(),
   })
   .superRefine(checkDatabase)
+  .superRefine((env, ctx) => {
+    if (env.INBOUND_CAMPAIGNS_TOKEN === env.SERVICE_ADMIN_TOKEN) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['INBOUND_CAMPAIGNS_TOKEN'],
+        message: 'must differ from SERVICE_ADMIN_TOKEN, or the sender could call the admin routes',
+      })
+    }
+  })
 
 export type LogLevel = z.infer<typeof runtimeSchema>['LOG_LEVEL']
 
@@ -77,6 +94,8 @@ export interface RuntimeConfig {
 
 export interface Config extends RuntimeConfig {
   readonly adminToken: string
+  /** Unset: POST /inbound/campaigns does not exist. */
+  readonly inboundCampaignsToken?: string
   readonly port: number
   readonly trustProxyHops: number
   readonly syncSchedulerEnabled: boolean
@@ -123,6 +142,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     databaseSsl: data.DATABASE_SSL,
     databaseSslCa: data.DATABASE_SSL_CA,
     adminToken: data.SERVICE_ADMIN_TOKEN,
+    ...(data.INBOUND_CAMPAIGNS_TOKEN === undefined
+      ? {}
+      : { inboundCampaignsToken: data.INBOUND_CAMPAIGNS_TOKEN }),
     port: data.PORT,
     logLevel: data.LOG_LEVEL,
     trustProxyHops: data.TRUST_PROXY_HOPS,

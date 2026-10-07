@@ -26,6 +26,10 @@ const sql = loadSql(import.meta.url, [
   'find_entity_owners',
   'insert_entities',
   'insert_event_map',
+  'list_link_entities',
+  'link_activity',
+  'delete_link',
+  'list_link_sources',
   'list_campaigns',
   'get_campaign',
 ] as const)
@@ -478,6 +482,55 @@ export async function insertEventMap(
     eventMap.map((entry) => entry.targetKind),
     eventMap.map((entry) => entry.targetId ?? null),
   ])
+}
+
+/** A link's platform ids as they are stored, in the shape a setup states them. */
+export async function listLinkEntities(q: Queryable, linkId: string): Promise<EntitySetup[]> {
+  const rows = await q.query<{
+    level: EntitySetup['level']
+    external_id: string
+    role: string | null
+    label: string | null
+    campaign_tag: string
+  }>(sql.list_link_entities, [linkId])
+  return rows.map((row) => ({
+    level: row.level,
+    externalId: row.external_id,
+    ...(row.role === null ? {} : { role: row.role }),
+    ...(row.label === null ? {} : { label: row.label }),
+    campaignTag: row.campaign_tag,
+  }))
+}
+
+export interface LinkActivity {
+  /** A real sync run is fetching with the current ids. */
+  running: boolean
+  /** Analytics rows exist for this link's campaign, source and language. */
+  hasData: boolean
+}
+
+/** Read under the link's sync-run gate lock, so no run can open between this and the change. */
+export async function linkActivity(
+  q: Queryable,
+  link: { id: string; campaignId: string; sourceId: string; language: string },
+): Promise<LinkActivity> {
+  const rows = await q.query<{ running: boolean; has_data: boolean }>(sql.link_activity, [
+    link.id,
+    link.campaignId,
+    link.sourceId,
+    link.language,
+  ])
+  const row = required(rows[0], 'link_activity')
+  return { running: row.running, hasData: row.has_data }
+}
+
+export async function deleteLink(q: Queryable, linkId: string): Promise<void> {
+  await q.query(sql.delete_link, [linkId])
+}
+
+export async function listLinkSources(q: Queryable, campaignId: string): Promise<string[]> {
+  const rows = await q.query<{ source_id: string }>(sql.list_link_sources, [campaignId])
+  return rows.map((row) => row.source_id)
 }
 
 function required<T>(row: T | undefined, statement: string): T {

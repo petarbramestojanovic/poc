@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  headlineSource,
   nexdPresetSchema,
   nexdSetup,
-  platformSourcesSchema,
-  toSourceSetups,
+  PLATFORM_PRESETS,
   zeusPresetSchema,
   zeusSetup,
 } from '../../src/campaigns/presets.ts'
 
-// The presets are what a form and a CRM adapter share: "the ids a person has" in, a complete
-// platform-neutral SourceSetup out. What they add by convention is pinned here.
+// The presets turn "the ids a person has" into a complete platform-neutral SourceSetup. What they
+// add by convention is pinned here.
 
 describe('zeus preset', () => {
   it('turns a campaign id into a syncable link setup', () => {
@@ -103,20 +103,36 @@ describe('nexd preset', () => {
   })
 })
 
-describe('platform sources', () => {
-  it('builds one setup per platform block, and none for an empty object', () => {
-    const sources = platformSourcesSchema.parse({
-      zeus: { campaignId: '18', idType: 'internal_id', language: 'de' },
-      nexd: { creatives: [{ liveId: 'nx_1' }], language: 'de' },
-    })
-    expect(toSourceSetups(sources).map((s) => [s.source, s.language])).toEqual([
-      ['zeus', 'de'],
-      ['nexd', 'de'],
+describe('platform presets', () => {
+  it('offers one preset per platform a person can give ids for', () => {
+    expect(Object.keys(PLATFORM_PRESETS)).toEqual(['zeus', 'nexd'])
+    const zeus = PLATFORM_PRESETS.zeus.toSetup(
+      PLATFORM_PRESETS.zeus.schema.parse({
+        campaignId: '18',
+        idType: 'internal_id',
+        language: 'de',
+      }),
+    )
+    const nexd = PLATFORM_PRESETS.nexd.toSetup(
+      PLATFORM_PRESETS.nexd.schema.parse({ creatives: [{ liveId: 'nx_1' }] }),
+    )
+    expect([zeus.source, zeus.language, nexd.source, nexd.language]).toEqual([
+      'zeus',
+      'de',
+      'nexd',
+      '',
     ])
-    expect(toSourceSetups(platformSourcesSchema.parse({}))).toEqual([])
   })
+})
 
-  it('refuses a platform it has no preset for', () => {
-    expect(platformSourcesSchema.safeParse({ adnuntius: {} }).success).toBe(false)
+describe('headline source', () => {
+  it.each<[string, string[], string]>([
+    ['Zeus while a campaign has no ids yet', [], 'zeus'],
+    ['Zeus once it has Zeus ids', ['zeus'], 'zeus'],
+    ['Zeus when it has both', ['nexd', 'zeus'], 'zeus'],
+    ['NEXD when it has only NEXD ids', ['nexd'], 'nexd'],
+    ['a platform outside the order when it is the only one', ['adnuntius'], 'adnuntius'],
+  ])('is %s', (_name, sources, expected) => {
+    expect(headlineSource(sources)).toBe(expected)
   })
 })

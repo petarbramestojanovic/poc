@@ -1,7 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { campaignSetupSchema, type CampaignSetup } from '../../src/campaigns/input.ts'
-import { platformSourcesSchema, toSourceSetups } from '../../src/campaigns/presets.ts'
-import { editCampaign, setUpCampaign, type CampaignDeps } from '../../src/campaigns/service.ts'
+import {
+  nexdPresetSchema,
+  nexdSetup,
+  zeusPresetSchema,
+  zeusSetup,
+} from '../../src/campaigns/presets.ts'
+import { setUpCampaign, type CampaignDeps } from '../../src/campaigns/service.ts'
 import { createDb, type Db } from '../../src/db.ts'
 import { createLogger } from '../../src/log.ts'
 import { createDefaultRegistry } from '../../src/sync/connectors/index.ts'
@@ -15,10 +20,10 @@ import { sqlstateOf } from './db.ts'
 const REF = { system: 'salesforce', id: 'it-setup-006A000000XYZ' }
 const ZEUS_CREDENTIAL = '00000000-0000-4000-8000-000000000012'
 
-/** Builds a CampaignSetup the way the route does: friendly platform blocks through the presets. */
+/** A CampaignSetup with friendly platform blocks turned into links by the presets. */
 function setup(
   over: Record<string, unknown> = {},
-  sources: Record<string, unknown> = {},
+  sources: { zeus?: unknown; nexd?: unknown } = {},
 ): CampaignSetup {
   return campaignSetupSchema.parse({
     company: { name: 'IT Setup Rauch' },
@@ -26,7 +31,10 @@ function setup(
     startsOn: '2026-06-30',
     endsOn: '2026-09-30',
     ...over,
-    sources: toSourceSetups(platformSourcesSchema.parse(sources)),
+    sources: [
+      ...(sources.zeus ? [zeusSetup(zeusPresetSchema.parse(sources.zeus))] : []),
+      ...(sources.nexd ? [nexdSetup(nexdPresetSchema.parse(sources.nexd))] : []),
+    ],
   })
 }
 
@@ -74,7 +82,7 @@ describe('campaign setup', () => {
       [linkId],
     )
 
-  describe('a campaign typed in by hand', () => {
+  describe('a campaign set up with its platform ids', () => {
     it('creates everything a sync needs, in one go', async () => {
       const result = await setUpCampaign(
         deps,
@@ -131,27 +139,29 @@ describe('campaign setup', () => {
       ])
     })
 
-    it('takes the only source as the headline, and asks when there are two or none', async () => {
-      const single = await setUpCampaign(deps, setup({}, zeus()))
-      expect(single.campaign.primarySource).toBe('zeus')
+    it('picks the headline nobody chose: Zeus first, NEXD when it is the only one', async () => {
+      const single = await setUpCampaign(deps, setup({}, nexd))
+      const both = await setUpCampaign(
+        deps,
+        setup(
+          { company: { name: 'IT Setup Two Co' }, name: 'IT Setup Two' },
+          {
+            ...zeus({ campaignId: 'it-setup-19' }),
+            nexd: { creatives: [{ liveId: 'it-setup-nx-2' }] },
+          },
+        ),
+      )
+      // A campaign from the CRM has no platform ids yet.
+      const none = await setUpCampaign(
+        deps,
+        setup({ company: { name: 'IT Setup None Co' }, name: 'IT Setup None' }),
+      )
 
-      await expect(
-        setUpCampaign(
-          deps,
-          setup(
-            { company: { name: 'IT Setup Two Co' }, name: 'IT Setup Two' },
-            { ...zeus({ campaignId: 'it-setup-19' }), ...nexd },
-          ),
-        ),
-      ).rejects.toMatchObject({ code: 'primary_source_required', status: 422 })
-      await expect(
-        setUpCampaign(
-          deps,
-          setup({ company: { name: 'IT Setup None Co' }, name: 'IT Setup None' }),
-        ),
-      ).rejects.toMatchObject({
-        code: 'primary_source_required',
-      })
+      expect([single, both, none].map((result) => result.campaign.primarySource)).toEqual([
+        'nexd',
+        'zeus',
+        'zeus',
+      ])
     })
 
     it('can exist before any platform id is known', async () => {
@@ -279,6 +289,7 @@ describe('campaign setup', () => {
       const second = await push({ name: 'IT Setup Cafemio (renamed)' })
 
       expect([first.created, second.created]).toEqual([true, false])
+      expect([first.updated, second.updated]).toEqual([false, true])
       expect(second.campaign.id).toBe(first.campaign.id)
       expect(second.company.id).toBe(first.company.id)
       expect(second.campaign.name).toBe('IT Setup Cafemio (renamed)')
@@ -346,6 +357,7 @@ describe('campaign setup', () => {
       )
 
       expect(again.campaign.updatedAt).toEqual(first.campaign.updatedAt)
+      expect([again.created, again.updated]).toEqual([false, false])
       expect(at(again.links)).toMatchObject({ created: false, entitiesAdded: 0 })
     })
 
@@ -401,65 +413,6 @@ describe('campaign setup', () => {
 
       expect(results.map((r) => r.created).sort()).toEqual([false, true])
       expect(at(results).campaign.id).toBe(at(results, 1).campaign.id)
-    })
-  })
-
-  describe('editCampaign', () => {
-    it('changes what the patch states and leaves the rest', async () => {
-      const { campaign } = await setUpCampaign(deps, setup({}, zeus()))
-
-      const edited = await editCampaign(deps, campaign.id, {
-        name: 'IT Setup Edited',
-        status: 'archived',
-      })
-
-      expect(edited).toMatchObject({
-        name: 'IT Setup Edited',
-        status: 'archived',
-        startsOn: '2026-06-30',
-        primarySource: 'zeus',
-      })
-    })
-
-    it('clears a date with null, which a push never can', async () => {
-      const { campaign } = await setUpCampaign(deps, setup({}, zeus()))
-      const edited = await editCampaign(deps, campaign.id, { endsOn: null })
-      expect(edited.endsOn).toBeNull()
-    })
-
-    it('sets, changes and clears the price', async () => {
-      const { campaign } = await setUpCampaign(deps, setup({}, zeus()))
-
-      const priced = await editCampaign(deps, campaign.id, {
-        price: { value: 12.8235, currency: 'EUR' },
-      })
-      const renamed = await editCampaign(deps, campaign.id, { name: 'IT Setup Renamed' })
-      expect(priced.price).toEqual({ value: 12.8235, currency: 'EUR' })
-      expect(renamed.price).toEqual({ value: 12.8235, currency: 'EUR' })
-
-      const cleared = await editCampaign(deps, campaign.id, { price: null })
-      expect(cleared.price).toBeNull()
-      expect(await storedPrice(campaign.id)).toEqual({ price: null, currency: null })
-    })
-
-    it('checks a new date against the stored one', async () => {
-      const { campaign } = await setUpCampaign(deps, setup({}, zeus()))
-      await expect(editCampaign(deps, campaign.id, { endsOn: '2026-01-01' })).rejects.toMatchObject(
-        {
-          code: 'invalid_setup',
-          status: 422,
-        },
-      )
-    })
-
-    it('refuses a headline source that does not exist, and a campaign that does not', async () => {
-      const { campaign } = await setUpCampaign(deps, setup({}, zeus()))
-      await expect(
-        editCampaign(deps, campaign.id, { primarySource: 'adnuntius' }),
-      ).rejects.toMatchObject({ code: 'unsupported_source' })
-      await expect(
-        editCampaign(deps, '00000000-0000-4000-8000-00000000dead', { name: 'x' }),
-      ).rejects.toMatchObject({ code: 'campaign_not_found', status: 404 })
     })
   })
 

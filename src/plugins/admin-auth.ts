@@ -1,8 +1,9 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 
-// Phase 1 operator auth: a single shared bearer token on /sync and /webhooks.
-// Phase 2 swaps this hook for Supabase user tokens with company scoping; nothing else changes.
+// Phase 1 operator auth: a single shared bearer token on the admin prefixes, and a second one of
+// its own on /inbound, where another of our apps pushes the daily Salesforce report.
+// Phase 2 swaps the admin hook for Supabase user tokens with company scoping; nothing else changes.
 // Rate limiting needs @fastify/rate-limit, which is outside the fixed stack (plan: ask first).
 
 function digest(value: string): Buffer {
@@ -23,7 +24,12 @@ function bearerToken(header: string | undefined): string | undefined {
 }
 
 export function requireAdminToken(expected: string) {
-  return async function adminAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
+  return requireBearerToken(expected, 'admin')
+}
+
+/** `scope` names the token in the refusal log line, e.g. 'inbound auth rejected'. */
+export function requireBearerToken(expected: string, scope: string) {
+  return async function bearerAuth(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const header = request.headers.authorization
     const token = bearerToken(header)
     if (tokenMatches(token, expected)) return
@@ -35,7 +41,7 @@ export function requireAdminToken(expected: string) {
         method: request.method,
         ip: request.ip,
       },
-      'admin auth rejected',
+      `${scope} auth rejected`,
     )
     await reply
       .code(401)

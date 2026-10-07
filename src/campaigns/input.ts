@@ -2,8 +2,8 @@ import { z } from 'zod'
 import { ianaTimezone } from '../schemas.ts'
 
 // What it takes to set a campaign up, in our own vocabulary and nothing else. This is the one
-// input the setup service understands: a form, a CSV import or a CRM push all build this shape
-// and hand it over. Nothing here knows about Zeus, NEXD or Salesforce — platform shortcuts live
+// input the setup service understands: the Salesforce report (src/salesforce/) builds this shape
+// and hands it over, and so would any other CRM. Nothing here knows about Zeus, NEXD or Salesforce — platform shortcuts live
 // in presets.ts, and a CRM's field names stay in that CRM's adapter.
 
 const name = z.string().trim().min(1).max(200)
@@ -103,17 +103,17 @@ export type Price = z.infer<typeof priceSchema>
 
 export const CAMPAIGN_STATUSES = ['draft', 'active', 'archived'] as const
 
-/** The campaign's own fields: shared by a setup and by an edit. */
+/** The campaign's own fields. A person never edits them: they come from the CRM push. */
 export const campaignFields = {
   name,
-  /** Whose numbers are the headline. May be left out when the setup has exactly one source. */
+  /** Whose numbers are the headline. Left out: presets.ts headlineSource decides on creation. */
   primarySource: z.string().min(1).optional(),
   timezone: ianaTimezone.optional(),
   languages: z.array(z.string().trim().min(1).max(16)).max(20).optional(),
   startsOn: z.iso.date().nullable().optional(),
   endsOn: z.iso.date().nullable().optional(),
   status: z.enum(CAMPAIGN_STATUSES).optional(),
-  /** null clears it in an edit; a push, like with the dates, never can. */
+  /** A push, like with the dates, can never clear it. */
   price: priceSchema.nullable().optional(),
 }
 
@@ -133,10 +133,3 @@ export const campaignSetupSchema = z
   })
   .refine(startsBeforeEnd, { error: 'endsOn is before startsOn', path: ['endsOn'] })
 export type CampaignSetup = z.infer<typeof campaignSetupSchema>
-
-/** An edit: any of the campaign's own fields, at least one. Links are not edited here. */
-export const campaignPatchSchema = z
-  .strictObject({ ...campaignFields, name: name.optional() })
-  .refine((patch) => Object.keys(patch).length > 0, { error: 'nothing to change' })
-  .refine(startsBeforeEnd, { error: 'endsOn is before startsOn', path: ['endsOn'] })
-export type CampaignPatch = z.infer<typeof campaignPatchSchema>

@@ -89,6 +89,10 @@ process.once('SIGINT', (signal) => void stop(signal))
 
 await app.listen({ port: config.port, host: '0.0.0.0' })
 
+if (config.inboundCampaignsToken === undefined) {
+  logger.info('POST /inbound/campaigns disabled (INBOUND_CAMPAIGNS_TOKEN is not set)')
+}
+
 if (!config.syncSchedulerEnabled) {
   logger.info('nightly sync scheduler disabled (SYNC_SCHEDULER_ENABLED=false)')
 } else if (!shutdown.signal.aborted) {

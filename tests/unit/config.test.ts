@@ -50,6 +50,24 @@ describe('loadConfig', () => {
     )
   })
 
+  it('reads INBOUND_CAMPAIGNS_TOKEN, absent unless set', () => {
+    const inbound = 'another-long-enough-inbound-token-0123456789'
+    expect(loadConfig(valid)).not.toHaveProperty('inboundCampaignsToken')
+    expect(loadConfig({ ...valid, INBOUND_CAMPAIGNS_TOKEN: '' })).not.toHaveProperty(
+      'inboundCampaignsToken',
+    )
+    expect(loadConfig({ ...valid, INBOUND_CAMPAIGNS_TOKEN: inbound }).inboundCampaignsToken).toBe(
+      inbound,
+    )
+  })
+
+  it.each([
+    ['shorter than 32 characters', 'sixteen-chars-xx', 'at least 32'],
+    ['the admin token again', TOKEN, 'must differ from SERVICE_ADMIN_TOKEN'],
+  ])('rejects an INBOUND_CAMPAIGNS_TOKEN that is %s', (_name, value, message) => {
+    expect(() => loadConfig({ ...valid, INBOUND_CAMPAIGNS_TOKEN: value })).toThrow(message)
+  })
+
   it('ignores unrelated variables and empty values', () => {
     expect(() => loadConfig({ ...valid, NEXD_API_KEY: '', HOME: '/x' })).not.toThrow()
   })

@@ -26,7 +26,7 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 
 ## Scope and change control
 
-- **Ask first** before: changing anything RFC-004 defines (tables, columns, keys, seeds), adding a dependency outside the fixed stack (Fastify, pg, zod, pino, node-cron, cron-parser, Vitest, ESLint, Prettier, Supabase CLI), or building phase 2 work (dashboard, Supabase Auth users, RLS, own ingestion routes, `source = 'brame'` rows, HLL, CSV export, retention purge, backfill, device split).
+- **Ask first** before: changing anything RFC-004 defines (tables, columns, keys, seeds), adding a dependency outside the fixed stack (Fastify, pg, zod, pino, node-cron, cron-parser, Vitest, ESLint, Prettier, Supabase CLI), or building phase 2 work (dashboard, Supabase Auth users, RLS, own ingestion routes, `source = 'brame'` rows, HLL, CSV export, retention purge, backfill, device split). Approved exception (2026-10-07): `POST /inbound/campaigns`, the daily Salesforce report — campaigns, not analytics.
 - **Additive migrations only.** New indexes are fine and must be flagged in the PR. Never edit an applied migration; add the next numbered file.
 - **Approved deviations from RFC-004** (the RFC files stay verbatim; the migration header is the record): `0004_external_refs.sql` adds `external_system` + `external_id` to `app.company` and `app.campaign` (2026-09-20), so another system can push the same record twice. They identify a row and never describe it: no CRM field belongs in the model. `0005_campaign_price.sql` adds `price` + `currency` to `app.campaign` (2026-09-22): the CPM the campaign is sold at, both or neither, `NULL` when not known (never 0). `0006_rls_and_reader_grants.sql` (2026-09-23) turns RLS on and grants a logged-in reader — phase-2 work brought forward so the local React console can read analytics through supabase-js, as RFC-002 §15 plans for the dashboard. No table, column or key changes. `0007_webhook_payload_fields.sql` (2026-09-29) adds `payload_fields jsonb` to `app.webhook` — a per-webhook field list with admin-entered formulas, `NULL` = the full v1 body — and replaces the body of `app.build_webhook_payload` so a report skips archived campaigns and campaigns whose flight does not touch the period and that have no numbers in it.
 - Deferred because they need a new dependency: rate limiting on admin routes (`@fastify/rate-limit`), coverage (`@vitest/coverage-v8`), a metrics endpoint.
@@ -71,12 +71,21 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 
 ## Campaign setup (`src/campaigns/`)
 
-- `setUpCampaign` is the only way a campaign, its links and its platform ids are written. The routes, the console form and any future CRM adapter build the same platform-neutral `CampaignSetup` (`input.ts`) and call it. No route or adapter writes those tables itself.
-- The service knows no platform by name. What a source accepts comes from its connector (`identity.levels`, `identity.roles`, `describe().configSchema`), checked by `checkSources` before the first statement. Platform conventions — the Zeus `clickthrough` CTA, the two standard NEXD events — live in `presets.ts`, one preset per platform.
-- A setup is repeatable by `externalRef`, and **a push only adds**: it updates the campaign's own fields and adds sources and entities that are new. It never removes an entity, never rewrites an existing one (a changed `campaign_tag` would split the rows) and cannot blank a field. Removing is a deliberate act by a person.
-- One transaction, locks taken company first, then campaign. A company name is never matched silently (`409 company_name_exists`): the company is the boundary a webhook reports across. A campaign never moves to another company.
+- `setUpCampaign` is the only way a campaign and its company are created or their own fields change, and the Salesforce report (`src/salesforce/`) is its only caller in the service. Nobody creates, edits or deletes a campaign or a company by hand: there is no such route. Any future CRM adapter builds the same platform-neutral `CampaignSetup` (`input.ts`); no route or adapter writes those tables itself.
+- A person sets **platform ids only**, through `setPlatformIds` / `removePlatform` (`PUT` / `DELETE /campaigns/:id/platforms/:platform`, one route pair per entry of `PLATFORM_PRESETS`). A `PUT` is the whole id list for that link. Adding ids is always allowed. Changing, dropping or removing is allowed only while the link has no analytics rows for its (campaign, source, language) and no real sync run is running, both read under the link's `sync-run-gate` lock (the lock a run opens under); then the link is deleted and rebuilt, so its sync state and runs go with it. Otherwise `409 platform_has_data` / `409 sync_in_progress`.
+- The service knows no platform by name. What a source accepts comes from its connector (`identity.levels`, `identity.roles`, `describe().configSchema`), checked by `checkSources` before the first statement. Platform conventions — the Zeus `clickthrough` CTA, the two standard NEXD events, the headline order (`headlineSource`: Zeus if the campaign has Zeus ids, otherwise NEXD, Zeus with none) — live in `presets.ts`. The headline is recomputed whenever a person changes the links; a push never changes it unless it states one.
+- A setup is repeatable by `externalRef`, and **a push only adds**: it updates the campaign's own fields and adds sources and entities that are new. It never removes an entity, never rewrites an existing one (a changed `campaign_tag` would split the rows) and cannot blank a field.
+- One transaction, locks taken company first, then campaign (a platform-id change: campaign row, then link, then gate lock). A company name is never matched silently (`409 company_name_exists`): the company is the boundary a webhook reports across. A campaign never moves to another company.
 - `idType` for Zeus is required, never defaulted. There is no delete route: deleting a campaign cascades to its analytics.
 - A webhook's signing secret is minted in `createWebhook`, returned once, never listed and never logged.
+
+## Salesforce report (`src/salesforce/`, `POST /inbound/campaigns`)
+
+- Another of our apps posts the daily "Committed Opps" report every morning. `report.ts` (pure) is the only place Salesforce field names appear; `ingest.ts` hands each row to `setUpCampaign` on its own.
+- Mapping: `opportunity_id` → campaign `externalRef` `salesforce:<id>`; `opportunity_name` → name, prefix included; `account_name` → company, keyed by `companyKey` (lowercase snake_case, umlauts spelled out) because the report has no account id; dates; `creative_languages` → codes via `LANGUAGE_CODES`; `nn_price` + `currency` → price, always a CPM. Nothing else in a row is mapped, stored or logged. A price that cannot be stored exactly is left out with a warning, never rounded.
+- The report is a snapshot that drops campaigns once they start: a missing row means nothing. Never archive or remove on absence.
+- A row the setup service refuses (any `AppError` below 500) is reported in `rejected` and the others go on; anything else aborts the request with a 5xx so the sender retries. Retries are safe because a push that changes nothing writes nothing; there is no record of reports seen and none is needed.
+- Refusal messages carry field paths, never values (deal terms, people's names). The summary log line has counts and opportunity ids only.
 
 ## Webhooks (`src/webhooks/`)
 
@@ -105,6 +114,7 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 ## Fastify
 
 - Admin routes register inside the `ADMIN_PREFIXES` scopes in `src/app.ts`, whose auth hook runs before any route lookup or 404. Never add an admin route at the root.
+- Routes other systems push to register inside the `INBOUND_PREFIX` scope, behind `INBOUND_CAMPAIGNS_TOKEN` (at least 32 characters, never equal to the admin token, a reserved name in `secrets.ts`). Unset, the scope does not exist. An inbound token never opens an admin route and the admin token never opens an inbound one.
 - Route schemas are zod (compilers wired at the root). Throw typed errors; the root handler maps statuses and never echoes a message for 5xx.
 - `app.close()` is the single shutdown path: it drains in-flight runs, then closes the pool. Do not close the pool separately.
 - Health probes stay silent in the logs; a failed `/readyz` logs pool stats. Sync and webhook failures never affect readiness.
