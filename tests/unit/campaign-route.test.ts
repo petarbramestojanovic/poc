@@ -47,137 +47,97 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()))
 })
 
-const valid = {
-  company: { name: 'Rauch' },
-  name: 'RO2607 Rauch Cafemio',
-  sources: { zeus: { campaignId: '18', idType: 'internal_id' } },
-}
+const zeus = { campaignId: '18', idType: 'internal_id' }
 
-describe('campaign setup routes, refused before the service', () => {
+describe('campaign routes, refused before the service', () => {
   it.each([
     ['GET', '/companies'],
-    ['POST', '/companies'],
     ['GET', '/campaigns'],
-    ['POST', '/campaigns'],
     ['GET', `/campaigns/${ID}`],
-    ['PATCH', `/campaigns/${ID}`],
-    ['DELETE', `/campaigns/${ID}`],
+    ['PUT', `/campaigns/${ID}/platforms/zeus`],
+    ['DELETE', `/campaigns/${ID}/platforms/nexd`],
+    ['POST', '/campaigns'],
   ] as const)('%s %s needs the operator token', async (method, url) => {
     const res = await build().inject({ method, url })
     expect(res.statusCode).toBe(401)
   })
 
-  it.each<{ name: string; payload: Record<string, unknown>; message: string }>([
-    { name: 'no company', payload: { ...valid, company: undefined }, message: 'company' },
-    { name: 'a blank name', payload: { ...valid, name: '  ' }, message: 'name' },
-    {
-      name: 'an end before the start',
-      payload: { ...valid, startsOn: '2026-09-30', endsOn: '2026-06-30' },
-      message: 'endsOn is before startsOn',
-    },
-    {
-      name: 'an impossible date',
-      payload: { ...valid, startsOn: '2026-02-31' },
-      message: 'startsOn',
-    },
-    {
-      name: 'a timezone that is not one',
-      payload: { ...valid, timezone: 'Zurich' },
-      message: 'IANA',
-    },
-    { name: 'a status we do not have', payload: { ...valid, status: 'paused' }, message: 'status' },
+  // Campaigns and companies come from the Salesforce report, and their own fields belong to it.
+  it.each([
+    ['POST', '/campaigns', 'creating a campaign by hand'],
+    ['PATCH', `/campaigns/${ID}`, "editing a campaign's own fields"],
+    ['POST', '/companies', 'creating a company by hand'],
+    ['DELETE', `/campaigns/${ID}`, 'deleting a campaign, which would erase its analytics'],
+  ] as const)('%s %s does not exist: %s', async (method, url, _reason) => {
+    const res = await build().inject({ method, url, headers: auth, payload: {} })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it.each<{ name: string; url: string; payload: Record<string, unknown>; message: string }>([
     {
       name: 'a Zeus id without saying which id it is',
-      payload: { ...valid, sources: { zeus: { campaignId: '18' } } },
+      url: `/campaigns/${ID}/platforms/zeus`,
+      payload: { campaignId: '18' },
       message: 'idType',
     },
     {
-      name: 'a platform without a preset',
-      payload: { ...valid, sources: { adnuntius: { id: '1' } } },
-      message: 'adnuntius',
+      name: 'a Zeus pixel without its role',
+      url: `/campaigns/${ID}/platforms/zeus`,
+      payload: { ...zeus, pixels: [{ code: 'px' }] },
+      message: 'role',
     },
     {
-      name: 'an external reference with a system that is not a slug',
-      payload: { ...valid, externalRef: { system: 'Sales Force', id: '006' } },
-      message: 'slug',
-    },
-    { name: 'an unknown field', payload: { ...valid, industry: 'food' }, message: 'industry' },
-    {
-      name: 'a price without its currency',
-      payload: { ...valid, price: { value: 20.4 } },
-      message: 'currency',
+      name: 'an unknown field',
+      url: `/campaigns/${ID}/platforms/zeus`,
+      payload: { ...zeus, name: 'renamed' },
+      message: 'name',
     },
     {
-      name: 'a currency that is not a code',
-      payload: { ...valid, price: { value: 20.4, currency: 'eur' } },
-      message: 'ISO 4217',
+      name: 'NEXD without a creative',
+      url: `/campaigns/${ID}/platforms/nexd`,
+      payload: { creatives: [] },
+      message: 'creatives',
     },
     {
-      name: 'a currency code that does not exist',
-      payload: { ...valid, price: { value: 20.4, currency: 'EUX' } },
-      message: 'ISO 4217',
+      name: 'NEXD ids under the Zeus route',
+      url: `/campaigns/${ID}/platforms/zeus`,
+      payload: { creatives: [{ liveId: 'nx_1' }] },
+      message: 'campaignId',
     },
-    {
-      // The column holds four decimals and Postgres would round a fifth without a word.
-      name: 'a price with a fifth decimal',
-      payload: { ...valid, price: { value: 15.58761, currency: 'EUR' } },
-      message: '4 decimal places',
-    },
-    {
-      name: 'a negative price',
-      payload: { ...valid, price: { value: -1, currency: 'EUR' } },
-      message: 'price',
-    },
-    {
-      name: 'a price sent as text',
-      payload: { ...valid, price: { value: '20.4', currency: 'EUR' } },
-      message: 'price',
-    },
-    {
-      name: 'the total instead of the unit price',
-      payload: { ...valid, price: { amount: 8160, currency: 'EUR' } },
-      message: 'amount',
-    },
-  ])('POST /campaigns rejects $name with 400', async ({ payload, message }) => {
-    const res = await build().inject({ method: 'POST', url: '/campaigns', headers: auth, payload })
+  ])('PUT rejects $name with 400', async ({ url, payload, message }) => {
+    const res = await build().inject({ method: 'PUT', url, headers: auth, payload })
     expect(res.statusCode).toBe(400)
     expect(res.body).toContain(message)
   })
 
-  it.each<{ name: string; payload: Record<string, unknown> }>([
-    { name: 'an empty patch', payload: {} },
-    { name: 'a patch that touches links', payload: { sources: {} } },
-    { name: 'a patch that moves the campaign', payload: { company: { id: ID } } },
-    { name: 'dates out of order', payload: { startsOn: '2026-09-30', endsOn: '2026-06-30' } },
-    { name: 'a price without its currency', payload: { price: { value: 20.4 } } },
-    {
-      name: 'a price with a fifth decimal',
-      payload: { price: { value: 0.12345, currency: 'EUR' } },
-    },
-  ])('PATCH /campaigns/:id rejects $name with 400', async ({ payload }) => {
+  it('has no route for a platform without a preset', async () => {
     const res = await build().inject({
-      method: 'PATCH',
-      url: `/campaigns/${ID}`,
+      method: 'PUT',
+      url: `/campaigns/${ID}/platforms/adnuntius`,
       headers: auth,
-      payload,
+      payload: { id: '1' },
     })
-    expect(res.statusCode).toBe(400)
-  })
-
-  it('rejects a malformed id and a malformed company filter with 400', async () => {
-    const app = build()
-    const byId = await app.inject({ method: 'GET', url: '/campaigns/42', headers: auth })
-    const byCompany = await app.inject({
-      method: 'GET',
-      url: '/campaigns?companyId=rauch',
-      headers: auth,
-    })
-    expect([byId.statusCode, byCompany.statusCode]).toEqual([400, 400])
-  })
-
-  it('has no delete: removing a campaign would erase its analytics', async () => {
-    const res = await build().inject({ method: 'DELETE', url: `/campaigns/${ID}`, headers: auth })
     expect(res.statusCode).toBe(404)
+  })
+
+  it('rejects a malformed id, company filter or language with 400', async () => {
+    const app = build()
+    const responses = await Promise.all([
+      app.inject({ method: 'GET', url: '/campaigns/42', headers: auth }),
+      app.inject({ method: 'GET', url: '/campaigns?companyId=rauch', headers: auth }),
+      app.inject({
+        method: 'PUT',
+        url: '/campaigns/42/platforms/zeus',
+        headers: auth,
+        payload: zeus,
+      }),
+      app.inject({
+        method: 'DELETE',
+        url: `/campaigns/${ID}/platforms/zeus?language=${'x'.repeat(17)}`,
+        headers: auth,
+      }),
+    ])
+    expect(responses.map((res) => res.statusCode)).toEqual([400, 400, 400, 400])
   })
 })
 

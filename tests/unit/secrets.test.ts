@@ -20,6 +20,8 @@ describe('resolveSecret', () => {
   it.each([
     ['one of our own secrets', 'DATABASE_URL'],
     ['the operator token', 'SERVICE_ADMIN_TOKEN'],
+    // Shaped like a third-party token, so only the reserved list stops it.
+    ['the inbound token', 'INBOUND_CAMPAIGNS_TOKEN'],
     ['an unrelated variable', 'HOME'],
     ['lower case', 'nexd_api_key'],
     ['no credential suffix', 'NEXD_ENDPOINT'],

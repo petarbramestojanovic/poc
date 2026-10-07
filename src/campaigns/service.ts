@@ -9,22 +9,29 @@ import {
   CredentialNotResolvedError,
   EntityInUseError,
   InvalidSetupError,
-  PrimarySourceRequiredError,
+  PlatformHasDataError,
+  PlatformNotFoundError,
+  PlatformSyncRunningError,
   SetupConflictError,
   UnsupportedSourceError,
 } from './errors.ts'
-import type { CampaignPatch, CampaignSetup, CompanyRef, SourceSetup } from './input.ts'
+import type { CampaignSetup, CompanyRef, EntitySetup, SourceSetup } from './input.ts'
+import { headlineSource } from './presets.ts'
 import * as repo from './repo.ts'
 import { checkSources } from './validate.ts'
 
-// The one way a campaign gets into the database. A person with a form, the operator with curl
-// and — later — a CRM adapter all call setUpCampaign with the same platform-neutral CampaignSetup.
+// The one way a campaign gets into the database. The Salesforce report (src/salesforce/) calls
+// setUpCampaign with a platform-neutral CampaignSetup, and any other CRM adapter would too.
 //
 // A setup is safe to send again. With an `externalRef` the second push finds the campaign it
 // created and works on that one. What a push may do to an existing campaign is deliberately
 // lopsided: it updates the campaign's own fields and it ADDS what is missing — a source, a pixel,
 // a creative — but it never removes anything. A CRM record with an emptied field must not be able
 // to stop a sync that works; removing is a deliberate act, done by a person.
+//
+// That person sets a campaign's platform ids, and nothing else, through setPlatformIds and
+// removePlatform: ids may always be added, and changed or removed only while that platform has
+// written no analytics for the campaign.
 //
 // Everything happens in one transaction: either the campaign is fully set up, or nothing changed.
 
@@ -47,6 +54,8 @@ export interface LinkResult {
 export interface CampaignSetupResult {
   /** False when an `externalRef` matched a campaign that was already there. */
   created: boolean
+  /** True when that existing campaign's own fields changed. */
+  updated: boolean
   company: repo.CompanyRecord
   campaign: repo.CampaignRecord
   links: LinkResult[]
@@ -78,14 +87,13 @@ export async function setUpCampaign(
         )
       }
 
-      const campaign = existing
-        ? await applyPush(tx, existing, setup)
-        : await createCampaign(tx, company.id, setup, sources)
+      const pushed = existing ? await applyPush(tx, existing, setup) : undefined
+      const campaign = pushed?.campaign ?? (await createCampaign(tx, company.id, setup, sources))
 
       const links: LinkResult[] = []
       for (const source of sources) links.push(await applySource(tx, campaign.id, source))
 
-      return { created: !existing, company, campaign, links }
+      return { created: !existing, updated: pushed?.updated ?? false, company, campaign, links }
     }),
   )
 
@@ -102,63 +110,6 @@ export async function setUpCampaign(
     result.created ? 'campaign set up' : 'campaign setup applied to an existing campaign',
   )
   return result
-}
-
-/**
- * An edit of the campaign's own fields. `null` clears a date or the price; a field left out is
- * untouched.
- */
-export async function editCampaign(
-  deps: CampaignDeps,
-  id: string,
-  patch: CampaignPatch,
-): Promise<repo.CampaignRecord> {
-  const campaign = await deps.db.withTransaction(async (tx) => {
-    const current = await repo.findCampaignForUpdate(tx, id)
-    if (!current) throw new CampaignNotFoundError(`campaign ${id} does not exist`)
-
-    const next: repo.CampaignValues = {
-      name: patch.name ?? current.name,
-      primarySource: patch.primarySource ?? current.primarySource,
-      timezone: patch.timezone ?? current.timezone,
-      languages: patch.languages ?? current.languages,
-      startsOn: patch.startsOn === undefined ? current.startsOn : patch.startsOn,
-      endsOn: patch.endsOn === undefined ? current.endsOn : patch.endsOn,
-      status: patch.status ?? current.status,
-      price: patch.price === undefined ? current.price : patch.price,
-    }
-    // The patch alone was checked by its schema; this checks it against what is stored.
-    if (next.startsOn !== null && next.endsOn !== null && next.startsOn > next.endsOn) {
-      throw new InvalidSetupError(`endsOn ${next.endsOn} is before startsOn ${next.startsOn}`)
-    }
-    if (next.primarySource !== current.primarySource)
-      await assertSourceExists(tx, next.primarySource)
-    return repo.updateCampaign(tx, id, next)
-  })
-  deps.log.info({ campaignId: id, fields: Object.keys(patch) }, 'campaign edited')
-  return campaign
-}
-
-export interface CompanyUpsertResult {
-  created: boolean
-  company: repo.CompanyRecord
-}
-
-/** Creates a company, or — with an `externalRef` that is already known — renames that one. */
-export async function upsertCompany(
-  deps: CampaignDeps,
-  input: Extract<CompanyRef, { name: string }>,
-): Promise<CompanyUpsertResult> {
-  return translatingConflicts(() =>
-    deps.db.withTransaction(async (tx) => {
-      await lockCompany(tx, input)
-      const before = input.externalRef
-        ? await repo.findCompanyByRef(tx, input.externalRef)
-        : undefined
-      const company = await resolveCompany(tx, input, undefined)
-      return { created: before === undefined, company }
-    }),
-  )
 }
 
 // --- company --------------------------------------------------------------------------------
@@ -217,14 +168,7 @@ async function createCampaign(
   sources: readonly SourceSetup[],
 ): Promise<repo.CampaignRecord> {
   const primarySource =
-    setup.primarySource ?? (sources.length === 1 ? sources[0]?.source : undefined)
-  if (primarySource === undefined) {
-    throw new PrimarySourceRequiredError(
-      sources.length === 0
-        ? 'a campaign without sources needs primarySource'
-        : 'a campaign with several sources needs primarySource: which one is the headline?',
-    )
-  }
+    setup.primarySource ?? headlineSource(sources.map((source) => source.source))
   await assertSourceExists(tx, primarySource)
 
   return repo.insertCampaign(tx, {
@@ -252,7 +196,7 @@ async function applyPush(
   tx: Tx,
   current: repo.CampaignRecord,
   setup: CampaignSetup,
-): Promise<repo.CampaignRecord> {
+): Promise<{ campaign: repo.CampaignRecord; updated: boolean }> {
   const next: repo.CampaignValues = {
     name: setup.name,
     primarySource: setup.primarySource ?? current.primarySource,
@@ -266,9 +210,9 @@ async function applyPush(
   const unchanged = (Object.keys(next) as (keyof repo.CampaignValues)[]).every(
     (key) => JSON.stringify(next[key]) === JSON.stringify(current[key]),
   )
-  if (unchanged) return current
+  if (unchanged) return { campaign: current, updated: false }
   if (next.primarySource !== current.primarySource) await assertSourceExists(tx, next.primarySource)
-  return repo.updateCampaign(tx, current.id, next)
+  return { campaign: await repo.updateCampaign(tx, current.id, next), updated: true }
 }
 
 async function assertSourceExists(tx: Tx, sourceId: string): Promise<void> {
@@ -328,6 +272,173 @@ async function applySource(tx: Tx, campaignId: string, source: SourceSetup): Pro
     created: !existing,
     entitiesAdded,
   }
+}
+
+// --- platform ids, set by a person ------------------------------------------------------------
+
+export interface PlatformChange {
+  /**
+   * created: the campaign had no link for this platform. added: new ids joined the link.
+   * replaced: the link had no analytics yet and was rebuilt from the request. unchanged: nothing to do.
+   */
+  outcome: 'created' | 'added' | 'replaced' | 'unchanged'
+  campaign: repo.CampaignRecord
+}
+
+/**
+ * Sets one platform's ids on a campaign: PUT /campaigns/:id/platforms/:source. The request is the
+ * whole list for that link. Ids it adds are always taken, like a push would. Anything it changes
+ * or leaves out — a wrong Zeus campaign id, the other kind of id, a creative that is not ours — is
+ * only allowed while the link has written no analytics rows and no sync run is fetching with it,
+ * and then the link is rebuilt from the request, so no sync state claims days for the old ids.
+ */
+export async function setPlatformIds(
+  deps: CampaignDeps,
+  campaignId: string,
+  setup: SourceSetup,
+): Promise<PlatformChange> {
+  const [source] = checkSources(deps.registry, [setup])
+  if (!source) throw new Error('checkSources returned nothing for one source')
+
+  const result = await translatingConflicts(() =>
+    deps.db.withTransaction(async (tx) => {
+      // Campaign first, then its link: the order a push takes too.
+      const campaign = await repo.findCampaignForUpdate(tx, campaignId)
+      if (!campaign) throw new CampaignNotFoundError(`campaign ${campaignId} does not exist`)
+
+      const link = await repo.findLink(tx, campaignId, source.source, source.language)
+      let outcome: PlatformChange['outcome']
+      if (!link) {
+        await applySource(tx, campaignId, source)
+        outcome = 'created'
+      } else {
+        const current = await repo.listLinkEntities(tx, link.id)
+        const credentialId =
+          source.credential === undefined
+            ? link.credentialId
+            : await resolveCredential(tx, source.source, source.credential)
+        const onlyAdds =
+          keepsEvery(current, source.entities) &&
+          sameJson(link.config, source.config) &&
+          credentialId === link.credentialId
+        if (onlyAdds) {
+          const applied = await applySource(tx, campaignId, source)
+          outcome = applied.entitiesAdded > 0 ? 'added' : 'unchanged'
+        } else {
+          await assertIdsChangeable(tx, {
+            id: link.id,
+            campaignId,
+            sourceId: source.source,
+            language: source.language,
+          })
+          await repo.deleteLink(tx, link.id)
+          await applySource(tx, campaignId, source)
+          outcome = 'replaced'
+        }
+      }
+      return { outcome, campaign: await settleHeadline(tx, campaign) }
+    }),
+  )
+
+  deps.log.info(
+    { campaignId, source: source.source, language: source.language, outcome: result.outcome },
+    'platform ids set',
+  )
+  return result
+}
+
+/**
+ * Takes a platform off a campaign: DELETE /campaigns/:id/platforms/:source. The same rule as a
+ * change: only while that platform has written no analytics for the campaign.
+ */
+export async function removePlatform(
+  deps: CampaignDeps,
+  campaignId: string,
+  sourceId: string,
+  language: string,
+): Promise<repo.CampaignRecord> {
+  const campaign = await deps.db.withTransaction(async (tx) => {
+    const current = await repo.findCampaignForUpdate(tx, campaignId)
+    if (!current) throw new CampaignNotFoundError(`campaign ${campaignId} does not exist`)
+    const link = await repo.findLink(tx, campaignId, sourceId, language)
+    if (!link) {
+      throw new PlatformNotFoundError(
+        `campaign ${campaignId} has no ${sourceId} ids${language === '' ? '' : ` for language '${language}'`}`,
+      )
+    }
+    await assertIdsChangeable(tx, { id: link.id, campaignId, sourceId, language })
+    await repo.deleteLink(tx, link.id)
+    return settleHeadline(tx, current)
+  })
+  deps.log.info({ campaignId, source: sourceId, language }, 'platform removed')
+  return campaign
+}
+
+/** Every id the link has is still in the request, unchanged in role, label and tag. */
+function keepsEvery(current: readonly EntitySetup[], wanted: readonly EntitySetup[]): boolean {
+  return current.every((have) =>
+    wanted.some(
+      (want) =>
+        want.level === have.level &&
+        want.externalId === have.externalId &&
+        (want.role ?? null) === (have.role ?? null) &&
+        (want.label ?? null) === (have.label ?? null) &&
+        want.campaignTag === have.campaignTag,
+    ),
+  )
+}
+
+/** jsonb hands keys back in its own order, so compare with the keys sorted. */
+function sameJson(a: unknown, b: unknown): boolean {
+  const sorted = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(sorted)
+      : value !== null && typeof value === 'object'
+        ? Object.fromEntries(
+            Object.entries(value)
+              .sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))
+              .map(([key, inner]) => [key, sorted(inner)]),
+          )
+        : value
+  return JSON.stringify(sorted(a)) === JSON.stringify(sorted(b))
+}
+
+/**
+ * Under the link's sync-run gate lock — the lock a run opens under — so no run can start between
+ * this check and the change, and none is fetching with the old ids.
+ */
+async function assertIdsChangeable(
+  tx: Tx,
+  link: { id: string; campaignId: string; sourceId: string; language: string },
+): Promise<void> {
+  await tx.xactLock(`sync-run-gate:${link.id}`)
+  const activity = await repo.linkActivity(tx, link)
+  if (activity.running) {
+    throw new PlatformSyncRunningError(
+      `a ${link.sourceId} sync is running for campaign ${link.campaignId}; try again when it has finished`,
+    )
+  }
+  if (activity.hasData) {
+    throw new PlatformHasDataError(
+      `campaign ${link.campaignId} already has ${link.sourceId} analytics; its ids can only be added to`,
+    )
+  }
+}
+
+/** After the links changed, the headline follows presets.ts headlineSource. */
+async function settleHeadline(tx: Tx, campaign: repo.CampaignRecord): Promise<repo.CampaignRecord> {
+  const headline = headlineSource(await repo.listLinkSources(tx, campaign.id))
+  if (headline === campaign.primarySource) return campaign
+  return repo.updateCampaign(tx, campaign.id, {
+    name: campaign.name,
+    primarySource: headline,
+    timezone: campaign.timezone,
+    languages: campaign.languages,
+    startsOn: campaign.startsOn,
+    endsOn: campaign.endsOn,
+    status: campaign.status,
+    price: campaign.price,
+  })
 }
 
 async function resolveCredential(

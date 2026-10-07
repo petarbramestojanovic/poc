@@ -6,7 +6,8 @@ import { sourceSetupSchema, type SourceSetup } from './input.ts'
 // to, the two NEXD events that mean the same thing in every creative — is decided here, once, so
 // the console form and a future CRM adapter set a campaign up identically.
 //
-// A new platform is one schema and one function in this file, plus its key in platformSources.
+// A new platform is one schema and one function in this file, plus its key in PLATFORM_PRESETS
+// (and in HEADLINE_ORDER, if it may be a headline).
 
 const id = z.union([z.string(), z.number()]).transform((value) => String(value).trim())
 const nonEmptyId = id.refine((value) => value.length > 0 && value.length <= 255, {
@@ -106,16 +107,24 @@ export function nexdSetup(input: NexdPreset): SourceSetup {
   })
 }
 
-/** The `sources` object of a setup request: one optional block per platform. */
-export const platformSourcesSchema = z.strictObject({
-  zeus: zeusPresetSchema.optional(),
-  nexd: nexdPresetSchema.optional(),
-})
-export type PlatformSources = z.infer<typeof platformSourcesSchema>
+/**
+ * The platforms a person can give ids for, each with its preset: PUT /campaigns/:id/platforms/:key
+ * takes `schema` and hands `toSetup`'s result to the setup service.
+ */
+export const PLATFORM_PRESETS = {
+  zeus: { schema: zeusPresetSchema, toSetup: zeusSetup },
+  nexd: { schema: nexdPresetSchema, toSetup: nexdSetup },
+} as const
+export type PresetPlatform = keyof typeof PLATFORM_PRESETS
 
-export function toSourceSetups(sources: PlatformSources): SourceSetup[] {
-  return [
-    ...(sources.zeus ? [zeusSetup(sources.zeus)] : []),
-    ...(sources.nexd ? [nexdSetup(sources.nexd)] : []),
-  ]
+/**
+ * Whose numbers are a campaign's headline when nobody chose: the first of these it has ids for,
+ * and Zeus while it has none yet (a campaign arriving from Salesforce has no platform ids).
+ */
+export const HEADLINE_ORDER = ['zeus', 'nexd'] as const
+
+export function headlineSource(sources: readonly string[]): string {
+  return (
+    HEADLINE_ORDER.find((source) => sources.includes(source)) ?? sources[0] ?? HEADLINE_ORDER[0]
+  )
 }

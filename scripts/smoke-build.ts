@@ -13,6 +13,7 @@ const modules = [
   'webhooks/scheduler.js',
   'routes/webhooks.js',
   'routes/campaigns.js',
+  'routes/inbound.js',
   'webhooks/admin.js',
   'webhooks/build.js',
   'webhooks/fields.js',

@@ -13,9 +13,10 @@ import type { Db } from './db.ts'
 import type { CampaignDeps } from './campaigns/service.ts'
 import { AppError } from './errors.ts'
 import type { Logger } from './log.ts'
-import { requireAdminToken } from './plugins/admin-auth.ts'
+import { requireAdminToken, requireBearerToken } from './plugins/admin-auth.ts'
 import { campaignRoutes, companyRoutes } from './routes/campaigns.ts'
 import { healthRoutes } from './routes/health.ts'
+import { inboundRoutes } from './routes/inbound.ts'
 import { syncRoutes } from './routes/sync.ts'
 import { webhookRoutes } from './routes/webhooks.ts'
 import type { RunTracker, SyncDeps } from './sync/engine.ts'
@@ -33,12 +34,18 @@ export interface AppDeps {
   sync?: SyncDeps
   /** Webhook machinery behind the /webhooks routes. Without it /webhooks answers 404. */
   webhooks?: SendDeps
-  /** Campaign setup behind /companies and /campaigns. Without it both answer 404. */
+  /**
+   * Campaign setup behind /companies, /campaigns and (with config.inboundCampaignsToken)
+   * /inbound/campaigns. Without it they answer 404.
+   */
   campaigns?: CampaignDeps
 }
 
 /** Admin prefixes: every method and path under these requires the operator token. */
 export const ADMIN_PREFIXES = ['/sync', '/webhooks', '/companies', '/campaigns'] as const
+
+/** Where other systems push to us, behind config.inboundCampaignsToken. Never an admin route. */
+export const INBOUND_PREFIX = '/inbound'
 
 export function buildApp({
   config,
@@ -118,6 +125,22 @@ export function buildApp({
         }
       },
       { prefix },
+    )
+  }
+
+  // The same shape as an admin scope, with its own token: the sending app can push the report and
+  // reach nothing else. Without a token there is no /inbound scope, and the root answers 404.
+  const inboundToken = config.inboundCampaignsToken
+  if (inboundToken !== undefined && campaigns) {
+    app.register(
+      async (inbound) => {
+        inbound.addHook('onRequest', requireBearerToken(inboundToken, 'inbound'))
+        inbound.setNotFoundHandler(async (_request, reply) =>
+          reply.code(404).send({ error: 'not_found' }),
+        )
+        await inbound.register(inboundRoutes, { deps: campaigns })
+      },
+      { prefix: INBOUND_PREFIX },
     )
   }
 

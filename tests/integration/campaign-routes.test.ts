@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { buildApp } from '../../src/app.ts'
 import type { Config } from '../../src/config.ts'
+import { campaignSetupSchema } from '../../src/campaigns/input.ts'
+import { setUpCampaign } from '../../src/campaigns/service.ts'
 import { createDb, type Db } from '../../src/db.ts'
 import { createHttpClient } from '../../src/http/HttpClient.ts'
 import { createLimiter } from '../../src/limiter.ts'
@@ -14,9 +16,10 @@ import type { LinkEntity, SourceConnector } from '../../src/sync/types.ts'
 import { webhookPayloadSchema } from '../../src/webhooks/payload.ts'
 import { at } from '../helpers.ts'
 
-// The admin API end to end, over HTTP and against the real schema: what is typed into a form
-// becomes a campaign the sync engine accepts and a webhook payload carries. Every row hangs off a
-// company named 'IT Routes …' and platform ids start with 'it-routes-'.
+// The admin API end to end, over HTTP and against the real schema: a campaign as the Salesforce
+// report leaves it (no platform ids yet), the ids a person then gives it, the sync engine accepting
+// them, and a webhook reporting it. Every row hangs off a company named 'IT Routes …' and platform
+// ids start with 'it-routes-'.
 
 const TOKEN = 'a-long-enough-operator-token-0123456789'
 const auth = { authorization: `Bearer ${TOKEN}` }
@@ -33,26 +36,27 @@ const config: Config = {
   webhookSchedulerEnabled: false,
 }
 
-const body = (over: Record<string, unknown> = {}) => ({
-  company: { name: 'IT Routes Rauch' },
-  name: 'IT Routes Cafemio',
-  startsOn: '2026-06-30',
-  endsOn: '2026-09-30',
-  sources: {
-    zeus: {
-      campaignId: 'it-routes-18',
-      idType: 'internal_id',
-      pixels: [{ code: 'it-routes-eng', role: 'engagement' }],
-    },
-  },
+const zeusIds = (over: Record<string, unknown> = {}) => ({
+  campaignId: 'it-routes-18',
+  idType: 'internal_id',
+  pixels: [{ code: 'it-routes-eng', role: 'engagement' }],
   ...over,
 })
 
-interface SetupResponse {
-  created: boolean
-  company: { id: string }
-  campaign: { id: string; name: string }
-  links: { id: string; source: string }[]
+interface Detail {
+  id: string
+  name: string
+  primarySource: string
+  links: {
+    id: string
+    source: string
+    config: Record<string, unknown>
+    entities: { level: string; externalId: string; role: string | null }[]
+  }[]
+}
+interface Change {
+  outcome: string
+  campaign: Detail
 }
 
 describe('campaign admin API', () => {
@@ -101,133 +105,41 @@ describe('campaign admin API', () => {
     await db.close()
   })
 
+  const deps = () => ({ db, registry: createDefaultRegistry(), log: createLogger('silent') })
+
+  /** A campaign the way the Salesforce report creates one: no platform ids. */
+  const seed = async (name = 'IT Routes Cafemio', ref = 'it-routes-006-1') =>
+    (
+      await setUpCampaign(
+        deps(),
+        campaignSetupSchema.parse({
+          externalRef: { system: 'salesforce', id: ref },
+          company: {
+            name: 'IT Routes Rauch',
+            externalRef: { system: 'salesforce', id: 'it_routes_rauch' },
+          },
+          name,
+          startsOn: '2026-06-30',
+          endsOn: '2026-09-30',
+        }),
+      )
+    ).campaign
+
   const post = (url: string, payload: unknown) =>
     app.inject({ method: 'POST', url, headers: auth, payload: payload as Record<string, unknown> })
   const get = (url: string) => app.inject({ method: 'GET', url, headers: auth })
-
-  it('creates a campaign from the ids a person has, and lists it back', async () => {
-    const created = await post('/campaigns', body())
-    expect(created.statusCode).toBe(201)
-    const setup = created.json<SetupResponse>()
-    expect(setup.created).toBe(true)
-
-    const list = await get(`/campaigns?companyId=${setup.company.id}`)
-    expect(list.statusCode).toBe(200)
-    expect(list.json()).toMatchObject([
-      {
-        id: setup.campaign.id,
-        name: 'IT Routes Cafemio',
-        companyName: 'IT Routes Rauch',
-        primarySource: 'zeus',
-        links: [{ source: 'zeus', language: '', enabled: true, entities: 2 }],
-      },
-    ])
-
-    const detail = await get(`/campaigns/${setup.campaign.id}`)
-    expect(detail.json()).toMatchObject({
-      links: [
-        {
-          config: { clickthrough_cta_id: 'clickthrough', campaign_id_param: 'internal_id' },
-          entities: [
-            { level: 'campaign', externalId: 'it-routes-18', role: null },
-            { level: 'pixel', externalId: 'it-routes-eng', role: 'engagement' },
-          ],
-        },
-      ],
-    })
-  })
-
-  it('answers 201 for a new external reference and 200 when it comes again', async () => {
-    const externalRef = { system: 'salesforce', id: 'it-routes-006' }
-    const first = await post('/campaigns', body({ externalRef }))
-    const second = await post('/campaigns', body({ externalRef, name: 'IT Routes Renamed' }))
-
-    expect([first.statusCode, second.statusCode]).toEqual([201, 200])
-    expect(second.json<SetupResponse>().campaign).toMatchObject({
-      id: first.json<SetupResponse>().campaign.id,
-      name: 'IT Routes Renamed',
-    })
-  })
-
-  it('names the campaign that already owns a platform id', async () => {
-    await post('/campaigns', body())
-    const twin = await post(
-      '/campaigns',
-      body({ company: { name: 'IT Routes Other' }, name: 'IT Routes Twin' }),
-    )
-
-    expect(twin.statusCode).toBe(409)
-    expect(twin.json()).toMatchObject({ error: 'entity_in_use' })
-    expect(twin.json<{ message: string }>().message).toContain('IT Routes Cafemio')
-  })
-
-  it('edits a campaign and answers 404 for one that does not exist', async () => {
-    const { campaign } = (await post('/campaigns', body())).json<SetupResponse>()
-
-    const edited = await app.inject({
-      method: 'PATCH',
-      url: `/campaigns/${campaign.id}`,
+  const put = (id: string, platform: string, payload: Record<string, unknown>) =>
+    app.inject({
+      method: 'PUT',
+      url: `/campaigns/${id}/platforms/${platform}`,
       headers: auth,
-      payload: { status: 'archived', endsOn: null },
+      payload,
     })
-    const missing = await app.inject({
-      method: 'PATCH',
-      url: '/campaigns/00000000-0000-4000-8000-00000000dead',
-      headers: auth,
-      payload: { status: 'archived' },
-    })
+  const remove = (id: string, platform: string) =>
+    app.inject({ method: 'DELETE', url: `/campaigns/${id}/platforms/${platform}`, headers: auth })
 
-    expect(edited.statusCode).toBe(200)
-    expect(edited.json()).toMatchObject({
-      status: 'archived',
-      endsOn: null,
-      startsOn: '2026-06-30',
-    })
-    expect(missing.statusCode).toBe(404)
-    expect((await get('/campaigns/00000000-0000-4000-8000-00000000dead')).statusCode).toBe(404)
-  })
-
-  it('carries the price through create, list, detail and edit', async () => {
-    const price = { value: 20.4, currency: 'EUR' }
-    const { campaign } = (await post('/campaigns', body({ price }))).json<SetupResponse>()
-
-    const listed = (await get('/campaigns')).json<{ id: string; price: unknown }[]>()
-    expect(listed.find((row) => row.id === campaign.id)?.price).toEqual(price)
-    expect((await get(`/campaigns/${campaign.id}`)).json()).toMatchObject({ price })
-
-    const patch = (payload: Record<string, unknown>) =>
-      app.inject({ method: 'PATCH', url: `/campaigns/${campaign.id}`, headers: auth, payload })
-    const repriced = await patch({ price: { value: 15.5876, currency: 'CHF' } })
-    const cleared = await patch({ price: null })
-
-    expect(repriced.json()).toMatchObject({ price: { value: 15.5876, currency: 'CHF' } })
-    expect(cleared.json()).toMatchObject({ price: null })
-  })
-
-  it('creates a company once per external reference and lists it with its campaigns', async () => {
-    const externalRef = { system: 'salesforce', id: 'it-routes-001' }
-    const first = await post('/companies', { name: 'IT Routes Account', externalRef })
-    const again = await post('/companies', { name: 'IT Routes Account AG', externalRef })
-    const namesake = await post('/companies', { name: 'it routes account ag' })
-
-    expect([first.statusCode, again.statusCode, namesake.statusCode]).toEqual([201, 200, 409])
-    expect(again.json()).toMatchObject({
-      id: first.json<{ id: string }>().id,
-      name: 'IT Routes Account AG',
-    })
-
-    const listed = (await get('/companies')).json<{ name: string; campaigns: number }[]>()
-    expect(listed.find((company) => company.name === 'IT Routes Account AG')).toMatchObject({
-      campaigns: 0,
-      externalRef,
-    })
-  })
-
-  it('sets up a campaign the sync engine accepts as it is', async () => {
-    const setup = (await post('/campaigns', body())).json<SetupResponse>()
-    const linkId = at(setup.links).id
-
-    // Zeus itself is scripted; its config schema and the engine around it are the real ones.
+  /** One synced day through the real engine, with Zeus itself scripted. */
+  const syncOneDay = async (linkId: string) => {
     let seen: LinkEntity[] = []
     const scripted: SourceConnector = {
       ...createDefaultRegistry().get('zeus'),
@@ -251,7 +163,6 @@ describe('campaign admin API', () => {
         })
       },
     }
-
     const summary = await runSync(
       {
         db,
@@ -263,18 +174,220 @@ describe('campaign admin API', () => {
       },
       { linkId, window: { from: '2026-09-01', to: '2026-09-01' }, trigger: 'backfill' },
     )
+    return { summary, seen }
+  }
 
+  it('lists a campaign from the report before it has any platform id', async () => {
+    const campaign = await seed()
+
+    const list = await get(`/campaigns?companyId=${campaign.companyId}`)
+    expect(list.statusCode).toBe(200)
+    expect(list.json()).toMatchObject([
+      {
+        id: campaign.id,
+        name: 'IT Routes Cafemio',
+        companyName: 'IT Routes Rauch',
+        primarySource: 'zeus',
+        externalRef: { system: 'salesforce', id: 'it-routes-006-1' },
+        links: [],
+      },
+    ])
+    const companies = (await get('/companies')).json<{ name: string }[]>()
+    expect(companies.find((company) => company.name === 'IT Routes Rauch')).toMatchObject({
+      campaigns: 1,
+      externalRef: { system: 'salesforce', id: 'it_routes_rauch' },
+    })
+  })
+
+  it('gives a campaign its Zeus ids, and the sync engine takes them as they are', async () => {
+    const campaign = await seed()
+
+    const res = await put(campaign.id, 'zeus', zeusIds())
+    expect(res.statusCode).toBe(200)
+    const { outcome, campaign: detail } = res.json<Change>()
+    expect(outcome).toBe('created')
+    expect(detail.links).toMatchObject([
+      {
+        source: 'zeus',
+        config: { clickthrough_cta_id: 'clickthrough', campaign_id_param: 'internal_id' },
+        entities: [
+          { level: 'campaign', externalId: 'it-routes-18', role: null },
+          { level: 'pixel', externalId: 'it-routes-eng', role: 'engagement' },
+        ],
+      },
+    ])
+
+    const { summary, seen } = await syncOneDay(at(detail.links).id)
     expect(summary.daysWritten).toBe(1)
     expect(seen.map((entity) => [entity.level, entity.externalId, entity.role])).toEqual([
       ['campaign', 'it-routes-18', null],
       ['pixel', 'it-routes-eng', 'engagement'],
     ])
-    // The click landed on the CTA the setup created.
+    // The click landed on the CTA the preset created.
     const clicks = await db.query<{ cta_counter: string }>(
       'SELECT cta_counter FROM analytics.cta_clicks WHERE campaign_id = $1',
-      [setup.campaign.id],
+      [campaign.id],
     )
     expect(clicks.map((row) => Number(row.cta_counter))).toEqual([12])
+  })
+
+  it('adds ids, and changes nothing for ids it already has', async () => {
+    const campaign = await seed()
+    await put(campaign.id, 'zeus', zeusIds())
+
+    const again = await put(campaign.id, 'zeus', zeusIds())
+    const more = await put(
+      campaign.id,
+      'zeus',
+      zeusIds({
+        pixels: [
+          { code: 'it-routes-eng', role: 'engagement' },
+          { code: 'it-routes-fin', role: 'finish' },
+        ],
+      }),
+    )
+
+    expect(again.json<Change>().outcome).toBe('unchanged')
+    expect(more.json<Change>().outcome).toBe('added')
+    expect(at(more.json<Change>().campaign.links).entities.map((e) => e.externalId)).toEqual([
+      'it-routes-18',
+      'it-routes-eng',
+      'it-routes-fin',
+    ])
+  })
+
+  it('replaces a wrong id while the platform has no data, and forgets its sync state', async () => {
+    const campaign = await seed()
+    const wrong = await put(
+      campaign.id,
+      'zeus',
+      zeusIds({ campaignId: 'it-routes-81', idType: 'external_id' }),
+    )
+    const wrongLink = at(wrong.json<Change>().campaign.links).id
+    // A sync that covered days and found nothing under the wrong id.
+    await db.query(
+      `INSERT INTO external.sync_state (link_id, data_complete_through) VALUES ($1, '2026-09-30')`,
+      [wrongLink],
+    )
+
+    const fixed = await put(campaign.id, 'zeus', zeusIds())
+
+    expect(fixed.statusCode).toBe(200)
+    const { outcome, campaign: detail } = fixed.json<Change>()
+    expect(outcome).toBe('replaced')
+    expect(at(detail.links)).toMatchObject({
+      config: { campaign_id_param: 'internal_id' },
+      entities: [
+        { level: 'campaign', externalId: 'it-routes-18' },
+        { level: 'pixel', externalId: 'it-routes-eng' },
+      ],
+    })
+    expect(
+      await db.query(
+        `SELECT 1 FROM external.sync_state s JOIN external.campaign_link l ON l.id = s.link_id
+          WHERE l.campaign_id = $1`,
+        [campaign.id],
+      ),
+    ).toEqual([])
+    // The wrong id belongs to nobody any more.
+    expect(
+      await db.query(`SELECT 1 FROM external.link_entity WHERE external_id = 'it-routes-81'`),
+    ).toEqual([])
+  })
+
+  it('keeps the ids a platform has written analytics with: they can only be added to', async () => {
+    const campaign = await seed()
+    const created = await put(campaign.id, 'zeus', zeusIds())
+    await syncOneDay(at(created.json<Change>().campaign.links).id)
+
+    const changed = await put(campaign.id, 'zeus', zeusIds({ campaignId: 'it-routes-19' }))
+    const dropped = await put(campaign.id, 'zeus', zeusIds({ pixels: [] }))
+    const otherKind = await put(campaign.id, 'zeus', zeusIds({ idType: 'external_id' }))
+    const removed = await remove(campaign.id, 'zeus')
+    for (const res of [changed, dropped, otherKind, removed]) {
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({ error: 'platform_has_data' })
+    }
+
+    const added = await put(
+      campaign.id,
+      'zeus',
+      zeusIds({
+        pixels: [
+          { code: 'it-routes-eng', role: 'engagement' },
+          { code: 'it-routes-fin', role: 'finish' },
+        ],
+      }),
+    )
+    expect(added.json<Change>().outcome).toBe('added')
+
+    // The rule is per platform: NEXD has written nothing for this campaign, so it can still change.
+    await put(campaign.id, 'nexd', { creatives: [{ liveId: 'it-routes-nx-1' }] })
+    const nexd = await put(campaign.id, 'nexd', { creatives: [{ liveId: 'it-routes-nx-2' }] })
+    expect(nexd.json<Change>().outcome).toBe('replaced')
+  })
+
+  it('changes no id while a sync is fetching with them', async () => {
+    const campaign = await seed()
+    const created = await put(campaign.id, 'zeus', zeusIds())
+    await db.query(
+      `INSERT INTO external.sync_run (link_id, trigger, window_from, window_to)
+       VALUES ($1, 'manual', '2026-09-01', '2026-09-01')`,
+      [at(created.json<Change>().campaign.links).id],
+    )
+
+    const changed = await put(campaign.id, 'zeus', zeusIds({ campaignId: 'it-routes-19' }))
+    const removed = await remove(campaign.id, 'zeus')
+
+    for (const res of [changed, removed]) {
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({ error: 'sync_in_progress' })
+    }
+  })
+
+  it('moves the headline with the platforms the campaign has ids for', async () => {
+    const campaign = await seed()
+    const headline = (res: Awaited<ReturnType<typeof put>>) =>
+      res.json<Change>().campaign.primarySource
+
+    const nexdOnly = await put(campaign.id, 'nexd', { creatives: [{ liveId: 'it-routes-nx-1' }] })
+    const both = await put(campaign.id, 'zeus', zeusIds())
+    const zeusRemoved = await remove(campaign.id, 'zeus')
+    const noneLeft = await remove(campaign.id, 'nexd')
+    const gone = await remove(campaign.id, 'nexd')
+
+    expect([headline(nexdOnly), headline(both)]).toEqual(['nexd', 'zeus'])
+    expect(zeusRemoved.json<Detail>().primarySource).toBe('nexd')
+    expect(noneLeft.json<Detail>()).toMatchObject({ primarySource: 'zeus', links: [] })
+    expect(gone.statusCode).toBe(404)
+    expect(gone.json()).toMatchObject({ error: 'platform_not_found' })
+  })
+
+  it('names the campaign that already owns a platform id', async () => {
+    const first = await seed()
+    const twin = await seed('IT Routes Twin', 'it-routes-006-2')
+    await put(first.id, 'zeus', zeusIds())
+
+    const res = await put(twin.id, 'zeus', zeusIds())
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ error: 'entity_in_use' })
+    expect(res.json<{ message: string }>().message).toContain('IT Routes Cafemio')
+  })
+
+  it('answers 404 for a campaign that does not exist', async () => {
+    const dead = '00000000-0000-4000-8000-00000000dead'
+    const responses = [
+      await get(`/campaigns/${dead}`),
+      await put(dead, 'zeus', zeusIds()),
+      await remove(dead, 'zeus'),
+    ]
+    expect(responses.map((res) => res.statusCode)).toEqual([404, 404, 404])
+    expect(responses.map((res) => res.json<{ error: string }>().error)).toEqual([
+      'campaign_not_found',
+      'campaign_not_found',
+      'campaign_not_found',
+    ])
   })
 
   describe('webhooks', () => {
@@ -287,9 +400,9 @@ describe('campaign admin API', () => {
     })
 
     it('hands the signing secret over once and never lists it', async () => {
-      const { company } = (await post('/campaigns', body())).json<SetupResponse>()
+      const { companyId } = await seed()
 
-      const created = await post('/webhooks', webhook(company.id))
+      const created = await post('/webhooks', webhook(companyId))
       expect(created.statusCode).toBe(201)
       const { secret, webhook: summary } = created.json<{
         secret: string
@@ -319,15 +432,16 @@ describe('campaign admin API', () => {
         'invalid_webhook',
       ],
     ])('refuses %s with 422', async (_name, over, code) => {
-      const { company } = (await post('/campaigns', body())).json<SetupResponse>()
-      const res = await post('/webhooks', webhook(company.id, over))
+      const { companyId } = await seed()
+      const res = await post('/webhooks', webhook(companyId, over))
       expect(res.statusCode).toBe(422)
       expect(res.json()).toMatchObject({ error: code })
     })
 
-    it('reports a campaign that was set up through the API', async () => {
-      const setup = (await post('/campaigns', body())).json<SetupResponse>()
-      const created = (await post('/webhooks', webhook(setup.company.id))).json<{
+    it('reports a campaign once it has its platform ids', async () => {
+      const campaign = await seed()
+      await put(campaign.id, 'zeus', zeusIds())
+      const created = (await post('/webhooks', webhook(campaign.companyId))).json<{
         webhook: { id: string }
       }>()
 

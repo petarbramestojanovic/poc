@@ -1,6 +1,6 @@
 import { AppError } from '../errors.ts'
 
-// Refusals of the campaign setup service, with the status the admin routes answer. A 4xx here is
+// Refusals of the campaign setup service, with the status the admin and inbound routes answer. A 4xx here is
 // always something the caller can fix by changing what it sent.
 
 export class CampaignSetupError extends AppError {
@@ -46,13 +46,6 @@ export class EntityInUseError extends CampaignSetupError {
   override readonly status = 409
 }
 
-/** A new campaign with no source, or with several, has to say which one is the headline. */
-export class PrimarySourceRequiredError extends CampaignSetupError {
-  override readonly name = 'PrimarySourceRequiredError'
-  override readonly code = 'primary_source_required'
-  override readonly status = 422
-}
-
 /** The source is unknown, is not a platform we sync, or is switched off. */
 export class UnsupportedSourceError extends CampaignSetupError {
   override readonly name = 'UnsupportedSourceError'
@@ -78,6 +71,31 @@ export class InvalidSetupError extends CampaignSetupError {
 export class SetupConflictError extends CampaignSetupError {
   override readonly name = 'SetupConflictError'
   override readonly code = 'setup_conflict'
+  override readonly status = 409
+  override readonly retryable = true
+}
+
+/** The campaign has no link for this platform (and language), so there is nothing to change. */
+export class PlatformNotFoundError extends CampaignSetupError {
+  override readonly name = 'PlatformNotFoundError'
+  override readonly code = 'platform_not_found'
+  override readonly status = 404
+}
+
+/**
+ * Changing or removing a platform id once rows were written with it would leave those rows
+ * attributed to the wrong ids. Adding ids is always allowed; this refuses everything else.
+ */
+export class PlatformHasDataError extends CampaignSetupError {
+  override readonly name = 'PlatformHasDataError'
+  override readonly code = 'platform_has_data'
+  override readonly status = 409
+}
+
+/** A sync run is fetching with the current ids; changing them now would race its write. */
+export class PlatformSyncRunningError extends CampaignSetupError {
+  override readonly name = 'PlatformSyncRunningError'
+  override readonly code = 'sync_in_progress'
   override readonly status = 409
   override readonly retryable = true
 }
