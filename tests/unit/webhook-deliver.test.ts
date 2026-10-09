@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { HttpError } from '../../src/http/HttpClient.ts'
+import { HttpError } from '../../src/core/http/HttpClient.ts'
 import {
   deliverOnce,
   MAX_ATTEMPTS,
   nextAttemptAt,
   RETRY_DELAYS_MS,
   type DeliverDeps,
-} from '../../src/webhooks/deliver.ts'
-import type { DueDelivery } from '../../src/webhooks/repo.ts'
-import { verifyBody } from '../../src/webhooks/sign.ts'
-import type { Lookup } from '../../src/webhooks/ssrf.ts'
+} from '../../src/modules/webhooks/deliver.ts'
+import type { DueDelivery } from '../../src/modules/webhooks/repo.ts'
+import { verifyBody } from '../../src/modules/webhooks/sign.ts'
+import type { Lookup } from '../../src/modules/webhooks/ssrf.ts'
 import { at } from '../helpers.ts'
 import { fakeDb, fakeHttp, response, silentLogger, type Answer } from './webhook-fakes.ts'
 

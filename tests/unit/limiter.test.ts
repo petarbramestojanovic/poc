@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { limitDb, type Db } from '../../src/db.ts'
-import { createLimiter } from '../../src/limiter.ts'
+import { limitDb, type Db } from '../../src/core/db.ts'
+import { createLimiter } from '../../src/core/limiter.ts'
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5))
 

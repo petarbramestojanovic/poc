@@ -1,12 +1,12 @@
 import type { TaskOptions } from 'node-cron'
 import { describe, expect, it } from 'vitest'
-import type { Db } from '../../src/db.ts'
-import { createLimiter } from '../../src/limiter.ts'
-import { createLogger } from '../../src/log.ts'
-import type { SyncDeps } from '../../src/sync/engine.ts'
-import { NIGHTLY_LEADER_LOCK_KEY } from '../../src/sync/nightly.ts'
-import { createRegistry } from '../../src/sync/registry.ts'
-import { NIGHTLY_CRON, startNightlyScheduler } from '../../src/sync/scheduler.ts'
+import type { Db } from '../../src/core/db.ts'
+import { createLimiter } from '../../src/core/limiter.ts'
+import { createLogger } from '../../src/core/log.ts'
+import type { SyncDeps } from '../../src/modules/sync/engine.ts'
+import { NIGHTLY_LEADER_LOCK_KEY } from '../../src/modules/sync/nightly.ts'
+import { createRegistry } from '../../src/modules/sync/registry.ts'
+import { NIGHTLY_CRON, startNightlyScheduler } from '../../src/modules/sync/scheduler.ts'
 
 function deps(withAdvisoryLock: Db['withAdvisoryLock']): SyncDeps {
   const db: Db = {

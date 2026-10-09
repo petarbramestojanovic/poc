@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { createDb } from '../../src/db.ts'
+import { createDb } from '../../src/core/db.ts'
 
 // The real CLI process against the local database. Its environment carries no platform keys, so
 // every case stops before any network call: this proves the wiring (arguments, config, runtime,

@@ -1,22 +1,25 @@
 import type { FastifyInstance } from 'fastify'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { buildApp } from '../../src/app.ts'
-import type { Config } from '../../src/config.ts'
-import { createDb, type Db } from '../../src/db.ts'
-import { createHttpClient } from '../../src/http/HttpClient.ts'
-import { createLogger } from '../../src/log.ts'
-import { createWebhook, type NewWebhook } from '../../src/webhooks/admin.ts'
+import type { Config } from '../../src/core/config.ts'
+import { createDb, type Db } from '../../src/core/db.ts'
+import { createHttpClient } from '../../src/core/http/HttpClient.ts'
+import { createLogger } from '../../src/core/log.ts'
+import { createWebhook, type NewWebhook } from '../../src/modules/webhooks/admin.ts'
 import {
   payloadFieldsSchema,
   payloadShapeOf,
   readStoredFields,
   type PayloadFieldsInput,
-} from '../../src/webhooks/fields.ts'
-import { webhookPayloadSchema, webhookPayloadSchemaFor } from '../../src/webhooks/payload.ts'
-import { deliverDueDeliveries, enqueueDueWebhooks } from '../../src/webhooks/scheduler.ts'
-import { sendNow, type SendDeps } from '../../src/webhooks/send.ts'
-import { verifyBody } from '../../src/webhooks/sign.ts'
-import type { Lookup } from '../../src/webhooks/ssrf.ts'
+} from '../../src/modules/webhooks/fields.ts'
+import {
+  webhookPayloadSchema,
+  webhookPayloadSchemaFor,
+} from '../../src/modules/webhooks/payload.ts'
+import { deliverDueDeliveries, enqueueDueWebhooks } from '../../src/modules/webhooks/scheduler.ts'
+import { sendNow, type SendDeps } from '../../src/modules/webhooks/send.ts'
+import { verifyBody } from '../../src/modules/webhooks/sign.ts'
+import type { Lookup } from '../../src/modules/webhooks/ssrf.ts'
 import { at } from '../helpers.ts'
 
 // Migration 0007 and the field lists behind it, against the real schema: a Tchibo-style webhook

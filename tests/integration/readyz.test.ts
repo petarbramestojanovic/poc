@@ -1,9 +1,9 @@
 import { Client } from 'pg'
 import { describe, expect, it } from 'vitest'
 import { buildApp } from '../../src/app.ts'
-import type { Config } from '../../src/config.ts'
-import { createDb, type DbOptions } from '../../src/db.ts'
-import { createLogger } from '../../src/log.ts'
+import type { Config } from '../../src/core/config.ts'
+import { createDb, type DbOptions } from '../../src/core/db.ts'
+import { createLogger } from '../../src/core/log.ts'
 
 const DATABASE_URL = process.env.DATABASE_URL ?? ''
 

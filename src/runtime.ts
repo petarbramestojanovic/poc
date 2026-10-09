@@ -1,11 +1,11 @@
-import type { RuntimeConfig } from './config.ts'
-import { createDb, type Db } from './db.ts'
-import { createHttpClient, type HttpClient } from './http/HttpClient.ts'
-import { createLimiter, type Limiter } from './limiter.ts'
-import { createLogger, type Logger } from './log.ts'
-import { createDefaultRegistry } from './sync/connectors/index.ts'
-import { SYNC_MAX_CONNECTIONS, verifyRegistryAgainstSources } from './sync/engine.ts'
-import type { ConnectorRegistry } from './sync/registry.ts'
+import type { RuntimeConfig } from './core/config.ts'
+import { createDb, type Db } from './core/db.ts'
+import { createHttpClient, type HttpClient } from './core/http/HttpClient.ts'
+import { createLimiter, type Limiter } from './core/limiter.ts'
+import { createLogger, type Logger } from './core/log.ts'
+import { createDefaultRegistry } from './modules/sync/connectors/index.ts'
+import { SYNC_MAX_CONNECTIONS, verifyRegistryAgainstSources } from './modules/sync/engine.ts'
+import type { ConnectorRegistry } from './modules/sync/registry.ts'
 
 // The one place the sync machinery is assembled. The service and the operator CLI both call it,
 // so a CLI run uses exactly the pool settings, HTTP client, connectors and pool share the nightly

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { InvalidFormulaError, InvalidWebhookError } from '../../src/webhooks/errors.ts'
+import { InvalidFormulaError, InvalidWebhookError } from '../../src/modules/webhooks/errors.ts'
 import {
   clicksKey,
   compileFields,
@@ -14,13 +14,13 @@ import {
   type PayloadFieldsInput,
   type ShapeInputs,
   type SourceClicks,
-} from '../../src/webhooks/fields.ts'
-import { parseDecimal } from '../../src/webhooks/formula.ts'
+} from '../../src/modules/webhooks/fields.ts'
+import { parseDecimal } from '../../src/modules/webhooks/formula.ts'
 import {
   webhookPayloadSchema,
   webhookPayloadSchemaFor,
   type WebhookPayload,
-} from '../../src/webhooks/payload.ts'
+} from '../../src/modules/webhooks/payload.ts'
 import { at } from '../helpers.ts'
 import { fakeDb } from './webhook-fakes.ts'
 

@@ -6,15 +6,15 @@ import {
   updateWebhookFields,
   type NewWebhook,
   type WebhookAdminDeps,
-} from '../../src/webhooks/admin.ts'
+} from '../../src/modules/webhooks/admin.ts'
 import {
   BlockedTargetError,
   InvalidFormulaError,
   InvalidScheduleError,
   InvalidWebhookError,
   WebhookNotFoundError,
-} from '../../src/webhooks/errors.ts'
-import { payloadFieldsSchema } from '../../src/webhooks/fields.ts'
+} from '../../src/modules/webhooks/errors.ts'
+import { payloadFieldsSchema } from '../../src/modules/webhooks/fields.ts'
 import { at } from '../helpers.ts'
 import { fakeDb, silentLogger, type Respond } from './webhook-fakes.ts'
 

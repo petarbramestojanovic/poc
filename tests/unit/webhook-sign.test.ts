@@ -1,6 +1,11 @@
 import { createHmac } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { signBody, signedContent, SIGNATURE_PREFIX, verifyBody } from '../../src/webhooks/sign.ts'
+import {
+  signBody,
+  signedContent,
+  SIGNATURE_PREFIX,
+  verifyBody,
+} from '../../src/modules/webhooks/sign.ts'
 
 const BODY = '{"version":1,"delivery_id":"9c9f2f2a-6c1e-4a61-9d1a-4a3a5e2b77d1"}'
 const SECRET = 'whsec_2f8c1e9a7b4d6f0e3a5c7b9d1f2e4a6c'

@@ -1,6 +1,6 @@
-import type { Db, Params, Queryable, Tx } from '../../src/db.ts'
-import type { HttpClient, HttpRequest, HttpResponse } from '../../src/http/HttpClient.ts'
-import { createLogger, type Logger } from '../../src/log.ts'
+import type { Db, Params, Queryable, Tx } from '../../src/core/db.ts'
+import type { HttpClient, HttpRequest, HttpResponse } from '../../src/core/http/HttpClient.ts'
+import { createLogger, type Logger } from '../../src/core/log.ts'
 
 // Fakes for the webhook unit tests: a database that answers by statement name and records what it
 // was asked, and an HTTP client that answers a scripted response. Neither touches a socket.

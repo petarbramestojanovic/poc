@@ -2,18 +2,18 @@ import type { FastifyInstance } from 'fastify'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { buildApp } from '../../src/app.ts'
-import type { Config } from '../../src/config.ts'
-import { createDb, type Db } from '../../src/db.ts'
-import { createLimiter } from '../../src/limiter.ts'
-import { createLogger } from '../../src/log.ts'
+import type { Config } from '../../src/core/config.ts'
+import { createDb, type Db } from '../../src/core/db.ts'
+import { createLimiter } from '../../src/core/limiter.ts'
+import { createLogger } from '../../src/core/log.ts'
 import {
   createRunTracker,
   SYNC_MAX_CONNECTIONS,
   type RunTracker,
   type SyncDeps,
-} from '../../src/sync/engine.ts'
-import { createRegistry } from '../../src/sync/registry.ts'
-import type { FetchResult, SourceConnector, SyncContext } from '../../src/sync/types.ts'
+} from '../../src/modules/sync/engine.ts'
+import { createRegistry } from '../../src/modules/sync/registry.ts'
+import type { FetchResult, SourceConnector, SyncContext } from '../../src/modules/sync/types.ts'
 
 // The trigger route and the run status route against real rows, with a scripted connector.
 // Fixture ids are unique to this file.

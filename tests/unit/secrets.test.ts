@@ -4,7 +4,7 @@ import {
   InvalidSecretPointerError,
   MissingSecretError,
   resolveSecret,
-} from '../../src/secrets.ts'
+} from '../../src/core/secrets.ts'
 
 describe('resolveSecret', () => {
   it('returns the value of the named variable', () => {

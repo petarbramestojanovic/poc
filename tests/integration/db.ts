@@ -1,5 +1,5 @@
 import { Client, type QueryResultRow } from 'pg'
-import { dateAsStringTypes } from '../../src/db.ts'
+import { dateAsStringTypes } from '../../src/core/db.ts'
 import { afterEach, beforeEach } from 'vitest'
 
 // One client per test file, every test inside its own transaction that is rolled back,

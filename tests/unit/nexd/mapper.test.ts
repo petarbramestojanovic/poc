@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { NexdContractError } from '../../../src/sync/connectors/nexd/errors.ts'
+import { NexdContractError } from '../../../src/modules/sync/connectors/nexd/errors.ts'
 import {
   mapNexdRows,
   performanceDate,
   type NexdDay,
-} from '../../../src/sync/connectors/nexd/mapper.ts'
-import { nexdResponse } from '../../../src/sync/connectors/nexd/schema.ts'
-import type { CanonicalDailyRow } from '../../../src/sync/types.ts'
+} from '../../../src/modules/sync/connectors/nexd/mapper.ts'
+import { nexdResponse } from '../../../src/modules/sync/connectors/nexd/schema.ts'
+import type { CanonicalDailyRow } from '../../../src/modules/sync/types.ts'
 import { EVENT_MAP, KNOWN_TOTALS, loadFixture } from './helpers.ts'
 
 function fixtureDays(): NexdDay[] {

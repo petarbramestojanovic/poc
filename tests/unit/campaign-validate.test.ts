@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { InvalidSetupError, UnsupportedSourceError } from '../../src/campaigns/errors.ts'
-import { sourceSetupSchema, type SourceSetup } from '../../src/campaigns/input.ts'
+import { InvalidSetupError, UnsupportedSourceError } from '../../src/modules/campaigns/errors.ts'
+import { sourceSetupSchema, type SourceSetup } from '../../src/modules/campaigns/input.ts'
 import {
   nexdPresetSchema,
   nexdSetup,
   zeusPresetSchema,
   zeusSetup,
-} from '../../src/campaigns/presets.ts'
-import { checkSources } from '../../src/campaigns/validate.ts'
-import { createDefaultRegistry } from '../../src/sync/connectors/index.ts'
-import { InvalidLinkConfigError } from '../../src/sync/errors.ts'
+} from '../../src/modules/campaigns/presets.ts'
+import { checkSources } from '../../src/modules/campaigns/validate.ts'
+import { createDefaultRegistry } from '../../src/modules/sync/connectors/index.ts'
+import { InvalidLinkConfigError } from '../../src/modules/sync/errors.ts'
 import { at } from '../helpers.ts'
 
 // A setup is checked against what the REAL connectors declare, so a link the engine would refuse

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { InvalidFormulaError } from '../../src/webhooks/errors.ts'
+import { InvalidFormulaError } from '../../src/modules/webhooks/errors.ts'
 import {
   evaluate,
   fromNumber,
@@ -10,7 +10,7 @@ import {
   toRoundedNumber,
   variablesOf,
   type Fraction,
-} from '../../src/webhooks/formula.ts'
+} from '../../src/modules/webhooks/formula.ts'
 
 // The formulas behind calculated webhook fields. Everything a client is billed from goes through
 // here, so the cases are the ones that go wrong in practice: precedence, exact money, rounding at

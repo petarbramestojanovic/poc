@@ -8,20 +8,21 @@ import {
   type FastifyRequest,
 } from 'fastify'
 import type { ZodType } from 'zod'
-import type { Config } from './config.ts'
-import type { Db } from './db.ts'
-import type { CampaignDeps } from './campaigns/service.ts'
-import { AppError } from './errors.ts'
-import type { Logger } from './log.ts'
-import { requireAdminToken, requireBearerToken } from './plugins/admin-auth.ts'
-import { campaignRoutes, companyRoutes } from './routes/campaigns.ts'
-import { healthRoutes } from './routes/health.ts'
-import { inboundRoutes } from './routes/inbound.ts'
-import { syncRoutes } from './routes/sync.ts'
-import { webhookRoutes } from './routes/webhooks.ts'
-import type { RunTracker, SyncDeps } from './sync/engine.ts'
-import { classifySyncError, InvalidLinkConfigError, TooSoonError } from './sync/errors.ts'
-import type { SendDeps } from './webhooks/send.ts'
+import type { Config } from './core/config.ts'
+import type { Db } from './core/db.ts'
+import type { CampaignDeps } from './modules/campaigns/service.ts'
+import { AppError } from './core/errors.ts'
+import type { Logger } from './core/log.ts'
+import { requireAdminToken, requireBearerToken } from './core/plugins/admin-auth.ts'
+import { campaignRoutes } from './modules/campaigns/routes.ts'
+import { companyRoutes } from './modules/companies/routes.ts'
+import { healthRoutes } from './modules/health/routes.ts'
+import { inboundRoutes } from './modules/salesforce/routes.ts'
+import { syncRoutes } from './modules/sync/routes.ts'
+import { webhookRoutes } from './modules/webhooks/routes.ts'
+import type { RunTracker, SyncDeps } from './modules/sync/engine.ts'
+import { classifySyncError, InvalidLinkConfigError, TooSoonError } from './modules/sync/errors.ts'
+import type { SendDeps } from './modules/webhooks/send.ts'
 
 export interface AppDeps {
   config: Config
@@ -118,7 +119,7 @@ export function buildApp({
           await admin.register(webhookRoutes, { deps: webhooks })
         }
         if (prefix === '/companies' && campaigns) {
-          await admin.register(companyRoutes, { deps: campaigns })
+          await admin.register(companyRoutes, { deps: { db: campaigns.db } })
         }
         if (prefix === '/campaigns' && campaigns) {
           await admin.register(campaignRoutes, { deps: campaigns })

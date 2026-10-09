@@ -1,5 +1,5 @@
 import { parseArgs } from 'node:util'
-import { assertIsoDate, daysInclusive, type DateWindow } from '../dates.ts'
+import { assertIsoDate, daysInclusive, type DateWindow } from '../core/dates.ts'
 
 // Argument parsing for `npm run sync`, free of I/O so every mode and every misuse is unit tested.
 // Exactly one mode per invocation; a flag that only applies to another mode is refused rather

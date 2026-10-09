@@ -11,8 +11,8 @@ import {
   retryAfterMs,
   RetryBudgetExhaustedError,
   type HttpClientOptions,
-} from '../../src/http/HttpClient.ts'
-import { createLogger } from '../../src/log.ts'
+} from '../../src/core/http/HttpClient.ts'
+import { createLogger } from '../../src/core/log.ts'
 
 const log = createLogger('silent')
 

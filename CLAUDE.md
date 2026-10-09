@@ -24,6 +24,13 @@ A change is done when `typecheck`, `lint`, `test` and `test:integration` are all
 
 CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `npm audit`, on every PR to `main`, with no secrets. Every merge to `main` deploys **staging** (`deploy-staging.yml`: CI, `supabase db push`, Render deploy hook, wait for `/healthz` to report the commit). Production will come from a `release` branch and is not built yet: do not add prod jobs unasked. Setup and rollback: `docs/RUNBOOK.md` §10.
 
+## Layout
+
+- `src/app.ts` builds the Fastify app and its auth scopes, `src/index.ts` runs the process, `src/runtime.ts` holds what the service and the CLI share; `src/cli/` is the operator CLI.
+- `src/core/` is infrastructure with no business rules: config, db, log, errors, dates, secrets, sql-file, limiter, schemas, external-ref, `http/` (the outbound client), `plugins/` (token checks). Core never imports a module.
+- `src/modules/<name>/` is one domain each — `companies`, `campaigns`, `salesforce`, `sync`, `webhooks`, `health` — owning its `routes.ts`, service, repo, `sql/` and errors. Dependencies point one way: `salesforce → campaigns → companies`, `campaigns → sync` (connectors decide what a link accepts), `webhooks → sync`. Never import back up that chain; a new module (email reports, a second CRM) goes beside them.
+- Tests stay in `tests/unit` and `tests/integration` (the split is by directory).
+
 ## Scope and change control
 
 - **Ask first** before: changing anything RFC-004 defines (tables, columns, keys, seeds), adding a dependency outside the fixed stack (Fastify, pg, zod, pino, node-cron, cron-parser, Vitest, ESLint, Prettier, Supabase CLI), or building phase 2 work (dashboard, Supabase Auth users, RLS, own ingestion routes, `source = 'brame'` rows, HLL, CSV export, retention purge, backfill, device split). Approved exception (2026-10-07): `POST /inbound/campaigns`, the daily Salesforce report — campaigns, not analytics.
@@ -36,13 +43,13 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 1. **Replace, never increment.** A sync replaces the whole `(campaign, source, language, day)` slice in one transaction under `pg_advisory_xact_lock(hashtext(link_id))`.
 2. **Every covered day is written, including empty ones.** Connectors return `covered` — the window they actually queried and vouch for. The engine replaces every day in it, so a day the source stopped reporting is cleared. A connector that did not query a day must not claim it; `null` means nothing was queried.
 3. **Absent is not zero.** Mappers omit metrics a platform does not measure. Never write `0` for "not measured", never `COALESCE` it away in reads.
-4. **Aggregate by the catalog.** `METRIC_AGGREGATION` / `METRIC_WEIGHT` in `src/sync/types.ts` mirror `analytics.metric` (a test pins both). `sum` adds; `weighted_avg` is weighted by its weight metric; `none` (the `unique_*_reported` scalars) is **never added** — not across entities, days, tags or sources. Use `mergeRows`; do not hand-roll merges.
+4. **Aggregate by the catalog.** `METRIC_AGGREGATION` / `METRIC_WEIGHT` in `src/modules/sync/types.ts` mirror `analytics.metric` (a test pins both). `sum` adds; `weighted_avg` is weighted by its weight metric; `none` (the `unique_*_reported` scalars) is **never added** — not across entities, days, tags or sources. Use `mergeRows`; do not hand-roll merges.
 5. **Never sum across sources.** Each source is its own series; the campaign's `primary_source` is the headline.
 6. **The cursor moves last.** `sync_state`, the unmapped queue and the run outcome commit together, only after every day's write committed.
-7. **Days are explicit.** A day is the source's day in `external.source.day_timezone`. Use `todayIn` / `yesterdayIn` / `startOfDayIn` from `src/dates.ts`. Never derive a day from `new Date()` arithmetic or the server clock. `TZ` is pinned to UTC.
+7. **Days are explicit.** A day is the source's day in `external.source.day_timezone`. Use `todayIn` / `yesterdayIn` / `startOfDayIn` from `src/core/dates.ts`. Never derive a day from `new Date()` arithmetic or the server clock. `TZ` is pinned to UTC.
 8. **Validate dates as round trips.** `assertIsoDate` rejects `2026-02-31`; zod schemas use `z.iso.date()`.
 
-## Connectors (`src/sync/connectors/<source>/`)
+## Connectors (`src/modules/sync/connectors/<source>/`)
 
 - Shape: `schema.ts` (zod, loose objects, only the fields read), `mapper.ts` (pure, no I/O), `connector.ts` (fetching), `errors.ts`, `fixtures/`.
 - Read the **validated** config from `ctx.config`. Never re-parse `ctx.link.config`.
@@ -69,9 +76,9 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 - Index every foreign-key column you add.
 - **Row level security (0006).** Every table has RLS on; the service owns them and bypasses it. A new table needs its own `ENABLE ROW LEVEL SECURITY` in the migration that creates it. `authenticated` (a logged-in console user) may only SELECT the analytics tables, the operational tables the console shows, and `app.campaign`; `anon` has nothing. Never grant `external.credential`, `external.raw_payload`, or anything in `app` beyond `campaign` — `app.webhook` holds the signing secret. Every logged-in user reads every company until a user↔company mapping exists, so anonymous sign-ins and public sign-ups stay off.
 
-## Campaign setup (`src/campaigns/`)
+## Campaign setup (`src/modules/campaigns/`)
 
-- `setUpCampaign` is the only way a campaign and its company are created or their own fields change, and the Salesforce report (`src/salesforce/`) is its only caller in the service. Nobody creates, edits or deletes a campaign or a company by hand: there is no such route. Any future CRM adapter builds the same platform-neutral `CampaignSetup` (`input.ts`); no route or adapter writes those tables itself.
+- `setUpCampaign` is the only way a campaign and its company are created or their own fields change (the company part — `lockCompany`, `resolveCompany` — lives in `modules/companies/service.ts` and runs in the setup's transaction), and the Salesforce report (`src/modules/salesforce/`) is its only caller in the service. Nobody creates, edits or deletes a campaign or a company by hand: there is no such route. Any future CRM adapter builds the same platform-neutral `CampaignSetup` (`input.ts`); no route or adapter writes those tables itself.
 - A person sets **platform ids only**, through `setPlatformIds` / `removePlatform` (`PUT` / `DELETE /campaigns/:id/platforms/:platform`, one route pair per entry of `PLATFORM_PRESETS`). A `PUT` is the whole id list for that link. Adding ids is always allowed. Changing, dropping or removing is allowed only while the link has no analytics rows for its (campaign, source, language) and no real sync run is running, both read under the link's `sync-run-gate` lock (the lock a run opens under); then the link is deleted and rebuilt, so its sync state and runs go with it. Otherwise `409 platform_has_data` / `409 sync_in_progress`.
 - The service knows no platform by name. What a source accepts comes from its connector (`identity.levels`, `identity.roles`, `describe().configSchema`), checked by `checkSources` before the first statement. Platform conventions — the Zeus `clickthrough` CTA, the two standard NEXD events, the headline order (`headlineSource`: Zeus if the campaign has Zeus ids, otherwise NEXD, Zeus with none) — live in `presets.ts`. The headline is recomputed whenever a person changes the links; a push never changes it unless it states one.
 - A setup is repeatable by `externalRef`, and **a push only adds**: it updates the campaign's own fields and adds sources and entities that are new. It never removes an entity, never rewrites an existing one (a changed `campaign_tag` would split the rows) and cannot blank a field.
@@ -79,7 +86,7 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 - `idType` for Zeus is required, never defaulted. There is no delete route: deleting a campaign cascades to its analytics.
 - A webhook's signing secret is minted in `createWebhook`, returned once, never listed and never logged.
 
-## Salesforce report (`src/salesforce/`, `POST /inbound/campaigns`)
+## Salesforce report (`src/modules/salesforce/`, `POST /inbound/campaigns`)
 
 - Another of our apps posts the daily "Committed Opps" report every morning. `report.ts` (pure) is the only place Salesforce field names appear; `ingest.ts` hands each row to `setUpCampaign` on its own.
 - Mapping: `opportunity_id` → campaign `externalRef` `salesforce:<id>`; `opportunity_name` → name, prefix included; `account_name` → company, keyed by `companyKey` (lowercase snake_case, umlauts spelled out) because the report has no account id; dates; `creative_languages` → codes via `LANGUAGE_CODES`; `nn_price` + `currency` → price, always a CPM. Nothing else in a row is mapped, stored or logged. A price that cannot be stored exactly is left out with a warning, never rounded.
@@ -87,18 +94,18 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 - A row the setup service refuses (any `AppError` below 500) is reported in `rejected` and the others go on; anything else aborts the request with a 5xx so the sender retries. Retries are safe because a push that changes nothing writes nothing; there is no record of reports seen and none is needed.
 - Refusal messages carry field paths, never values (deal terms, people's names). The summary log line has counts and opportunity ids only.
 
-## Webhooks (`src/webhooks/`)
+## Webhooks (`src/modules/webhooks/`)
 
 - One minutely tick (`runWebhookTick`) behind leader lock key 2, never a timer per webhook. It enqueues due webhooks and then delivers due deliveries, both inside the tick's own `limitDb` share.
 - Every attempt starts from a claim (`claim_next_delivery.sql`, `claim_delivery.sql`): a lease in `next_attempt_at` and the attempt counted, taken with `SKIP LOCKED`. `record_attempt.sql` lands only while the row is `pending` with that count. Never send from a plain SELECT.
 - The `app.webhook_delivery` row is the idempotency record: one per `(webhook, period)`, its id stamped into the payload at insert (`insert_delivery.sql`) and sent as `X-Delivery-Id`. It never changes across retries, and a delivered period is never re-queued.
 - `buildPayload` (`build.ts`) is the only place a body is built — enqueue, send-now and preview all call it. Postgres builds the full v1 body; a webhook with `payload_fields` is then narrowed by `shapePayload` (`fields.ts`).
 - Sign the exact bytes: `JSON.stringify` once, sign `X-Timestamp + "." + that string`, send the string as `bodyText`. Nothing may re-encode the body on the way out, and the timestamp is fixed once and sent exactly as signed.
-- Delivery outcomes are data, not exceptions: a client's 500 is `pending` with the next rung of `RETRY_DELAYS_MS` (1 m, 5 m, 30 m, 2 h, 12 h); the 6th failure is `failed`. Only our own refusals throw (`src/webhooks/errors.ts`).
+- Delivery outcomes are data, not exceptions: a client's 500 is `pending` with the next rung of `RETRY_DELAYS_MS` (1 m, 5 m, 30 m, 2 h, 12 h); the 6th failure is `failed`. Only our own refusals throw (`src/modules/webhooks/errors.ts`).
 - Calculated fields are formulas parsed by `formula.ts` and walked as a tree: never `eval`, `Function` or SQL. Values are exact fractions, rounded once, half away from zero. Each is computed at every level (totals, each day, each creative) from that level's own numbers, never by adding results up; a missing input or a division by zero is `null`, never 0. A field appears only in its source's block, which is added even when check sources are off. `validateFields` checks every formula against `external.source_metric` before it is saved.
 - Every attempt re-checks the target with `assertPublicTarget`, including on retries. The payload shape is `webhookPayloadSchema` (and `webhookPayloadSchemaFor` for a field list) and the client contract is `docs/WEBHOOK-PAYLOAD-v1.md`: change the SQL, the schema and the contract together.
 
-## HTTP client (`src/http/HttpClient.ts`)
+## HTTP client (`src/core/http/HttpClient.ts`)
 
 - Every outbound call goes through it: per-credential serialisation, streamed size cap, `redirect: 'error'`, typed errors (`HttpError`, `NetworkError` with cause code, `ResponseBodyError`, `ResponseTooLargeError`, `DeadlineExceededError`, `RetryBudgetExhaustedError`).
 - Retry only what can succeed on retry: 408, 429, 5xx except 501/505, and network errors with a transient cause code. Everything else fails on the first attempt.
@@ -107,9 +114,9 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 ## Secrets, logging, errors
 
 - Secrets exist only in environment variables. `external.credential.secret_env_var` is a pointer and must match the credential shape enforced by `assertSecretPointer`; it can never name a variable the service itself reads.
-- The logger redacts **explicit paths** (`src/log.ts`). When you log a new object that can carry a secret, add its path and a case to `tests/unit/log.test.ts`. Pass unknown shapes through `redact()` first. Never log a presented token — log why it was refused.
+- The logger redacts **explicit paths** (`src/core/log.ts`). When you log a new object that can carry a secret, add its path and a case to `tests/unit/log.test.ts`. Pass unknown shapes through `redact()` first. Never log a presented token — log why it was refused.
 - Anything persisted or put in an error message (`sync_run.error`, `HttpError.message`, raw payloads) is redacted, including URL query parameters and body excerpts.
-- Throw typed errors with a stable `code`, `retryable` and `status`: they all extend `AppError` (`src/errors.ts`), per module in `src/sync/errors.ts` and `src/webhooks/errors.ts`. Wrap foreign errors with `{ cause }`. The route layer maps through `classifySyncError`.
+- Throw typed errors with a stable `code`, `retryable` and `status`: they all extend `AppError` (`src/core/errors.ts`), per module in `src/modules/sync/errors.ts` and `src/modules/webhooks/errors.ts`. Wrap foreign errors with `{ cause }`. The route layer maps through `classifySyncError`.
 
 ## Fastify
 

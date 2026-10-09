@@ -4,14 +4,14 @@ import {
   mapZeusRows,
   ZeusInvariantError,
   type Matched,
-} from '../../../src/sync/connectors/zeus/mapper.ts'
+} from '../../../src/modules/sync/connectors/zeus/mapper.ts'
 import {
   zeusCampaignsRow,
   zeusCreativesRow,
   zeusTrackerRow,
   type ZeusCreativesRow,
   type ZeusTrackerRow,
-} from '../../../src/sync/connectors/zeus/schema.ts'
+} from '../../../src/modules/sync/connectors/zeus/schema.ts'
 import { ENTITIES, loadFixture } from './helpers.ts'
 
 const creatives = (): Matched<ZeusCreativesRow>[] =>

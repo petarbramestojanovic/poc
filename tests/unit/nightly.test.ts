@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { isDeepPullNight, planNightlyPass } from '../../src/sync/nightly.ts'
-import type { NightlyCandidate } from '../../src/sync/repo.ts'
+import { isDeepPullNight, planNightlyPass } from '../../src/modules/sync/nightly.ts'
+import type { NightlyCandidate } from '../../src/modules/sync/repo.ts'
 
 const THURSDAY = new Date('2026-09-10T02:00:00Z') // 04:00 in Zurich
 const SUNDAY = new Date('2026-09-13T02:00:00Z') // 04:00 in Zurich

@@ -1,15 +1,15 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
-import { campaignSetupSchema, type CampaignSetup } from '../../src/campaigns/input.ts'
+import { campaignSetupSchema, type CampaignSetup } from '../../src/modules/campaigns/input.ts'
 import {
   nexdPresetSchema,
   nexdSetup,
   zeusPresetSchema,
   zeusSetup,
-} from '../../src/campaigns/presets.ts'
-import { setUpCampaign, type CampaignDeps } from '../../src/campaigns/service.ts'
-import { createDb, type Db } from '../../src/db.ts'
-import { createLogger } from '../../src/log.ts'
-import { createDefaultRegistry } from '../../src/sync/connectors/index.ts'
+} from '../../src/modules/campaigns/presets.ts'
+import { setUpCampaign, type CampaignDeps } from '../../src/modules/campaigns/service.ts'
+import { createDb, type Db } from '../../src/core/db.ts'
+import { createLogger } from '../../src/core/log.ts'
+import { createDefaultRegistry } from '../../src/modules/sync/connectors/index.ts'
 import { at } from '../helpers.ts'
 import { sqlstateOf } from './db.ts'
 

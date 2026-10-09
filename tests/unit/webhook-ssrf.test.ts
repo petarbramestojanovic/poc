@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { BlockedTargetError } from '../../src/webhooks/errors.ts'
-import { assertPublicTarget, isPublicAddress, type Lookup } from '../../src/webhooks/ssrf.ts'
+import { BlockedTargetError } from '../../src/modules/webhooks/errors.ts'
+import {
+  assertPublicTarget,
+  isPublicAddress,
+  type Lookup,
+} from '../../src/modules/webhooks/ssrf.ts'
 
 // The guard exists for one attack: a webhook URL aimed back at our own network — the cloud
 // metadata endpoint, a private subnet, localhost. Every case here is one of those.

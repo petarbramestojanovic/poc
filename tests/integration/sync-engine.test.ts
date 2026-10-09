@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { createDb, type Db } from '../../src/db.ts'
-import type { HttpClient } from '../../src/http/HttpClient.ts'
-import { createLimiter } from '../../src/limiter.ts'
-import { createLogger } from '../../src/log.ts'
+import { createDb, type Db } from '../../src/core/db.ts'
+import type { HttpClient } from '../../src/core/http/HttpClient.ts'
+import { createLimiter } from '../../src/core/limiter.ts'
+import { createLogger } from '../../src/core/log.ts'
 import {
   InvalidLinkConfigError,
   LinkDisabledError,
@@ -19,8 +19,8 @@ import {
   UnknownTargetError,
   verifyRegistryAgainstSources,
   type SyncDeps,
-} from '../../src/sync/engine.ts'
-import { createRegistry } from '../../src/sync/registry.ts'
+} from '../../src/modules/sync/engine.ts'
+import { createRegistry } from '../../src/modules/sync/registry.ts'
 import {
   METRIC_AGGREGATION,
   METRIC_IDS,
@@ -30,7 +30,7 @@ import {
   type MetricId,
   type SourceConnector,
   type SyncContext,
-} from '../../src/sync/types.ts'
+} from '../../src/modules/sync/types.ts'
 import { SEED } from './db.ts'
 
 // A scripted connector standing in for Zeus on the seeded link: the engine is exercised

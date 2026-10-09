@@ -15,14 +15,15 @@ Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (plat
 ┌─────┴─────────────────────┴──────────────────────────────────┴──────────────┐
 │ analytics-be (Node 24, Fastify)                                             │
 │                                                                             │
-│  sync/            connectors → mapper → engine → day-replace writer         │
-│    nightly pass   04:00 Europe/Zurich, leader lock key 1                    │
-│  webhooks/        minutely tick, leader lock key 2 → build, sign, deliver   │
-│  campaigns/       one setup service; people set platform ids only           │
-│  salesforce/      the daily report → campaigns (POST /inbound/campaigns)    │
-│  routes/          /companies · /campaigns · /webhooks · /sync (bearer token)│
-│                   /inbound/campaigns (its own bearer token)                 │
-│                   GET /healthz · GET /readyz                                │
+│  modules/                                                                   │
+│    sync/          connectors → mapper → engine → day-replace writer         │
+│                   nightly pass 04:00 Europe/Zurich, leader lock key 1       │
+│    webhooks/      minutely tick, leader lock key 2 → build, sign, deliver   │
+│    salesforce/    the daily report → campaigns (POST /inbound/campaigns)    │
+│    campaigns/     one setup service; people set platform ids only           │
+│    companies/     found or created inside a campaign setup; GET /companies  │
+│    health/        GET /healthz · GET /readyz                                │
+│  core/            config · db · log · errors · dates · http client · auth   │
 │  cli/             npm run sync -- …                                         │
 └───────────────────────────────┬─────────────────────────────────────────────┘
                                 │ pg pool (10 per instance; sync ≤ 3, webhooks ≤ 2)
@@ -172,7 +173,7 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 
 ## Campaigns
 
-**Campaigns come from Salesforce.** Every morning another of our apps posts the "Media Solutions - Committed Opps - Daily" report to `POST /inbound/campaigns`, with its own bearer token (`INBOUND_CAMPAIGNS_TOKEN`), never the admin one. Each row becomes a campaign through the one setup service, `src/campaigns/` (`setUpCampaign`); `src/salesforce/` is the adapter, and Salesforce's field names stop there.
+**Campaigns come from Salesforce.** Every morning another of our apps posts the "Media Solutions - Committed Opps - Daily" report to `POST /inbound/campaigns`, with its own bearer token (`INBOUND_CAMPAIGNS_TOKEN`), never the admin one. Each row becomes a campaign through the one setup service, `src/modules/campaigns/` (`setUpCampaign`); `src/modules/salesforce/` is the adapter, and Salesforce's field names stop there.
 
 | Report field                               | Campaign                                                                                                                    |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
@@ -200,7 +201,7 @@ A `PUT` is the whole id list for that platform. Adding ids always works. Changin
 
 **Price** is what the client pays for 1000 impressions, up to four decimals, currency as an ISO 4217 code; `NULL` when the report has none, never 0.
 
-A new platform needs one preset in `src/campaigns/presets.ts`; another CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
+A new platform needs one preset in `src/modules/campaigns/presets.ts`; another CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
 
 ## Client report webhooks
 
@@ -216,7 +217,7 @@ all.
 `PATCH /webhooks/:id`): which metrics, which lists, and calculated fields written as formulas, e.g.
 `{ "name": "cost", "formula": "impressions / 1000 * price", "source": "zeus" }`. Formulas are parsed,
 never evaluated as code, checked against what their source measures before they are saved, and
-computed exactly at every level of the report (`src/webhooks/fields.ts`, `formula.ts`).
+computed exactly at every level of the report (`src/modules/webhooks/fields.ts`, `formula.ts`).
 
 ```sh
 # the body a delivery of this period would carry; stores and sends nothing

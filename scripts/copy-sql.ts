@@ -1,7 +1,7 @@
 import { cpSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
-// tsc emits only JavaScript; the `sql/` directories loaded by src/sql-file.ts are copied
+// tsc emits only JavaScript; the `sql/` directories loaded by src/core/sql-file.ts are copied
 // alongside. Only those directories are copied — nothing else from src/ reaches dist/.
 function sqlDirs(dir: string): string[] {
   const found: string[] = []
