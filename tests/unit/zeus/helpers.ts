@@ -1,13 +1,13 @@
 import { readFileSync } from 'node:fs'
-import type { DateWindow } from '../../../src/dates.ts'
+import type { DateWindow } from '../../../src/core/dates.ts'
 import {
   HttpError,
   type HttpClient,
   type HttpRequest,
   type HttpResponse,
-} from '../../../src/http/HttpClient.ts'
-import { createLogger } from '../../../src/log.ts'
-import type { ZeusLinkConfig } from '../../../src/sync/connectors/zeus/schema.ts'
+} from '../../../src/core/http/HttpClient.ts'
+import { createLogger } from '../../../src/core/log.ts'
+import type { ZeusLinkConfig } from '../../../src/modules/sync/connectors/zeus/schema.ts'
 import {
   createRunMemo,
   type ConnectionContext,
@@ -15,7 +15,7 @@ import {
   type RawCapture,
   type RunMemo,
   type SyncContext,
-} from '../../../src/sync/types.ts'
+} from '../../../src/modules/sync/types.ts'
 
 export const FIXTURE_WINDOW: DateWindow = { from: '2026-09-01', to: '2026-09-03' }
 /** A clock for which the fixture window is entirely in the past. */
@@ -28,7 +28,10 @@ export function loadFixture(report: Report): {
   to: string
   rows: Record<string, unknown>[]
 } {
-  const url = new URL(`../../../src/sync/connectors/zeus/fixtures/${report}.json`, import.meta.url)
+  const url = new URL(
+    `../../../src/modules/sync/connectors/zeus/fixtures/${report}.json`,
+    import.meta.url,
+  )
   return JSON.parse(readFileSync(url, 'utf8')) as {
     from: string
     to: string

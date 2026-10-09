@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { completeDays, lookbackWindow } from '../../src/sync/windows.ts'
+import { completeDays, lookbackWindow } from '../../src/modules/sync/windows.ts'
 
 const utcSource = { id: 'zeus', dayTimezone: 'UTC', lookbackDays: 7, deepLookbackDays: 35 }
 const THURSDAY = new Date('2026-09-10T02:00:00Z')

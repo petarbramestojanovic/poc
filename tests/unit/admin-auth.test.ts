@@ -1,7 +1,7 @@
 import { fastify, type FastifyBaseLogger } from 'fastify'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createLogger } from '../../src/log.ts'
-import { requireAdminToken, tokenMatches } from '../../src/plugins/admin-auth.ts'
+import { createLogger } from '../../src/core/log.ts'
+import { requireAdminToken, tokenMatches } from '../../src/core/plugins/admin-auth.ts'
 
 const TOKEN = 'correct-horse-battery-staple-0123456789'
 

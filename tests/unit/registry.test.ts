@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { RegistryMismatchError } from '../../src/sync/errors.ts'
+import { RegistryMismatchError } from '../../src/modules/sync/errors.ts'
 import {
   assertRegistryMatchesSources,
   createRegistry,
   UnknownSourceError,
-} from '../../src/sync/registry.ts'
-import type { SourceConnector } from '../../src/sync/types.ts'
+} from '../../src/modules/sync/registry.ts'
+import type { SourceConnector } from '../../src/modules/sync/types.ts'
 
 const stub = (id: string): SourceConnector => ({
   id,

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { METRIC_IDS } from '../../src/sync/types.ts'
+import { METRIC_IDS } from '../../src/modules/sync/types.ts'
 import {
   metricsSchema,
   PAYLOAD_SECTIONS,
   webhookPayloadSchema,
   webhookPayloadSchemaFor,
-} from '../../src/webhooks/payload.ts'
+} from '../../src/modules/webhooks/payload.ts'
 import { at } from '../helpers.ts'
 
 // The contract the database answers to. Every case below is one valid v1 body with one thing

@@ -11,7 +11,7 @@ import {
   todayIn,
   yesterdayIn,
   yesterdayUtc,
-} from '../../src/dates.ts'
+} from '../../src/core/dates.ts'
 
 describe('dates', () => {
   it('validates ISO dates', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { WebhookDeps } from '../../src/webhooks/scheduler.ts'
+import type { WebhookDeps } from '../../src/modules/webhooks/scheduler.ts'
 import {
   deliverDueDeliveries,
   enqueueDueWebhooks,
@@ -7,7 +7,7 @@ import {
   runWebhookTick,
   startWebhookScheduler,
   WEBHOOK_TICK_CRON,
-} from '../../src/webhooks/scheduler.ts'
+} from '../../src/modules/webhooks/scheduler.ts'
 import { at } from '../helpers.ts'
 import { fakeDb, fakeHttp, response, silentLogger } from './webhook-fakes.ts'
 

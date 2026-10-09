@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, loadConfig, loadRuntimeConfig } from '../../src/config.ts'
+import { ConfigError, loadConfig, loadRuntimeConfig } from '../../src/core/config.ts'
 
 const TOKEN = 'a-long-enough-operator-token-0123456789'
 

@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { createDb, type Db } from '../../src/db.ts'
-import { createLimiter } from '../../src/limiter.ts'
-import { createLogger } from '../../src/log.ts'
-import { SYNC_MAX_CONNECTIONS, type SyncDeps } from '../../src/sync/engine.ts'
-import { runNightlyTick } from '../../src/sync/nightly.ts'
-import { createRegistry } from '../../src/sync/registry.ts'
-import type { SourceConnector } from '../../src/sync/types.ts'
+import { createDb, type Db } from '../../src/core/db.ts'
+import { createLimiter } from '../../src/core/limiter.ts'
+import { createLogger } from '../../src/core/log.ts'
+import { SYNC_MAX_CONNECTIONS, type SyncDeps } from '../../src/modules/sync/engine.ts'
+import { runNightlyTick } from '../../src/modules/sync/nightly.ts'
+import { createRegistry } from '../../src/modules/sync/registry.ts'
+import type { SourceConnector } from '../../src/modules/sync/types.ts'
 
 // Two replicas, each with its own pool and so its own Postgres sessions, tick at the same moment.
 // The leader lock must let exactly one of them run the pass. Fixture ids are unique to this file.

@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { NetworkError } from '../../../src/http/HttpClient.ts'
+import { NetworkError } from '../../../src/core/http/HttpClient.ts'
 import {
   createNexdConnector,
   NexdContractError,
   NexdVerificationError,
-} from '../../../src/sync/connectors/nexd/connector.ts'
+} from '../../../src/modules/sync/connectors/nexd/connector.ts'
 import {
   connection,
   context,

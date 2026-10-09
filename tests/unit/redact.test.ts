@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { REDACTED, redact, redactUrl } from '../../src/http/redact.ts'
+import { REDACTED, redact, redactUrl } from '../../src/core/http/redact.ts'
 
 describe('redact', () => {
   it('replaces credential-bearing keys at any depth, case-insensitively', () => {

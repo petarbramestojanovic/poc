@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { loadSql, SqlFileError } from '../../src/sql-file.ts'
+import { loadSql, SqlFileError } from '../../src/core/sql-file.ts'
 
 function moduleWithSql(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), 'sql-file-'))
@@ -27,7 +27,7 @@ describe('loadSql', () => {
   })
 
   it('loads the real sync statements at import time', async () => {
-    await expect(import('../../src/sync/repo.ts')).resolves.toBeDefined()
-    await expect(import('../../src/sync/writer.ts')).resolves.toBeDefined()
+    await expect(import('../../src/modules/sync/repo.ts')).resolves.toBeDefined()
+    await expect(import('../../src/modules/sync/writer.ts')).resolves.toBeDefined()
   })
 })

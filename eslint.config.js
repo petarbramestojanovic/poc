@@ -30,7 +30,7 @@ export default defineConfig(
   // Fastify plugins, hooks and handlers (and the fetch fakes and route handlers tests define)
   // are async by contract even when they never await. Everywhere else the rule stays on.
   {
-    files: ['src/app.ts', 'src/routes/**/*.ts', 'src/plugins/**/*.ts', 'tests/**/*.ts'],
+    files: ['src/app.ts', 'src/modules/*/routes.ts', 'src/core/plugins/**/*.ts', 'tests/**/*.ts'],
     rules: { '@typescript-eslint/require-await': 'off' },
   },
 

@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { createDb, type Db, type LeaderLease } from '../../src/db.ts'
-import type { HttpClient } from '../../src/http/HttpClient.ts'
-import { createLimiter } from '../../src/limiter.ts'
-import { createLogger } from '../../src/log.ts'
-import { SYNC_MAX_CONNECTIONS, type SyncDeps } from '../../src/sync/engine.ts'
-import { runNightlyPass, type LinkResult } from '../../src/sync/nightly.ts'
-import { createRegistry } from '../../src/sync/registry.ts'
-import type { FetchResult, SourceConnector, SyncContext } from '../../src/sync/types.ts'
+import { createDb, type Db, type LeaderLease } from '../../src/core/db.ts'
+import type { HttpClient } from '../../src/core/http/HttpClient.ts'
+import { createLimiter } from '../../src/core/limiter.ts'
+import { createLogger } from '../../src/core/log.ts'
+import { SYNC_MAX_CONNECTIONS, type SyncDeps } from '../../src/modules/sync/engine.ts'
+import { runNightlyPass, type LinkResult } from '../../src/modules/sync/nightly.ts'
+import { createRegistry } from '../../src/modules/sync/registry.ts'
+import type { FetchResult, SourceConnector, SyncContext } from '../../src/modules/sync/types.ts'
 
 // The nightly pass against real rows, with scripted connectors standing in for the platforms.
 // Every row this file writes uses ids no other test file writes, and every pass is restricted to

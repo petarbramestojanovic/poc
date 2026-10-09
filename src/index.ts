@@ -1,12 +1,12 @@
 import { buildApp } from './app.ts'
-import type { CampaignDeps } from './campaigns/service.ts'
-import { loadConfig } from './config.ts'
-import { createLogger } from './log.ts'
+import type { CampaignDeps } from './modules/campaigns/service.ts'
+import { loadConfig } from './core/config.ts'
+import { createLogger } from './core/log.ts'
 import { createSyncRuntime, createWebhookHttpClient } from './runtime.ts'
-import { createRunTracker, type SyncDeps } from './sync/engine.ts'
-import { startNightlyScheduler, type NightlyScheduler } from './sync/scheduler.ts'
-import { startWebhookScheduler, type WebhookScheduler } from './webhooks/scheduler.ts'
-import type { SendDeps } from './webhooks/send.ts'
+import { createRunTracker, type SyncDeps } from './modules/sync/engine.ts'
+import { startNightlyScheduler, type NightlyScheduler } from './modules/sync/scheduler.ts'
+import { startWebhookScheduler, type WebhookScheduler } from './modules/webhooks/scheduler.ts'
+import type { SendDeps } from './modules/webhooks/send.ts'
 
 /** Render sends SIGTERM and kills the process 30 s later; finish well inside that. */
 const SHUTDOWN_DEADLINE_MS = 10_000

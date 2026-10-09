@@ -1,12 +1,21 @@
-import { redact } from '../http/redact.ts'
+import { redact } from '../core/http/redact.ts'
 import type { SyncRuntime } from '../runtime.ts'
-import { resolveSecret } from '../secrets.ts'
-import type { PixelSummary } from '../sync/connectors/zeus/connector.ts'
-import { classifySyncError, runSync, type SyncDeps, type SyncSummary } from '../sync/engine.ts'
-import { runNightlyTick, type LinkOutcome, type NightlyPassSummary } from '../sync/nightly.ts'
-import * as repo from '../sync/repo.ts'
-import { METRIC_IDS, type ConnectionContext, type SourceConnector } from '../sync/types.ts'
-import type { DayDiff } from '../sync/writer.ts'
+import { resolveSecret } from '../core/secrets.ts'
+import type { PixelSummary } from '../modules/sync/connectors/zeus/connector.ts'
+import {
+  classifySyncError,
+  runSync,
+  type SyncDeps,
+  type SyncSummary,
+} from '../modules/sync/engine.ts'
+import {
+  runNightlyTick,
+  type LinkOutcome,
+  type NightlyPassSummary,
+} from '../modules/sync/nightly.ts'
+import * as repo from '../modules/sync/repo.ts'
+import { METRIC_IDS, type ConnectionContext, type SourceConnector } from '../modules/sync/types.ts'
+import type { DayDiff } from '../modules/sync/writer.ts'
 import { USAGE, type SyncCommand } from './args.ts'
 
 // What each `npm run sync` mode does. Every command goes through the same engine, repository and

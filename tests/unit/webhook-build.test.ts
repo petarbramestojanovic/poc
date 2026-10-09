@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { buildPayload } from '../../src/webhooks/build.ts'
-import { PayloadContractError } from '../../src/webhooks/errors.ts'
+import { buildPayload } from '../../src/modules/webhooks/build.ts'
+import { PayloadContractError } from '../../src/modules/webhooks/errors.ts'
 import {
   compileFields,
   payloadFieldsSchema,
   type PayloadFieldsInput,
-} from '../../src/webhooks/fields.ts'
+} from '../../src/modules/webhooks/fields.ts'
 import { at } from '../helpers.ts'
 import { fakeDb, type Respond } from './webhook-fakes.ts'
 

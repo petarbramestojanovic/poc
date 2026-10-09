@@ -6,7 +6,7 @@ import {
   PLATFORM_PRESETS,
   zeusPresetSchema,
   zeusSetup,
-} from '../../src/campaigns/presets.ts'
+} from '../../src/modules/campaigns/presets.ts'
 
 // The presets turn "the ids a person has" into a complete platform-neutral SourceSetup. What they
 // add by convention is pinned here.

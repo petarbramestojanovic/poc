@@ -1,14 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { z } from 'zod'
-import { addDays, eachDay, type DateWindow } from '../../../src/dates.ts'
+import { addDays, eachDay, type DateWindow } from '../../../src/core/dates.ts'
 import {
   HttpError,
   type HttpClient,
   type HttpRequest,
   type HttpResponse,
-} from '../../../src/http/HttpClient.ts'
-import { createLogger } from '../../../src/log.ts'
-import type { NexdLinkConfig } from '../../../src/sync/connectors/nexd/schema.ts'
+} from '../../../src/core/http/HttpClient.ts'
+import { createLogger } from '../../../src/core/log.ts'
+import type { NexdLinkConfig } from '../../../src/modules/sync/connectors/nexd/schema.ts'
 import {
   createRunMemo,
   type ConnectionContext,
@@ -16,7 +16,7 @@ import {
   type LinkEntity,
   type RawCapture,
   type SyncContext,
-} from '../../../src/sync/types.ts'
+} from '../../../src/modules/sync/types.ts'
 
 export const FIXTURE_WINDOW: DateWindow = { from: '2026-08-31', to: '2026-09-06' }
 
@@ -30,7 +30,7 @@ export const KNOWN_TOTALS = {
 
 export function loadFixture(): Record<string, unknown> {
   const url = new URL(
-    '../../../src/sync/connectors/nexd/fixtures/creative-analytics.json',
+    '../../../src/modules/sync/connectors/nexd/fixtures/creative-analytics.json',
     import.meta.url,
   )
   return JSON.parse(readFileSync(url, 'utf8')) as Record<string, unknown>

@@ -3,9 +3,9 @@ import {
   createZeusConnector,
   matchPixel,
   ZeusContractError,
-} from '../../../src/sync/connectors/zeus/connector.ts'
-import { ZeusInvariantError } from '../../../src/sync/connectors/zeus/mapper.ts'
-import { createRunMemo } from '../../../src/sync/types.ts'
+} from '../../../src/modules/sync/connectors/zeus/connector.ts'
+import { ZeusInvariantError } from '../../../src/modules/sync/connectors/zeus/mapper.ts'
+import { createRunMemo } from '../../../src/modules/sync/types.ts'
 import {
   ALL_ENTITIES,
   connection,

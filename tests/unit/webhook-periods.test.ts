@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { reportPeriod } from '../../src/webhooks/periods.ts'
+import { reportPeriod } from '../../src/modules/webhooks/periods.ts'
 
 // The period is always one that has ENDED in the webhook's own timezone. An instant is never a
 // day: the same moment is a different calendar day in Zurich and in Auckland, and the report

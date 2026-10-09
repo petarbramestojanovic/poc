@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { webhookPayloadSchema, type WebhookSourceBlock } from '../../src/webhooks/payload.ts'
+import {
+  webhookPayloadSchema,
+  type WebhookSourceBlock,
+} from '../../src/modules/webhooks/payload.ts'
 import { at } from '../helpers.ts'
 import { SEED, useTransactionalClient } from './db.ts'
 

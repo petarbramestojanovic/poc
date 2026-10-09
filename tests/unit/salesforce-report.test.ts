@@ -4,7 +4,7 @@ import {
   companyKey,
   languageCodes,
   toCampaignSetup,
-} from '../../src/salesforce/report.ts'
+} from '../../src/modules/salesforce/report.ts'
 
 // The daily Salesforce report, row by row: what becomes a campaign, what is ignored, what refuses
 // a row. Shaped like the real export of 2026-10-06; every name and number here is made up.

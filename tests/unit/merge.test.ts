@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { groupByDate, mergeRows } from '../../src/sync/merge.ts'
-import { METRIC_AGGREGATION, METRIC_IDS, type CanonicalDailyRow } from '../../src/sync/types.ts'
+import { groupByDate, mergeRows } from '../../src/modules/sync/merge.ts'
+import {
+  METRIC_AGGREGATION,
+  METRIC_IDS,
+  type CanonicalDailyRow,
+} from '../../src/modules/sync/types.ts'
 
 const row = (over: Partial<CanonicalDailyRow>): CanonicalDailyRow => ({
   date: '2026-09-01',

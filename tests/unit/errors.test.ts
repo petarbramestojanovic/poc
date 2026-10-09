@@ -6,9 +6,9 @@ import {
   ResponseBodyError,
   ResponseTooLargeError,
   RetryBudgetExhaustedError,
-} from '../../src/http/HttpClient.ts'
-import { NexdContractError } from '../../src/sync/connectors/nexd/connector.ts'
-import { ZeusInvariantError } from '../../src/sync/connectors/zeus/mapper.ts'
+} from '../../src/core/http/HttpClient.ts'
+import { NexdContractError } from '../../src/modules/sync/connectors/nexd/connector.ts'
+import { ZeusInvariantError } from '../../src/modules/sync/connectors/zeus/mapper.ts'
 import {
   classifySyncError,
   CredentialUnavailableError,
@@ -19,7 +19,7 @@ import {
   SyncAbortedError,
   TooSoonError,
   UnknownSourceError,
-} from '../../src/sync/errors.ts'
+} from '../../src/modules/sync/errors.ts'
 
 describe('classifySyncError', () => {
   it.each([

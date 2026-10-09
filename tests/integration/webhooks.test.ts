@@ -1,21 +1,21 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../../src/app.ts'
-import type { Config } from '../../src/config.ts'
-import { createDb, type Db } from '../../src/db.ts'
-import { createHttpClient, type HttpClient } from '../../src/http/HttpClient.ts'
-import { createLogger } from '../../src/log.ts'
-import { DELIVERY_LEASE_MS, leaseUntil, MAX_ATTEMPTS } from '../../src/webhooks/deliver.ts'
-import { webhookPayloadSchema } from '../../src/webhooks/payload.ts'
-import * as repo from '../../src/webhooks/repo.ts'
+import type { Config } from '../../src/core/config.ts'
+import { createDb, type Db } from '../../src/core/db.ts'
+import { createHttpClient, type HttpClient } from '../../src/core/http/HttpClient.ts'
+import { createLogger } from '../../src/core/log.ts'
+import { DELIVERY_LEASE_MS, leaseUntil, MAX_ATTEMPTS } from '../../src/modules/webhooks/deliver.ts'
+import { webhookPayloadSchema } from '../../src/modules/webhooks/payload.ts'
+import * as repo from '../../src/modules/webhooks/repo.ts'
 import {
   deliverDueDeliveries,
   enqueueDueWebhooks,
   runWebhookTick,
   type WebhookDeps,
-} from '../../src/webhooks/scheduler.ts'
-import { sendNow, type SendDeps } from '../../src/webhooks/send.ts'
-import { verifyBody } from '../../src/webhooks/sign.ts'
-import type { Lookup } from '../../src/webhooks/ssrf.ts'
+} from '../../src/modules/webhooks/scheduler.ts'
+import { sendNow, type SendDeps } from '../../src/modules/webhooks/send.ts'
+import { verifyBody } from '../../src/modules/webhooks/sign.ts'
+import type { Lookup } from '../../src/modules/webhooks/ssrf.ts'
 import { at } from '../helpers.ts'
 import { SEED } from './db.ts'
 

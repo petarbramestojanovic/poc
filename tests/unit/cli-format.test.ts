@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { formatNightlyPass, formatPixels, formatSyncSummary } from '../../src/cli/sync-commands.ts'
-import type { NightlyCandidate } from '../../src/sync/repo.ts'
+import type { NightlyCandidate } from '../../src/modules/sync/repo.ts'
 
 const base = {
   syncRunId: 'run-1',

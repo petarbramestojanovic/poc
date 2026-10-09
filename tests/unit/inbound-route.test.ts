@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it } from 'vitest'
 import { buildApp } from '../../src/app.ts'
-import type { CampaignDeps } from '../../src/campaigns/service.ts'
-import type { Config } from '../../src/config.ts'
-import type { Db } from '../../src/db.ts'
-import { createLogger } from '../../src/log.ts'
-import { createDefaultRegistry } from '../../src/sync/connectors/index.ts'
+import type { CampaignDeps } from '../../src/modules/campaigns/service.ts'
+import type { Config } from '../../src/core/config.ts'
+import type { Db } from '../../src/core/db.ts'
+import { createLogger } from '../../src/core/log.ts'
+import { createDefaultRegistry } from '../../src/modules/sync/connectors/index.ts'
 
 // POST /inbound/campaigns before it reaches the service: its own token, the envelope, the body
 // limit. What the service does with a report is tests/integration/inbound.test.ts.

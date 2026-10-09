@@ -1,11 +1,11 @@
 import type { FastifyInstance } from 'fastify'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { buildApp } from '../../src/app.ts'
-import type { Config } from '../../src/config.ts'
-import { createDb, type Db } from '../../src/db.ts'
-import { createLogger } from '../../src/log.ts'
-import type { IngestSummary } from '../../src/salesforce/ingest.ts'
-import { createDefaultRegistry } from '../../src/sync/connectors/index.ts'
+import type { Config } from '../../src/core/config.ts'
+import { createDb, type Db } from '../../src/core/db.ts'
+import { createLogger } from '../../src/core/log.ts'
+import type { IngestSummary } from '../../src/modules/salesforce/ingest.ts'
+import { createDefaultRegistry } from '../../src/modules/sync/connectors/index.ts'
 import { at } from '../helpers.ts'
 
 // The daily Salesforce report through POST /inbound/campaigns into the real schema, morning after
