@@ -8,27 +8,49 @@ import {
   type DeliverDeps,
 } from '../../src/modules/webhooks/deliver.ts'
 import type { DueDelivery } from '../../src/modules/webhooks/repo.ts'
-import { verifyBody } from '../../src/modules/webhooks/sign.ts'
+import { verifyBody, verifyExport } from '../../src/modules/webhooks/sign.ts'
 import type { Lookup } from '../../src/modules/webhooks/ssrf.ts'
 import { at } from '../helpers.ts'
 import { fakeDb, fakeHttp, response, silentLogger, type Answer } from './webhook-fakes.ts'
 
 // One attempt, and what it writes on the delivery row. A client's endpoint failing is an outcome
 // here, never an exception: the row carries the attempt count and the next slot on the ladder.
+// A json webhook POSTs the stored document itself; a csv webhook POSTs a signed link to it, the
+// way Funnel's File Import webhook wants it, with Funnel's token in Funnel's header.
 
 const NOW = new Date('2026-09-14T06:00:00Z')
 const SECRET = 'whsec_2f8c1e9a7b4d6f0e3a5c7b9d1f2e4a6c'
+
+const FUNNEL_TOKEN = 'fnl_9b1f2e3d4c5a6b7c8d9e0f1a2b3c4d5e'
+const BASE = 'https://analytics.example.com'
+
+/** Stored text, keys in the client's order: sent exactly as it is, never re-encoded. */
+const DOCUMENT =
+  '{"version":2,"delivery_id":"9c9f2f2a-6c1e-4a61-9d1a-4a3a5e2b77d1","rows":[{"Date":"2026-09-08","Cost":1}]}'
 
 const delivery = (over: Partial<DueDelivery> = {}): DueDelivery => ({
   id: '9c9f2f2a-6c1e-4a61-9d1a-4a3a5e2b77d1',
   webhookId: '00000000-0000-4000-8000-0000000009b0',
   period: { from: '2026-09-07', to: '2026-09-13' },
   attempt: 1,
-  payload: { version: 1, delivery_id: '9c9f2f2a-6c1e-4a61-9d1a-4a3a5e2b77d1' },
+  payload: DOCUMENT,
   url: 'https://client.example.com/hook',
   secret: SECRET,
+  format: 'json',
+  authHeader: null,
+  authToken: null,
   ...over,
 })
+
+const funnel = (over: Partial<DueDelivery> = {}): DueDelivery =>
+  delivery({
+    payload: 'Date,Campaign\r\n2026-09-08,X\r\n',
+    url: 'https://fileimport-webhook.funnel.io/abc123',
+    format: 'csv',
+    authHeader: 'x-funnel-fileimport-token',
+    authToken: FUNNEL_TOKEN,
+    ...over,
+  })
 
 const publicLookup: Lookup = () => Promise.resolve([{ address: '93.184.216.34' }])
 
@@ -43,6 +65,7 @@ function setup(answer: Answer, lookup: Lookup = publicLookup, respond = recordLa
     db: db.db,
     http: http.http,
     log: silentLogger(),
+    exportBaseUrl: BASE,
     now: () => NOW,
     lookup,
   }
@@ -76,7 +99,7 @@ describe('deliverOnce', () => {
 
     expect(outcome).toMatchObject({ delivered: true, status: 'delivered', responseCode: 200 })
     const sent = at(http.requests)
-    expect(sent.bodyText).toBe(JSON.stringify(delivery().payload))
+    expect(sent.bodyText).toBe(DOCUMENT)
     const timestamp = sent.headers?.['x-timestamp']
     expect(timestamp).toBe(String(NOW.getTime() / 1000))
     // The signature covers the timestamp header too: the client verifies both together.
@@ -84,7 +107,7 @@ describe('deliverOnce', () => {
       true,
     )
     expect(sent.headers?.['x-delivery-id']).toBe(delivery().id)
-    expect(sent.headers?.['x-payload-version']).toBe('1')
+    expect(sent.headers?.['x-payload-version']).toBe('2')
     expect(attemptParams(db)[2]).toBe('delivered')
     expect(attemptParams(db)[3]).toBeNull()
   })
@@ -148,10 +171,69 @@ describe('deliverOnce', () => {
     expect(outcome.nextAttemptAt?.getTime()).toBe(NOW.getTime() + 12 * 3_600_000)
   })
 
-  it('sends no version header for a body that carries none', async () => {
+  it("sends a json client's own key in its header, beside our signature", async () => {
     const { deps, http } = setup(() => response(200))
-    await deliverOnce(deps, delivery({ payload: { delivery_id: 'x' } }))
-    expect(at(http.requests).headers).not.toHaveProperty('x-payload-version')
+    await deliverOnce(deps, delivery({ authHeader: 'x-api-key', authToken: 'client-key-123' }))
+    const headers = at(http.requests).headers
+    expect(headers?.['x-api-key']).toBe('client-key-123')
+    expect(headers?.['x-signature']).toMatch(/^sha256=/)
+  })
+
+  it("POSTs a csv webhook's signed link, never the file, with Funnel's token", async () => {
+    const { deps, http } = setup(() => response(200))
+
+    const outcome = await deliverOnce(deps, funnel())
+
+    expect(outcome).toMatchObject({ delivered: true })
+    const sent = at(http.requests)
+    expect(sent.url).toBe('https://fileimport-webhook.funnel.io/abc123')
+    expect(sent.headers?.['x-funnel-fileimport-token']).toBe(FUNNEL_TOKEN)
+    expect(sent.headers?.['content-type']).toBe('application/json; charset=utf-8')
+    expect(sent.headers).not.toHaveProperty('x-payload-version')
+
+    // Funnel's body: one link, as a JSON string.
+    const link = new URL(JSON.parse(sent.bodyText ?? '') as string)
+    expect(`${link.origin}${link.pathname}`).toBe(`${BASE}/exports/${delivery().id}.csv`)
+    const expires = Number(link.searchParams.get('exp'))
+    expect(expires * 1000 - NOW.getTime()).toBe(7 * 24 * 3_600_000)
+    expect(verifyExport(delivery().id, expires, SECRET, link.searchParams.get('sig') ?? '')).toBe(
+      true,
+    )
+  })
+
+  it('records a failed attempt, without sending, when there is no public address to link to', async () => {
+    const { deps, http, db } = setup(() => response(200))
+
+    const outcome = await deliverOnce({ ...deps, exportBaseUrl: undefined }, funnel())
+
+    expect(http.requests).toEqual([])
+    expect(outcome).toMatchObject({ delivered: false, status: 'pending', responseCode: null })
+    expect(String(attemptParams(db)[5])).toContain('PUBLIC_BASE_URL is not set')
+  })
+
+  it('records a failed attempt for a row queued before version 2', async () => {
+    const { deps, http, db } = setup(() => response(200))
+
+    await deliverOnce(deps, delivery({ payload: { version: 1, campaigns: [] } }))
+
+    expect(http.requests).toEqual([])
+    expect(String(attemptParams(db)[5])).toContain('no rendered document')
+  })
+
+  it("never stores the client's key, even when its endpoint echoes it back", async () => {
+    const { deps, db } = setup(() => {
+      throw new HttpError(
+        401,
+        'https://fileimport-webhook.funnel.io/abc123',
+        `invalid token ${FUNNEL_TOKEN}`,
+      )
+    })
+
+    await deliverOnce(deps, funnel())
+
+    const excerpt = String(attemptParams(db)[5])
+    expect(excerpt).not.toContain(FUNNEL_TOKEN)
+    expect(excerpt).toBe('invalid token [REDACTED]')
   })
 
   it('treats a 3xx the client answered with as undelivered', async () => {

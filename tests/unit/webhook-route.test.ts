@@ -51,18 +51,47 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()))
 })
 
+const COLUMNS = {
+  source: 'zeus',
+  columns: [{ name: 'Impressions', formula: 'impressions', decimals: 0 }],
+}
+
 const webhookRow = (over: Record<string, unknown> = {}) => ({
   id: WEBHOOK,
   name: 'weekly',
+  company_id: '00000000-0000-4000-8000-000000000001',
+  campaign_ids: null,
   url: 'https://client.example.com/hook',
   secret: 'whsec_test',
-  schedule_cron: '0 8 * * 1',
+  schedule_cron: '0 5 * * 1',
   timezone: 'Europe/Zurich',
   report_window: 'previous_week',
+  format: 'json',
   enabled: true,
-  next_run_at: new Date('2026-09-21T06:00:00Z'),
+  next_run_at: new Date('2026-09-21T03:00:00Z'),
+  payload_fields: COLUMNS,
   ...over,
 })
+
+const metricsRow = {
+  campaign_id: '00000000-0000-4000-8000-000000000002',
+  campaign: 'DE2609 Tchibo Caffè Crema',
+  price: null,
+  events_date: '2026-09-08',
+  language: 'de',
+  campaign_tag: '',
+  impressions: '1001',
+}
+
+/** A webhook with one stored day of Zeus numbers; the delivery insert lands under its own id. */
+const withNumbers =
+  (over: Record<string, unknown> = {}, metrics: unknown[] = [metricsRow]) =>
+  (text: string, params: unknown[]): unknown[] => {
+    if (text.includes('FROM app.webhook\n WHERE id')) return [webhookRow(over)]
+    if (text.includes('FROM analytics.advanced_analytics')) return metrics
+    if (text.includes('INSERT INTO app.webhook_delivery')) return [{ id: params[0] }]
+    return []
+  }
 
 describe('POST /webhooks/:id/send-now, refused before the handler', () => {
   it('needs the operator token', async () => {
@@ -109,12 +138,8 @@ describe('POST /webhooks/:id/send-now, refused before the handler', () => {
 })
 
 describe('POST /webhooks/:id/send-now', () => {
-  it('answers 202 with the delivery id', async () => {
-    const db = fakeDb((text) => {
-      if (text.includes('FROM app.webhook\n WHERE id')) return [webhookRow()]
-      if (text.includes('INSERT INTO app.webhook_delivery')) return [{ id: WEBHOOK }]
-      return []
-    })
+  it('answers 202 with the delivery id the stored document carries', async () => {
+    const db = fakeDb(withNumbers())
 
     const res = await build(db.db).inject({
       method: 'POST',
@@ -124,11 +149,26 @@ describe('POST /webhooks/:id/send-now', () => {
     })
 
     expect(res.statusCode).toBe(202)
-    expect(res.json()).toEqual({
-      deliveryId: WEBHOOK,
-      periodStart: '2026-09-07',
-      periodEnd: '2026-09-13',
+    const body = res.json<{ deliveryId: string; periodStart: string; periodEnd: string }>()
+    expect(body).toMatchObject({ periodStart: '2026-09-07', periodEnd: '2026-09-13' })
+    const [id, , , , trigger, document] = at(db.matching('INSERT INTO app.webhook_delivery')).params
+    expect(id).toBe(body.deliveryId)
+    expect(trigger).toBe('manual')
+    expect(JSON.parse(document as string)).toMatchObject({ delivery_id: body.deliveryId })
+  })
+
+  it('answers 409 for a period in which no campaign has a number', async () => {
+    const db = fakeDb(withNumbers({}, []))
+
+    const res = await build(db.db).inject({
+      method: 'POST',
+      url: `/webhooks/${WEBHOOK}/send-now`,
+      headers: auth,
     })
+
+    expect(res.statusCode).toBe(409)
+    expect(res.json()).toMatchObject({ error: 'empty_period' })
+    expect(db.matching('INSERT INTO app.webhook_delivery')).toEqual([])
   })
 
   it('answers 404 for a webhook that does not exist', async () => {
@@ -157,13 +197,38 @@ describe('POST /webhooks/:id/send-now', () => {
     expect(res.json()).toMatchObject({ error: 'webhook_disabled' })
   })
 
-  it('answers 409 rather than re-sending a period that already went out', async () => {
-    const db = fakeDb((text) => {
-      if (text.includes('FROM app.webhook\n WHERE id')) return [webhookRow()]
+  it('sends a period already delivered again, as a new delivery with its own id', async () => {
+    const delivered = withNumbers()
+    const db = fakeDb((text, params) =>
+      text.includes('FROM app.webhook_delivery\n WHERE webhook_id')
+        ? [{ id: 'delivery-1', status: 'delivered', attempts: 1 }]
+        : delivered(text, params),
+    )
+
+    const res = await build(db.db).inject({
+      method: 'POST',
+      url: `/webhooks/${WEBHOOK}/send-now`,
+      headers: auth,
+    })
+
+    expect(res.statusCode).toBe(202)
+    const { deliveryId } = res.json<{ deliveryId: string }>()
+    expect(deliveryId).not.toBe('delivery-1')
+    const [id, , , , trigger] = at(db.matching('INSERT INTO app.webhook_delivery')).params
+    expect([id, trigger]).toEqual([deliveryId, 'manual'])
+    // The delivered record is left as it was.
+    expect(db.matching("SET status = 'pending'")).toEqual([])
+  })
+
+  it('re-queues a period whose latest delivery failed, under that id', async () => {
+    const FAILED = '00000000-0000-4000-8000-0000000009f1'
+    const failed = withNumbers()
+    const db = fakeDb((text, params) => {
       if (text.includes('FROM app.webhook_delivery\n WHERE webhook_id')) {
-        return [{ id: 'delivery-1', status: 'delivered', attempts: 1 }]
+        return [{ id: FAILED, status: 'failed', attempts: 6 }]
       }
-      return []
+      if (text.includes("SET status = 'pending'")) return [{ id: FAILED }]
+      return failed(text, params)
     })
 
     const res = await build(db.db).inject({
@@ -172,37 +237,58 @@ describe('POST /webhooks/:id/send-now', () => {
       headers: auth,
     })
 
-    expect(res.statusCode).toBe(409)
-    expect(res.json()).toMatchObject({ error: 'already_delivered' })
-    expect(db.matching('UPDATE app.webhook_delivery')).toEqual([])
+    expect(res.statusCode).toBe(202)
+    expect(res.json()).toMatchObject({ deliveryId: FAILED })
+    const [id, document] = at(db.matching("SET status = 'pending'")).params
+    expect(id).toBe(FAILED)
+    expect(JSON.parse(document as string)).toMatchObject({ delivery_id: FAILED })
+    expect(db.matching('INSERT INTO app.webhook_delivery')).toEqual([])
   })
 })
 
-describe('PATCH /webhooks/:id and POST /webhooks/:id/preview, refused before the handler', () => {
+describe('POST /webhooks, PATCH /webhooks/:id and POST /webhooks/:id/preview, refused before the handler', () => {
   it.each([
+    ['POST', '/webhooks'],
     ['PATCH', `/webhooks/${WEBHOOK}`],
     ['POST', `/webhooks/${WEBHOOK}/preview`],
   ] as const)('%s %s needs the operator token', async (method, url) => {
-    const res = await build().inject({ method, url, payload: { fields: null } })
+    const res = await build().inject({ method, url, payload: { enabled: false } })
     expect(res.statusCode).toBe(401)
   })
 
+  const create = {
+    companyId: '00000000-0000-4000-8000-000000000001',
+    name: 'Tchibo daily',
+    url: 'https://fileimport-webhook.funnel.io/abc',
+    frequency: 'daily',
+    format: 'csv',
+    auth: { token: 'fnl_token' },
+    fields: COLUMNS,
+  }
+
   it.each([
-    ['no fields key at all', {}],
-    ['a metric the catalog does not have', { fields: { metrics: ['clicks'] } }],
-    [
-      'a calculated name that is already a metric',
-      {
-        fields: { calculated: [{ name: 'impressions', formula: 'impressions * 2' }] },
-      },
-    ],
+    ['no frequency', { ...create, frequency: undefined }],
+    ['an hourly frequency', { ...create, frequency: 'hourly' }],
+    ['an xml format', { ...create, format: 'xml' }],
+    ['no columns', { ...create, fields: undefined }],
+    ['a version 1 field list', { ...create, fields: { metrics: ['impressions'] } }],
+    ['a reportWindow, which is a frequency now', { ...create, reportWindow: 'previous_day' }],
+    ['a key with a line break', { ...create, auth: { token: 'a\r\nX-Evil: 1' } }],
+    ['a header name with a space', { ...create, auth: { header: 'x api', token: 'k' } }],
+  ])('POST answers 400 for %s', async (_name, payload) => {
+    const res = await build().inject({ method: 'POST', url: '/webhooks', payload, headers: auth })
+    expect(res.statusCode).toBe(400)
+  })
+
+  it.each([
+    ['nothing to change', {}],
+    ['the company, which never changes', { companyId: create.companyId }],
+    ['a column named Date', { fields: { columns: [{ name: 'Date', formula: 'impressions' }] } }],
     [
       'too many decimals',
-      {
-        fields: { calculated: [{ name: 'cost', formula: 'impressions', decimals: 9 }] },
-      },
+      { fields: { columns: [{ name: 'C', formula: 'impressions', decimals: 9 }] } },
     ],
-    ['an unknown key', { fields: null, enabled: false }],
+    ['an unknown key', { fields: COLUMNS, include_creatives: false }],
   ])('PATCH answers 400 for %s', async (_name, payload) => {
     const res = await build().inject({
       method: 'PATCH',
@@ -225,30 +311,30 @@ describe('PATCH /webhooks/:id and POST /webhooks/:id/preview, refused before the
 })
 
 describe('PATCH /webhooks/:id', () => {
-  it('answers 422 with the field and the position of a formula that does not parse', async () => {
-    const db = fakeDb()
+  it('answers 422 with the column and the position of a formula that does not parse', async () => {
+    const db = fakeDb((text) =>
+      text.includes('FOR UPDATE') ? [{ ...webhookRow(), auth_header: null, auth_token: null }] : [],
+    )
     const res = await build(db.db).inject({
       method: 'PATCH',
       url: `/webhooks/${WEBHOOK}`,
-      payload: {
-        fields: { calculated: [{ name: 'cost', formula: 'impressions / 1000 * price)' }] },
-      },
+      payload: { fields: { columns: [{ name: 'Cost', formula: 'impressions / 1000 * price)' }] } },
       headers: auth,
     })
 
     expect(res.statusCode).toBe(422)
     expect(res.json()).toEqual({
       error: 'invalid_formula',
-      message: 'calculated field "cost": unexpected ")" at 27',
+      message: 'column "Cost": unexpected ")" at 27',
     })
-    expect(db.matching('SET payload_fields')).toEqual([])
+    expect(db.matching('UPDATE app.webhook')).toEqual([])
   })
 
   it('answers 404 for a webhook that does not exist', async () => {
     const res = await build(fakeDb().db).inject({
       method: 'PATCH',
       url: `/webhooks/${WEBHOOK}`,
-      payload: { fields: null },
+      payload: { enabled: false },
       headers: auth,
     })
     expect(res.statusCode).toBe(404)
@@ -257,13 +343,9 @@ describe('PATCH /webhooks/:id', () => {
 })
 
 describe('POST /webhooks/:id/preview', () => {
-  it('answers with the body a delivery would carry, and stores nothing', async () => {
-    const body = { version: 1, delivery_id: null, campaigns: [] }
-    const db = fakeDb((text) => {
-      if (text.includes('FROM app.webhook\n WHERE id')) return [webhookRow({ enabled: false })]
-      if (text.includes('app.build_webhook_payload')) return [{ payload: body }]
-      return []
-    })
+  it('answers with the document a delivery would carry, and stores nothing', async () => {
+    // A disabled webhook can be previewed: that is how a column list is checked before it goes live.
+    const db = fakeDb(withNumbers({ enabled: false, format: 'csv' }))
 
     const res = await build(db.db).inject({
       method: 'POST',
@@ -272,15 +354,35 @@ describe('POST /webhooks/:id/preview', () => {
       headers: auth,
     })
 
-    // A disabled webhook can be previewed: that is how a field list is checked before it goes live.
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toEqual(body)
-    expect(at(db.matching('app.build_webhook_payload')).params).toEqual([
-      WEBHOOK,
+    expect(res.json()).toEqual({
+      format: 'csv',
+      periodStart: '2026-09-07',
+      periodEnd: '2026-09-13',
+      rowCount: 1,
+      document: 'Date,Campaign,Impressions\r\n2026-09-08,DE2609 Tchibo Caffè Crema,1001\r\n',
+    })
+    expect(at(db.matching('FROM analytics.advanced_analytics')).params.slice(2)).toEqual([
+      'zeus',
       '2026-09-07',
       '2026-09-13',
     ])
     expect(db.matching('webhook_delivery')).toEqual([])
+  })
+
+  it('previews an empty period as an empty document, with no delivery id', async () => {
+    const db = fakeDb(withNumbers({}, []))
+
+    const res = await build(db.db).inject({
+      method: 'POST',
+      url: `/webhooks/${WEBHOOK}/preview`,
+      headers: auth,
+    })
+
+    expect(res.statusCode).toBe(200)
+    const body = res.json<{ rowCount: number; document: string }>()
+    expect(body.rowCount).toBe(0)
+    expect(JSON.parse(body.document)).toMatchObject({ delivery_id: null, rows: [] })
   })
 
   it('answers 404 for a webhook that does not exist', async () => {

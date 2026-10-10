@@ -22,7 +22,12 @@ const REDACTED_PATHS = [
   'config.databaseSslCa',
   'config.adminToken',
   'webhook.secret',
+  'webhook.authToken',
+  'webhook.auth_token',
   'delivery.secret',
+  'delivery.authToken',
+  'delivery.auth_token',
+  'auth.token',
   // Bare properties.
   'authorization',
   'secret',
@@ -32,6 +37,8 @@ const REDACTED_PATHS = [
   'password',
   'databaseUrl',
   'adminToken',
+  'authToken',
+  'auth_token',
 ]
 
 export const redactedLogPaths: readonly string[] = REDACTED_PATHS

@@ -44,6 +44,25 @@ function checkDatabase(
 
 const runtimeSchema = z.object(runtimeFields).superRefine(checkDatabase)
 
+/** An origin the internet can reach: https, or http on a loopback host for local runs. */
+const publicBaseUrl = z
+  .url({ protocol: /^https?$/ })
+  .refine(
+    (value) => {
+      const url = new URL(value)
+      return url.protocol === 'https:' || LOOPBACK_HOSTS.has(url.hostname)
+    },
+    { error: 'must be https (http only for a loopback host)' },
+  )
+  .refine(
+    (value) => {
+      const url = new URL(value)
+      return url.pathname === '/' && url.search === '' && url.hash === ''
+    },
+    { error: 'must be an origin only, such as https://analytics.example.com' },
+  )
+  .transform((value) => new URL(value).origin)
+
 const serviceSchema = z
   .object({
     ...runtimeFields,
@@ -65,6 +84,16 @@ const serviceSchema = z
     SYNC_SCHEDULER_ENABLED: z.stringbool().default(true),
     /** Runs the minutely webhook tick in this process. Same leader-lock rule as the nightly pass. */
     WEBHOOK_SCHEDULER_ENABLED: z.stringbool().default(true),
+    /**
+     * Where this service is reachable from the internet, e.g. https://analytics.example.com: a csv
+     * webhook links its file there (/exports/…). Unset, Render's RENDER_EXTERNAL_URL is used.
+     */
+    PUBLIC_BASE_URL: publicBaseUrl.optional(),
+    /**
+     * Set by Render to the service's onrender.com address; the fallback for PUBLIC_BASE_URL. Not
+     * ours to set, so a value that is not a usable origin is ignored rather than failing the boot.
+     */
+    RENDER_EXTERNAL_URL: publicBaseUrl.optional().catch(undefined),
     /** Set by Render to the deployed commit. /healthz reports it so a deploy can see it is live. */
     RENDER_GIT_COMMIT: z
       .string()
@@ -100,6 +129,8 @@ export interface Config extends RuntimeConfig {
   readonly trustProxyHops: number
   readonly syncSchedulerEnabled: boolean
   readonly webhookSchedulerEnabled: boolean
+  /** The origin a csv webhook's links point at; unset, no csv webhook can be set up. */
+  readonly publicBaseUrl?: string
   /** The deployed commit, when the host tells us (Render does). */
   readonly commit?: string
 }
@@ -150,6 +181,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxyHops: data.TRUST_PROXY_HOPS,
     syncSchedulerEnabled: data.SYNC_SCHEDULER_ENABLED,
     webhookSchedulerEnabled: data.WEBHOOK_SCHEDULER_ENABLED,
+    ...withPublicBaseUrl(data.PUBLIC_BASE_URL ?? data.RENDER_EXTERNAL_URL),
     ...(data.RENDER_GIT_COMMIT === undefined ? {} : { commit: data.RENDER_GIT_COMMIT }),
   }
+}
+
+function withPublicBaseUrl(value: string | undefined): { publicBaseUrl?: string } {
+  return value === undefined ? {} : { publicBaseUrl: value }
 }

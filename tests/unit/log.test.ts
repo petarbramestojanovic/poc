@@ -28,7 +28,7 @@ describe('logger redaction', () => {
           adminToken: 'r9',
           databaseSslCa: 'r10',
         },
-        webhook: { id: 'w1', secret: 'r11' },
+        webhook: { id: 'w1', secret: 'r11', authToken: 'r25', auth_token: 'r26' },
         authorization: 'Bearer r12',
         secret: 'r13',
         token: 'r14',
@@ -37,18 +37,25 @@ describe('logger redaction', () => {
         password: 'r17',
         databaseUrl: 'r18',
         adminToken: 'r19',
+        // A client's own key for its webhook endpoint (migration 0008).
+        authToken: 'r20',
+        auth_token: 'r21',
+        auth: { header: 'x-funnel-fileimport-token', token: 'r22' },
+        delivery: { id: 'd1', authToken: 'r23', auth_token: 'r24' },
       },
       'probe',
     )
     const serialised = JSON.stringify(last())
-    for (let i = 1; i <= 19; i++)
+    for (let i = 1; i <= 26; i++)
       expect(serialised, `r${i} leaked`).not.toMatch(new RegExp(`\\br${i}\\b`))
     const entry = last() as {
       credential: { id: string }
       config: { port: number }
       webhook: { id: string }
+      auth: { header: string }
     }
     // Non-secret siblings survive.
+    expect(entry.auth.header).toBe('x-funnel-fileimport-token')
     expect(entry.credential.id).toBe('c1')
     expect(entry.config.port).toBe(1)
     expect(entry.webhook.id).toBe('w1')

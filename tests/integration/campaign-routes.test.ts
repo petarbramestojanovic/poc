@@ -13,7 +13,7 @@ import { createDefaultRegistry } from '../../src/modules/sync/connectors/index.t
 import { createRunTracker, runSync, SYNC_MAX_CONNECTIONS } from '../../src/modules/sync/engine.ts'
 import { createRegistry } from '../../src/modules/sync/registry.ts'
 import type { LinkEntity, SourceConnector } from '../../src/modules/sync/types.ts'
-import { webhookPayloadSchema } from '../../src/modules/webhooks/payload.ts'
+import { reportBodySchema } from '../../src/modules/webhooks/payload.ts'
 import { at } from '../helpers.ts'
 
 // The admin API end to end, over HTTP and against the real schema: a campaign as the Salesforce
@@ -395,7 +395,8 @@ describe('campaign admin API', () => {
       companyId,
       name: 'IT Routes weekly',
       url: 'https://client.example.com/hook',
-      scheduleCron: '0 8 * * 1',
+      frequency: 'weekly',
+      fields: { columns: [{ name: 'Impressions', formula: 'impressions', decimals: 0 }] },
       ...over,
     })
 
@@ -438,9 +439,15 @@ describe('campaign admin API', () => {
       expect(res.json()).toMatchObject({ error: code })
     })
 
-    it('reports a campaign once it has its platform ids', async () => {
+    it('reports a campaign once it has its platform ids and numbers', async () => {
       const campaign = await seed()
       await put(campaign.id, 'zeus', zeusIds())
+      await db.query(
+        `INSERT INTO analytics.advanced_analytics
+           (campaign_id, source, language, campaign_tag, events_date, impressions, data_source)
+         VALUES ($1, 'zeus', '', '', '2026-09-02', 500, 'sync')`,
+        [campaign.id],
+      )
       const created = (await post('/webhooks', webhook(campaign.companyId))).json<{
         webhook: { id: string }
       }>()
@@ -455,9 +462,10 @@ describe('campaign admin API', () => {
         'SELECT payload FROM app.webhook_delivery WHERE id = $1',
         [sent.json<{ deliveryId: string }>().deliveryId],
       )
-      const payload = webhookPayloadSchema.parse(delivery?.payload)
-      expect(payload.campaigns.map((campaign) => campaign.name)).toEqual(['IT Routes Cafemio'])
-      expect(at(at(payload.campaigns).sources)).toMatchObject({ source: 'zeus', role: 'primary' })
+      const payload = reportBodySchema.parse(JSON.parse(delivery?.payload as string))
+      expect(payload.rows).toEqual([
+        { Date: '2026-09-02', Campaign: 'IT Routes Cafemio', Impressions: 500 },
+      ])
     })
   })
 })

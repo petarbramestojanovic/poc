@@ -19,7 +19,8 @@ import { companyRoutes } from './modules/companies/routes.ts'
 import { healthRoutes } from './modules/health/routes.ts'
 import { inboundRoutes } from './modules/salesforce/routes.ts'
 import { syncRoutes } from './modules/sync/routes.ts'
-import { webhookRoutes } from './modules/webhooks/routes.ts'
+import { EXPORT_PREFIX } from './modules/webhooks/exports.ts'
+import { exportRoutes, webhookRoutes } from './modules/webhooks/routes.ts'
 import type { RunTracker, SyncDeps } from './modules/sync/engine.ts'
 import { classifySyncError, InvalidLinkConfigError, TooSoonError } from './modules/sync/errors.ts'
 import type { SendDeps } from './modules/webhooks/send.ts'
@@ -33,7 +34,7 @@ export interface AppDeps {
   drainTimeoutMs?: number
   /** Sync machinery behind the /sync routes. The service passes it; without it /sync answers 404. */
   sync?: SyncDeps
-  /** Webhook machinery behind the /webhooks routes. Without it /webhooks answers 404. */
+  /** Webhook machinery behind the /webhooks and /exports routes. Without it both answer 404. */
   webhooks?: SendDeps
   /**
    * Campaign setup behind /companies, /campaigns and (with config.inboundCampaignsToken)
@@ -126,6 +127,20 @@ export function buildApp({
         }
       },
       { prefix },
+    )
+  }
+
+  // Public on purpose: a client's importer (Funnel) fetches a csv webhook's file here, and the signed
+  // link is the only key (src/modules/webhooks/exports.ts). It reaches that file and nothing else.
+  if (webhooks) {
+    app.register(
+      async (exports) => {
+        exports.setNotFoundHandler(async (_request, reply) =>
+          reply.code(404).send({ error: 'not_found' }),
+        )
+        await exports.register(exportRoutes, { deps: webhooks })
+      },
+      { prefix: EXPORT_PREFIX },
     )
   }
 
