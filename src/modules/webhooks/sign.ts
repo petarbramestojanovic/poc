@@ -25,6 +25,28 @@ export function signBody(timestamp: string, body: string, secret: string): strin
   )
 }
 
+/**
+ * The signature of a CSV export link (exports.ts): the delivery id and the link's expiry, under the
+ * webhook's own secret. The content starts with a fixed label, never with the digits a body
+ * signature starts with, so neither signature can ever stand in for the other.
+ */
+export function signExport(deliveryId: string, expires: number, secret: string): string {
+  return createHmac('sha256', secret)
+    .update(`export.${deliveryId}.${String(expires)}`, 'utf8')
+    .digest('hex')
+}
+
+export function verifyExport(
+  deliveryId: string,
+  expires: number,
+  secret: string,
+  presented: string,
+): boolean {
+  const expected = Buffer.from(signExport(deliveryId, expires, secret))
+  const given = Buffer.from(presented)
+  return expected.length === given.length && timingSafeEqual(expected, given)
+}
+
 /** What a client does with the headers we send; used by the tests' stub receiver. */
 export function verifyBody(
   timestamp: string | undefined,

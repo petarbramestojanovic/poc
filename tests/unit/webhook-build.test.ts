@@ -1,161 +1,156 @@
 import { describe, expect, it } from 'vitest'
-import { buildPayload } from '../../src/modules/webhooks/build.ts'
-import { PayloadContractError } from '../../src/modules/webhooks/errors.ts'
 import {
-  compileFields,
-  payloadFieldsSchema,
-  type PayloadFieldsInput,
-} from '../../src/modules/webhooks/fields.ts'
+  buildReport,
+  incompleteCampaigns,
+  renderReport,
+  type ReportTarget,
+} from '../../src/modules/webhooks/build.ts'
+import { compileFields, payloadFieldsSchema } from '../../src/modules/webhooks/fields.ts'
+import type { PayloadFieldsInput } from '../../src/modules/webhooks/fields.ts'
 import { at } from '../helpers.ts'
-import { fakeDb, type Respond } from './webhook-fakes.ts'
+import { fakeDb } from './webhook-fakes.ts'
 
-// buildPayload's own decisions: which extra reads a field list costs, when a source block is added
-// for a formula, and refusing to shape a body the contract does not recognise.
+// What buildReport asks Postgres, and how it reads the answer: bigint and numeric columns arrive as
+// text, a NULL column is a metric the source does not measure, and the clicks are read only when a
+// formula needs them.
 
-const WEBHOOK = { id: '00000000-0000-4000-8000-0000000009b0', includeCreatives: true }
+const COMPANY = '00000000-0000-4000-8000-000000000001'
 const CAMPAIGN = '00000000-0000-4000-8000-000000000002'
-const PERIOD = { from: '2026-09-07', to: '2026-09-13' }
+const PERIOD = { from: '2026-10-08', to: '2026-10-08' }
 
-const block = (source: string, role: 'primary' | 'check') => ({
-  source,
-  display_name: source,
-  role,
-  day_timezone: 'UTC',
-  data_complete_through: '2026-09-13',
-  last_synced_at: null,
-  metrics_available: ['impressions'],
-  totals: { impressions: 1000 },
-  daily: [],
-  creatives: [],
-  ctas: [],
-  pages: [],
-})
-
-const body = (sources: unknown[]) => ({
-  version: 1,
-  delivery_id: null,
-  generated_at: '2026-09-14T06:00:02Z',
-  period: {
-    start: PERIOD.from,
-    end: PERIOD.to,
-    timezone: 'Europe/Zurich',
-    window: 'previous_week',
-  },
-  company: { id: '00000000-0000-4000-8000-000000000001', name: 'Dev Company' },
-  campaigns: [{ id: CAMPAIGN, name: 'Dev', primary_source: 'nexd', sources }],
-})
+const TARGET: ReportTarget = {
+  id: '00000000-0000-4000-8000-0000000009b0',
+  companyId: COMPANY,
+  campaignIds: [CAMPAIGN],
+  timezone: 'Europe/Zurich',
+  frequency: 'daily',
+  format: 'json',
+}
 
 const fields = (input: PayloadFieldsInput) => compileFields(payloadFieldsSchema.parse(input))
 
-function database(built: unknown, extra: Respond = () => []) {
-  return fakeDb((text, params) => {
-    if (text.includes('app.build_webhook_payload')) return [{ payload: built }]
-    return extra(text, params)
+const COST = fields({
+  columns: [
+    { name: 'Impressions', formula: 'impressions', decimals: 0 },
+    { name: 'Cost', formula: 'impressions / 1000 * price' },
+  ],
+})
+const CLICKS = fields({ columns: [{ name: 'Clicks', formula: 'clicks', decimals: 0 }] })
+
+const metricsRow = (over: Record<string, unknown> = {}) => ({
+  campaign_id: CAMPAIGN,
+  campaign: 'DE2610 Tchibo Caffè Crema',
+  price: '15.5876',
+  events_date: '2026-10-08',
+  language: 'de',
+  campaign_tag: 'mpu_v1',
+  impressions: '12610',
+  in_view: null,
+  game_started: null,
+  game_finished: null,
+  interactions: null,
+  hovered: null,
+  in_view_time: null,
+  dwell_time: null,
+  interaction_time: null,
+  dwell_avg_ms: null,
+  unique_impressions_reported: null,
+  unique_clicks_reported: null,
+  ...over,
+})
+
+function database(clicks: unknown[] = []) {
+  return fakeDb((text) => {
+    if (text.includes('FROM analytics.advanced_analytics')) return [metricsRow()]
+    if (text.includes('FROM analytics.cta_clicks')) return clicks
+    if (text.includes('FROM app.campaign c')) return [{ name: 'Late Campaign' }]
+    return []
   })
 }
 
-describe('buildPayload', () => {
-  it('returns the body Postgres built, untouched, without a field list', async () => {
-    const built = { anything: 'as built' }
-    const db = database(built)
-    expect(await buildPayload(db.db, WEBHOOK, PERIOD, null)).toBe(built)
-    expect(db.queries).toHaveLength(1)
-  })
+describe('buildReport', () => {
+  it("reads the webhook's campaigns, source and period, and the metrics by name", async () => {
+    const db = database()
 
-  it('reads neither prices nor clicks when no formula needs them', async () => {
-    const db = database(body([block('nexd', 'primary'), block('zeus', 'check')]))
-    await buildPayload(
-      db.db,
-      WEBHOOK,
-      PERIOD,
-      fields({ calculated: [{ name: 'half', formula: 'impressions / 2' }] }),
-    )
-    expect(db.queries.map((query) => query.text)).toHaveLength(1)
-  })
+    const report = await buildReport(db.db, TARGET, PERIOD, COST)
 
-  it('reads the prices and the clicks a formula needs, for the sources that use them', async () => {
-    const db = database(body([block('nexd', 'primary'), block('zeus', 'check')]))
-    await buildPayload(
-      db.db,
-      WEBHOOK,
-      PERIOD,
-      fields({
-        calculated: [
-          { name: 'cost', formula: 'impressions / 1000 * price' },
-          { name: 'ctr', formula: 'clicks / impressions', source: 'nexd' },
-        ],
-      }),
-    )
-    expect(at(db.matching('price::text')).params).toEqual([[CAMPAIGN]])
-    expect(at(db.matching('FROM analytics.cta_clicks')).params).toEqual([
+    expect(at(db.matching('FROM analytics.advanced_analytics')).params).toEqual([
+      COMPANY,
       [CAMPAIGN],
-      ['nexd'],
-      PERIOD.from,
-      PERIOD.to,
-    ])
-  })
-
-  it('adds the block a formula needs where the campaign is linked, as a check, in order', async () => {
-    const db = database(body([block('nexd', 'primary')]), (text) => {
-      if (text.includes('FROM external.campaign_link')) {
-        return [{ campaign_id: CAMPAIGN, source_id: 'zeus' }]
-      }
-      if (text.includes('app.webhook_source_block')) return [{ block: block('zeus', 'check') }]
-      return []
-    })
-
-    const shaped = (await buildPayload(
-      db.db,
-      WEBHOOK,
-      PERIOD,
-      fields({ calculated: [{ name: 'half', formula: 'impressions / 2' }] }),
-    )) as { campaigns: { sources: { source: string; totals: Record<string, unknown> }[] }[] }
-
-    expect(at(db.matching('app.webhook_source_block')).params).toEqual([
-      CAMPAIGN,
       'zeus',
-      PERIOD.from,
-      PERIOD.to,
-      true,
+      '2026-10-08',
+      '2026-10-08',
     ])
-    const sources = at(shaped.campaigns).sources
-    expect(sources.map((entry) => entry.source)).toEqual(['nexd', 'zeus'])
-    expect(at(sources, 1).totals.half).toBe(500)
+    expect(report.names).toEqual(['Date', 'Campaign', 'Impressions', 'Cost'])
+    // 12610 × 15.5876 / 1000 = 196.559636, from the text Postgres sent, exactly.
+    expect(report.rows).toEqual([['2026-10-08', 'DE2610 Tchibo Caffè Crema', 12610, 196.56]])
   })
 
-  it('adds no block for a source the campaign is not linked to', async () => {
-    const db = database(body([block('nexd', 'primary')]))
-    await buildPayload(
-      db.db,
-      WEBHOOK,
+  it('reads no clicks when no formula needs them', async () => {
+    const db = database()
+    await buildReport(db.db, TARGET, PERIOD, COST)
+    expect(db.matching('FROM analytics.cta_clicks')).toEqual([])
+  })
+
+  it('reads the clicks a formula needs, with the same scope', async () => {
+    const db = database([
+      {
+        campaign_id: CAMPAIGN,
+        campaign: 'DE2610 Tchibo Caffè Crema',
+        price: null,
+        events_date: '2026-10-08',
+        clicks: '42',
+      },
+    ])
+
+    const report = await buildReport(db.db, { ...TARGET, campaignIds: null }, PERIOD, CLICKS)
+
+    expect(at(db.matching('FROM analytics.cta_clicks')).params).toEqual([
+      COMPANY,
+      null,
+      'zeus',
+      '2026-10-08',
+      '2026-10-08',
+    ])
+    expect(report.rows).toEqual([['2026-10-08', 'DE2610 Tchibo Caffè Crema', 42]])
+  })
+})
+
+describe('renderReport', () => {
+  it('renders the format of the webhook, with the delivery id inside a JSON body', async () => {
+    const report = await buildReport(database().db, TARGET, PERIOD, COST)
+    const generatedAt = new Date('2026-10-09T03:00:00Z')
+
+    const json = renderReport(
+      TARGET,
       PERIOD,
-      fields({ calculated: [{ name: 'half', formula: 'impressions / 2' }] }),
+      report,
+      'b0b0b0b0-0000-4000-8000-000000000001',
+      generatedAt,
     )
-    expect(db.matching('app.webhook_source_block')).toEqual([])
-  })
-
-  it('refuses to shape a body the contract does not recognise', async () => {
-    const db = database({ ...body([block('zeus', 'primary')]), version: 2 })
-    await expect(
-      buildPayload(db.db, WEBHOOK, PERIOD, fields({ metrics: ['impressions'] })),
-    ).rejects.toBeInstanceOf(PayloadContractError)
-  })
-
-  it('refuses an added block the contract does not recognise', async () => {
-    const db = database(body([block('nexd', 'primary')]), (text) => {
-      if (text.includes('FROM external.campaign_link')) {
-        return [{ campaign_id: CAMPAIGN, source_id: 'zeus' }]
-      }
-      if (text.includes('app.webhook_source_block')) return [{ block: { source: 'zeus' } }]
-      return []
+    expect(JSON.parse(json)).toMatchObject({
+      delivery_id: 'b0b0b0b0-0000-4000-8000-000000000001',
+      period: { start: '2026-10-08', end: '2026-10-08', frequency: 'daily' },
     })
-    await expect(
-      buildPayload(
-        db.db,
-        WEBHOOK,
-        PERIOD,
-        fields({ calculated: [{ name: 'half', formula: 'impressions / 2' }] }),
-      ),
-    ).rejects.toMatchObject({ code: 'payload_contract', status: 500 })
+
+    const csv = renderReport({ ...TARGET, format: 'csv' }, PERIOD, report, null, generatedAt)
+    expect(csv).toBe(
+      'Date,Campaign,Impressions,Cost\r\n2026-10-08,DE2610 Tchibo Caffè Crema,12610,196.56\r\n',
+    )
+  })
+})
+
+describe('incompleteCampaigns', () => {
+  it('asks for the campaigns whose source has not written the period, and names them', async () => {
+    const db = database()
+
+    expect(await incompleteCampaigns(db.db, TARGET, 'zeus', PERIOD)).toEqual(['Late Campaign'])
+    expect(at(db.matching('external.sync_state')).params).toEqual([
+      COMPANY,
+      [CAMPAIGN],
+      'zeus',
+      '2026-10-08',
+      '2026-10-08',
+    ])
   })
 })

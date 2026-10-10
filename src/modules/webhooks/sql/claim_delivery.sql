@@ -11,4 +11,4 @@ UPDATE app.webhook_delivery d
    AND d.status = 'pending'
    AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= $2)
 RETURNING d.id, d.webhook_id, d.period_start, d.period_end, d.attempts, d.payload,
-          w.url, w.secret;
+          w.url, w.secret, w.format, w.auth_header, w.auth_token;

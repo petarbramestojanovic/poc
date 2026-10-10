@@ -68,6 +68,37 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...valid, INBOUND_CAMPAIGNS_TOKEN: value })).toThrow(message)
   })
 
+  it("reads PUBLIC_BASE_URL as an origin, falling back to Render's own address", () => {
+    const render = 'https://poc-guf1.onrender.com'
+    expect(loadConfig(valid)).not.toHaveProperty('publicBaseUrl')
+    expect(loadConfig({ ...valid, RENDER_EXTERNAL_URL: render }).publicBaseUrl).toBe(render)
+    expect(
+      loadConfig({
+        ...valid,
+        RENDER_EXTERNAL_URL: render,
+        PUBLIC_BASE_URL: 'https://analytics.example.com/',
+      }).publicBaseUrl,
+    ).toBe('https://analytics.example.com')
+    expect(loadConfig({ ...valid, PUBLIC_BASE_URL: 'http://localhost:3000' }).publicBaseUrl).toBe(
+      'http://localhost:3000',
+    )
+  })
+
+  it('ignores a RENDER_EXTERNAL_URL it cannot use, rather than refusing to boot', () => {
+    expect(
+      loadConfig({ ...valid, RENDER_EXTERNAL_URL: 'https://poc-guf1.onrender.com/app' }),
+    ).not.toHaveProperty('publicBaseUrl')
+  })
+
+  it.each([
+    ['plain http', 'http://analytics.example.com', 'must be https'],
+    ['a path', 'https://analytics.example.com/api', 'origin only'],
+    ['a query', 'https://analytics.example.com/?x=1', 'origin only'],
+    ['another scheme', 'ftp://analytics.example.com', 'PUBLIC_BASE_URL'],
+  ])('rejects a PUBLIC_BASE_URL with %s', (_name, value, message) => {
+    expect(() => loadConfig({ ...valid, PUBLIC_BASE_URL: value })).toThrow(message)
+  })
+
   it('ignores unrelated variables and empty values', () => {
     expect(() => loadConfig({ ...valid, NEXD_API_KEY: '', HOME: '/x' })).not.toThrow()
   })

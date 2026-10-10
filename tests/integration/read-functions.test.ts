@@ -1,12 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import {
-  webhookPayloadSchema,
-  type WebhookSourceBlock,
-} from '../../src/modules/webhooks/payload.ts'
 import { at } from '../helpers.ts'
 import { SEED, useTransactionalClient } from './db.ts'
 
-// Migration 0003: the RFC-004 §7 read functions and the webhook payload they feed. Every row here
+// Migration 0003: the RFC-004 §7 read functions. Every row here
 // is written inside the test transaction and rolled back, on top of the seeded dev campaign
 // (primary_source 'zeus', a nexd and a zeus link, two pages and one CTA).
 //
@@ -20,8 +16,6 @@ import { SEED, useTransactionalClient } from './db.ts'
 const CAMPAIGN = SEED.campaignId
 const FR_LINK = '00000000-0000-4000-8000-0000000009f1'
 const EMPTY_CAMPAIGN = '00000000-0000-4000-8000-0000000009e0'
-const WEBHOOK = '00000000-0000-4000-8000-0000000009a0'
-const EMPTY_WEBHOOK = '00000000-0000-4000-8000-0000000009a1'
 
 const FROM = '2026-09-01'
 const TO = '2026-09-03'
@@ -248,157 +242,6 @@ describe('migration 0003_read_functions', () => {
 
       expect(status.data_complete_through).toBeNull()
       expect(status.last_synced_at).toBeNull()
-    })
-  })
-
-  describe('app.build_webhook_payload', () => {
-    async function build(
-      options: { includeCheckSources?: boolean; includeCreatives?: boolean } = {},
-    ): Promise<WebhookSourceBlock[]> {
-      await sql(
-        `INSERT INTO app.webhook
-           (id, company_id, name, campaign_ids, url, secret, schedule_cron, next_run_at,
-            include_check_sources, include_creatives)
-         VALUES ($1, $2, 'weekly', ARRAY[$3::uuid], 'https://example.com/hook', 'unused',
-                 '0 8 * * 1', now(), $4, $5)`,
-        [
-          WEBHOOK,
-          SEED.companyId,
-          CAMPAIGN,
-          options.includeCheckSources ?? true,
-          options.includeCreatives ?? true,
-        ],
-      )
-      return at(webhookPayloadSchema.parse(await buildRaw(WEBHOOK)).campaigns).sources
-    }
-
-    async function buildRaw(webhookId: string): Promise<unknown> {
-      const rows = await sql<{ payload: unknown }>(
-        'SELECT app.build_webhook_payload($1, $2, $3) AS payload',
-        [webhookId, FROM, TO],
-      )
-      return at(rows).payload
-    }
-
-    it('validates against the published contract', async () => {
-      await build()
-      const parsed = webhookPayloadSchema.parse(await buildRaw(WEBHOOK))
-
-      expect(parsed.period).toEqual({
-        start: FROM,
-        end: TO,
-        timezone: 'Europe/Zurich',
-        window: 'previous_week',
-      })
-      expect(parsed.company).toEqual({ id: SEED.companyId, name: 'Dev Company' })
-      expect(parsed.delivery_id).toBeNull() // stamped when the delivery row is created
-    })
-
-    it('puts the primary source first and labels the others as checks', async () => {
-      const sources = await build()
-
-      expect(sources.map((block) => [block.source, block.role])).toEqual([
-        ['zeus', 'primary'],
-        ['nexd', 'check'],
-      ])
-      // Each block keeps its own numbers; nothing adds them together.
-      expect(at(sources).totals.impressions).toBe(600)
-      expect(at(sources, 1).totals.impressions).toBe(3500)
-    })
-
-    it('omits check sources when the webhook does not want them', async () => {
-      const sources = await build({ includeCheckSources: false })
-      expect(sources.map((block) => block.source)).toEqual(['zeus'])
-    })
-
-    it('omits a metric the source does not measure', async () => {
-      const sources = await build()
-      const zeus = at(sources)
-      const nexd = at(sources, 1)
-
-      // Zeus reports no dwell and no interactions; NEXD has no finish pixel.
-      expect(zeus.totals).not.toHaveProperty('dwell_avg_ms')
-      expect(zeus.totals).not.toHaveProperty('interactions')
-      expect(at(zeus.daily)).not.toHaveProperty('dwell_avg_ms')
-      expect(nexd.totals).not.toHaveProperty('game_finished')
-      expect(nexd.totals.dwell_avg_ms).toBe(1500)
-    })
-
-    it('keeps a measured metric as null rather than dropping or zeroing it', async () => {
-      const zeus = at(await build())
-
-      expect(zeus.totals.game_started).toBeNull()
-      expect(zeus.totals.unique_clicks_reported).toBeNull()
-    })
-
-    it('merges the creatives of a day but passes a per-day scalar through only once', async () => {
-      const nexd = at(await build(), 1)
-
-      expect(nexd.daily.map((day) => [day.date, day.impressions])).toEqual([
-        ['2026-09-01', 1500],
-        ['2026-09-02', 2000],
-      ])
-      // 2026-09-01: two creatives reported unique impressions, so the day has no single value.
-      expect(at(nexd.daily).unique_impressions_reported).toBeNull()
-      expect(at(nexd.daily, 1).unique_impressions_reported).toBe(1200)
-      // The day's dwell is weighted by its own game starts: (100·1000 + 100·500) / 200.
-      expect(at(nexd.daily).dwell_avg_ms).toBe(750)
-    })
-
-    it('carries the pages and CTAs the source measures', async () => {
-      const sources = await build()
-      const zeus = at(sources)
-      const nexd = at(sources, 1)
-
-      expect(nexd.pages.map((page) => [page.name, page.count])).toEqual([
-        ['Main', 1000],
-        ['Result', 150],
-      ])
-      expect(nexd.ctas).toEqual([
-        { cta_id: 'clickthrough', name: 'Click-out', is_internal_event: false, count: 30 },
-      ])
-      // Zeus has no view_counter in external.source_metric, so it reports no pages at all.
-      expect(zeus.pages).toEqual([])
-      expect(at(zeus.ctas).count).toBe(7)
-    })
-
-    it('drops the creative breakdown when the webhook does not want it', async () => {
-      const sources = await build({ includeCreatives: false })
-      expect(sources.every((block) => block.creatives.length === 0)).toBe(true)
-    })
-
-    it('names each creative when the webhook wants them', async () => {
-      const nexd = at(await build(), 1)
-
-      expect(nexd.creatives.map((creative) => [creative.campaign_tag, creative.label])).toEqual([
-        ['nx_dev_v1', 'Dev creative V1'],
-        ['nx_dev_v2', 'Dev creative V2'],
-      ])
-      expect(at(nexd.creatives).totals.impressions).toBe(3000)
-    })
-
-    it('reports a campaign with no data as empty, not as zero', async () => {
-      const empty = await emptyCampaign()
-      await sql(
-        `INSERT INTO app.webhook (id, company_id, name, campaign_ids, url, secret, schedule_cron, next_run_at)
-         VALUES ($1, $2, 'empty', ARRAY[$3::uuid], 'https://example.com/hook', 'unused', '0 8 * * 1', now())`,
-        [EMPTY_WEBHOOK, SEED.companyId, empty],
-      )
-
-      const parsed = webhookPayloadSchema.parse(await buildRaw(EMPTY_WEBHOOK))
-      const block = at(at(parsed.campaigns).sources)
-
-      expect(block.source).toBe('nexd')
-      expect(block.daily).toEqual([])
-      expect(block.creatives).toEqual([])
-      expect(block.totals.impressions).toBeNull()
-      expect(block.data_complete_through).toBeNull()
-    })
-
-    it('rejects an unknown webhook', async () => {
-      await expect(buildRaw('00000000-0000-4000-8000-00000000dead')).rejects.toThrow(
-        /does not exist/,
-      )
     })
   })
 })

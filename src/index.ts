@@ -35,10 +35,12 @@ const sync: SyncDeps = {
 
 // Webhook delivery shares the pool and the tracker, and gets its own HTTP client: one attempt,
 // 10 s, no in-process retry. The tracker lets app.close() wait for a send-now delivery in flight.
+// The public base URL is where a csv webhook's links point.
 const webhooks: SendDeps = {
   db: runtime.db,
   http: createWebhookHttpClient(logger),
   log: logger,
+  exportBaseUrl: config.publicBaseUrl,
   signal: shutdown.signal,
   tracker,
 }
@@ -91,6 +93,10 @@ await app.listen({ port: config.port, host: '0.0.0.0' })
 
 if (config.inboundCampaignsToken === undefined) {
   logger.info('POST /inbound/campaigns disabled (INBOUND_CAMPAIGNS_TOKEN is not set)')
+}
+
+if (config.publicBaseUrl === undefined) {
+  logger.info('csv webhooks unavailable (neither PUBLIC_BASE_URL nor RENDER_EXTERNAL_URL is set)')
 }
 
 if (!config.syncSchedulerEnabled) {

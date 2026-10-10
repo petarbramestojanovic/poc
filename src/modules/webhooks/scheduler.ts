@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto'
 import { CronExpressionParser } from 'cron-parser'
 import { schedule as cronSchedule, type TaskOptions } from 'node-cron'
+import { startOfDayIn, todayIn } from '../../core/dates.ts'
 import { limitDb, type LeaderLease } from '../../core/db.ts'
 import { createLimiter } from '../../core/limiter.ts'
 import type { Logger } from '../../core/log.ts'
-import { buildPayload } from './build.ts'
+import { buildReport, incompleteCampaigns, renderReport } from './build.ts'
 import { deliverOnce, leaseUntil, type DeliverDeps } from './deliver.ts'
 import { readStoredFields, type CompiledFields } from './fields.ts'
 import { reportPeriod } from './periods.ts'
@@ -17,11 +19,19 @@ import * as repo from './repo.ts'
 //   2. deliver — every pending delivery that is due gets one attempt.
 // Dispatch is next_run_at-driven, so a tick missed during a deploy is picked up by the next one:
 // the row is still due. A gap of days still produces ONE report, for the current period.
+//
+// A report waits for its data. While a campaign it covers has a link whose sync has not yet
+// written the period's last day, the webhook stays due and the next tick looks again — until
+// 12:00 in the webhook's timezone on the day it was scheduled, when it goes out with what there
+// is. A period in which no campaign has a single number is not sent at all.
 
 /** Second key of the webhook leader lock; the nightly pass holds key 1. */
 export const WEBHOOK_LEADER_LOCK_KEY = 2
 
 export const WEBHOOK_TICK_CRON = '* * * * *'
+
+/** Until when (local hour, on the day it was due) a report waits for incomplete data. */
+export const WAIT_UNTIL_HOUR = 12
 
 /** Ceilings per tick, so one backlog cannot hold the lock (or the pool) for minutes. */
 const MAX_WEBHOOKS_PER_TICK = 50
@@ -31,7 +41,7 @@ const MAX_DELIVERIES_PER_TICK = 10
 const WEBHOOK_MAX_CONNECTIONS = 2
 
 /**
- * How far a webhook with an unparseable cron or field list is pushed out, so it is not retried
+ * How far a webhook with an unparseable cron or column list is pushed out, so it is not retried
  * every minute. Both are checked when a webhook is saved; this only catches a row edited by hand.
  */
 const BAD_CONFIG_RETRY_MS = 3_600_000
@@ -43,6 +53,10 @@ export interface EnqueueResult {
   enqueued: number
   /** Webhooks looked at, including those whose period was already enqueued. */
   due: number
+  /** Due webhooks left due because their data is not complete yet. */
+  waiting: number
+  /** Periods with no rows at all: nothing was sent, and the schedule moved on. */
+  empty: number
 }
 
 export interface DeliverResult {
@@ -62,9 +76,22 @@ export function nextRunAfter(cron: string, timezone: string, after: Date): Date 
 }
 
 /**
- * Creates the delivery rows for every due webhook and moves their schedules on. One transaction:
- * the rows are selected FOR UPDATE SKIP LOCKED, so nothing else can enqueue the same period, and
- * a crash before COMMIT leaves both the row and the schedule untouched.
+ * Until when a report due at `dueAt` waits for its data: WAIT_UNTIL_HOUR on that calendar day in
+ * the webhook's timezone, clock changes included. A report due later in the day does not wait.
+ */
+export function waitDeadline(dueAt: Date, timezone: string): Date {
+  const midnight = startOfDayIn(todayIn(timezone, dueAt), timezone)
+  return nextRunAfter(
+    `0 ${String(WAIT_UNTIL_HOUR)} * * *`,
+    timezone,
+    new Date(midnight.getTime() - 1),
+  )
+}
+
+/**
+ * Creates the delivery rows for every due webhook whose data is ready, and moves their schedules
+ * on. One transaction: the rows are selected FOR UPDATE SKIP LOCKED, so nothing else can enqueue
+ * the same period, and a crash before COMMIT leaves both the row and the schedule untouched.
  */
 export async function enqueueDueWebhooks(
   deps: WebhookDeps,
@@ -75,7 +102,7 @@ export async function enqueueDueWebhooks(
 
   return deps.db.withTransaction(async (tx) => {
     const due = await repo.loadDueWebhooks(tx, now, MAX_WEBHOOKS_PER_TICK)
-    let enqueued = 0
+    const result: EnqueueResult = { enqueued: 0, due: due.length, waiting: 0, empty: 0 }
 
     for (const webhook of due) {
       const log = deps.log.child({ webhookId: webhook.id, webhook: webhook.name })
@@ -91,29 +118,54 @@ export async function enqueueDueWebhooks(
 
       // Read before any statement for this webhook runs: a failure here leaves the transaction
       // usable, so the other due webhooks still go out.
-      let fields: CompiledFields | null
+      let fields: CompiledFields
       try {
         fields = readStoredFields(webhook.payloadFields)
       } catch (error) {
-        log.error({ err: error }, 'webhook field list cannot be read; postponing')
+        log.error({ err: error }, 'webhook column list cannot be read; postponing')
         await repo.updateNextRun(tx, webhook.id, new Date(now.getTime() + BAD_CONFIG_RETRY_MS))
         continue
       }
 
-      const period = reportPeriod(webhook.reportWindow, webhook.timezone, now)
-      const payload = await buildPayload(tx, webhook, period, fields)
-      const deliveryId = await repo.insertDelivery(tx, webhook.id, period, 'schedule', payload)
+      const period = reportPeriod(webhook.frequency, webhook.timezone, now)
+      const incomplete = await incompleteCampaigns(tx, webhook, fields.source, period)
+      if (incomplete.length > 0) {
+        if (now < waitDeadline(webhook.nextRunAt, webhook.timezone)) {
+          result.waiting += 1
+          log.debug({ period, incomplete }, 'webhook waiting for its data')
+          continue
+        }
+        log.warn(
+          { period, incomplete },
+          'webhook data still incomplete at the deadline; sending what there is',
+        )
+      }
+
+      const report = await buildReport(tx, webhook, period, fields, log)
+      if (report.rows.length === 0) {
+        await repo.updateNextRun(tx, webhook.id, next)
+        result.empty += 1
+        log.info({ period, nextRunAt: next }, 'webhook period has no rows; nothing sent')
+        continue
+      }
+
+      const id = randomUUID()
+      const document = renderReport(webhook, period, report, id, now)
+      const deliveryId = await repo.insertDelivery(tx, id, webhook.id, period, 'schedule', document)
       await repo.updateNextRun(tx, webhook.id, next)
 
       if (deliveryId === undefined) {
         log.info({ period }, 'webhook period already enqueued')
       } else {
-        enqueued += 1
-        log.info({ period, deliveryId, nextRunAt: next }, 'webhook delivery enqueued')
+        result.enqueued += 1
+        log.info(
+          { period, deliveryId, rows: report.rows.length, nextRunAt: next },
+          'webhook delivery enqueued',
+        )
       }
     }
 
-    return { enqueued, due: due.length }
+    return result
   })
 }
 

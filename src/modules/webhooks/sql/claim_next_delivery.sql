@@ -21,4 +21,4 @@ UPDATE app.webhook_delivery d
  WHERE d.id = due.id
    AND w.id = d.webhook_id
 RETURNING d.id, d.webhook_id, d.period_start, d.period_end, d.attempts, d.payload,
-          w.url, w.secret;
+          w.url, w.secret, w.format, w.auth_header, w.auth_token;

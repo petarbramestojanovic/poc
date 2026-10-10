@@ -1,15 +1,23 @@
 import type { Db } from '../../core/db.ts'
 import { HttpError, type HttpClient, ResponseTooLargeError } from '../../core/http/HttpClient.ts'
-import { redact } from '../../core/http/redact.ts'
+import { REDACTED, redact } from '../../core/http/redact.ts'
 import type { Logger } from '../../core/log.ts'
-import { BlockedTargetError } from './errors.ts'
+import { BlockedTargetError, ExportUnavailableError } from './errors.ts'
+import { exportLink } from './exports.ts'
+import { PAYLOAD_VERSION } from './payload.ts'
 import * as repo from './repo.ts'
 import { signBody } from './sign.ts'
 import { assertPublicTarget, type Lookup } from './ssrf.ts'
 
 // One POST to a client's endpoint, and the record of how it went (RFC-002 §15.4). Delivery is
-// at-least-once: the delivery row is the idempotency record, its id travels in the header and
-// inside the signed body, and it does not change between attempts.
+// at-least-once: the delivery row is the idempotency record, its id travels in the header (and
+// inside a JSON body), and it does not change between attempts.
+//
+// What is POSTed depends on the webhook's format (payload.ts):
+//   json  the stored document itself, the exact text that was rendered once and signed now;
+//   csv   a JSON string holding a fresh signed link to that document (exports.ts) — Funnel's File
+//         Import webhook takes links, never files, and fetches the CSV from us afterwards.
+// Either way the body is signed like any other, and the client's own key goes in its own header.
 //
 // Every attempt starts from a claim (repo.claimNextDelivery / claimDelivery), which counts it and
 // leases the row, so a tick, another replica and send-now never send the same row at once. The
@@ -54,6 +62,11 @@ export interface DeliverDeps {
   db: Db
   http: HttpClient
   log: Logger
+  /**
+   * Where this service is reachable from the internet (config.publicBaseUrl), for the links a csv
+   * webhook sends. Without it a csv delivery fails its attempts, and none can be created.
+   */
+  exportBaseUrl?: string | undefined
   now?: () => Date
   /** Cancels an in-flight attempt at shutdown. */
   signal?: AbortSignal
@@ -89,10 +102,8 @@ export async function deliverOnce(
   const now = deps.now ?? (() => new Date())
   const log = deps.log.child({ deliveryId: delivery.id, webhookId: delivery.webhookId })
 
-  // Serialised once: these exact bytes are what we sign and what we send.
-  const body = JSON.stringify(delivery.payload)
   const at = now()
-  const result = await attempt(deps, delivery, body, at, log)
+  const result = await attempt(deps, delivery, at, log)
 
   const attempts = delivery.attempt // counted when the row was claimed
   const outcome: Omit<AttemptOutcome, 'recorded'> = result.delivered
@@ -151,7 +162,6 @@ interface AttemptResult {
 async function attempt(
   deps: DeliverDeps,
   delivery: repo.DueDelivery,
-  body: string,
   at: Date,
   log: Logger,
 ): Promise<AttemptResult> {
@@ -159,9 +169,10 @@ async function attempt(
     // Re-checked every attempt: DNS moves, and a row can be edited between them.
     await assertPublicTarget(delivery.url, deps.lookup)
 
+    // Built once per attempt: these exact bytes are what we sign and what we send.
+    const body = bodyOf(deps, delivery, at)
     // The timestamp is part of what is signed, so it is fixed once and sent exactly as signed.
     const timestamp = String(Math.floor(at.getTime() / 1000))
-    const version = payloadVersion(delivery.payload)
     const response = await deps.http.request({
       method: 'POST',
       url: delivery.url,
@@ -171,8 +182,12 @@ async function attempt(
         'x-delivery-id': delivery.id,
         'x-timestamp': timestamp,
         'x-signature': signBody(timestamp, body, delivery.secret),
-        ...(version === undefined ? {} : { 'x-payload-version': version }),
-        'user-agent': 'analytics-be-webhooks/1',
+        ...(delivery.format === 'json' ? { 'x-payload-version': String(PAYLOAD_VERSION) } : {}),
+        'user-agent': 'analytics-be-webhooks/2',
+        // Last, and checked against ours when it was saved (admin.ts): it can add, never replace.
+        ...(delivery.authHeader !== null && delivery.authToken !== null
+          ? { [delivery.authHeader]: delivery.authToken }
+          : {}),
       },
       // One webhook is never delivered twice at the same time.
       credentialKey: `webhook:${delivery.webhookId}`,
@@ -182,25 +197,42 @@ async function attempt(
     // HttpClient throws on every status >= 400, so reaching here is a 2xx or a 3xx we refused to
     // follow; only a 2xx counts as delivered.
     const delivered = response.status >= 200 && response.status < 300
-    return { delivered, responseCode: response.status, excerpt: excerptOf(response.text) }
+    return {
+      delivered,
+      responseCode: response.status,
+      excerpt: excerptOf(response.text, delivery.authToken),
+    }
   } catch (error) {
-    return failureOf(error)
+    return failureOf(error, delivery.authToken)
   }
 }
 
-/** The contract version inside a stored body, for X-Payload-Version (phase 1 plan). */
-function payloadVersion(payload: unknown): string | undefined {
-  const version = (payload as { version?: unknown } | null)?.version
-  return typeof version === 'number' ? String(version) : undefined
+/** What one attempt POSTs: the stored JSON document, or a fresh link to the stored CSV. */
+function bodyOf(deps: DeliverDeps, delivery: repo.DueDelivery, at: Date): string {
+  if (typeof delivery.payload !== 'string') {
+    // Rows queued before version 2 hold a JSON object; nothing renders those any more.
+    throw new ExportUnavailableError('the delivery holds no rendered document; re-send the period')
+  }
+  if (delivery.format === 'json') return delivery.payload
+  if (deps.exportBaseUrl === undefined) {
+    throw new ExportUnavailableError(
+      'PUBLIC_BASE_URL is not set, so there is no link to give the client for its CSV',
+    )
+  }
+  return JSON.stringify(exportLink(deps.exportBaseUrl, delivery.id, delivery.secret, at))
 }
 
-function failureOf(error: unknown): AttemptResult {
+function failureOf(error: unknown, token: string | null): AttemptResult {
   if (error instanceof HttpError) {
     // HttpError.bodyExcerpt is redacted and truncated already.
-    return { delivered: false, responseCode: error.status, excerpt: excerptOf(error.bodyExcerpt) }
+    return {
+      delivered: false,
+      responseCode: error.status,
+      excerpt: excerptOf(error.bodyExcerpt, token),
+    }
   }
-  if (error instanceof BlockedTargetError) {
-    return { delivered: false, responseCode: null, excerpt: excerptOf(error.message) }
+  if (error instanceof BlockedTargetError || error instanceof ExportUnavailableError) {
+    return { delivered: false, responseCode: null, excerpt: excerptOf(error.message, token) }
   }
   if (error instanceof ResponseTooLargeError) {
     return { delivered: false, responseCode: null, excerpt: 'response body too large' }
@@ -208,10 +240,12 @@ function failureOf(error: unknown): AttemptResult {
   // Network failures, TLS failures, refused redirects, aborts: the message is ours, but it can
   // quote a URL, so it goes through the same redaction as everything else we store.
   const message = error instanceof Error ? error.message : String(error)
-  return { delivered: false, responseCode: null, excerpt: excerptOf(message) }
+  return { delivered: false, responseCode: null, excerpt: excerptOf(message, token) }
 }
 
-function excerptOf(text: string): string | null {
-  const trimmed = redact(text).slice(0, EXCERPT_CHARS)
+/** Redacted like everything we store, and without the client's key should its answer echo it. */
+function excerptOf(text: string, token: string | null): string | null {
+  const withoutToken = token === null ? text : text.replaceAll(token, REDACTED)
+  const trimmed = redact(withoutToken).slice(0, EXCERPT_CHARS)
   return trimmed === '' ? null : trimmed
 }

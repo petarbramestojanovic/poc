@@ -3,145 +3,155 @@ import type { Queryable } from '../../core/db.ts'
 import { loadSql } from '../../core/sql-file.ts'
 import { METRIC_IDS, type MetricId } from '../sync/types.ts'
 import { InvalidFormulaError, InvalidWebhookError } from './errors.ts'
-import {
-  evaluate,
-  fromNumber,
-  MAX_FORMULA_LENGTH,
-  parseDecimal,
-  parseFormula,
-  toRoundedNumber,
-  variablesOf,
-  type Expr,
-  type Fraction,
-} from './formula.ts'
-import {
-  PAYLOAD_SECTIONS,
-  type PayloadSection,
-  type PayloadShape,
-  type WebhookCampaign,
-  type WebhookMetrics,
-  type WebhookPayload,
-  type WebhookSourceBlock,
-} from './payload.ts'
+import { MAX_FORMULA_LENGTH, parseFormula, variablesOf, type Expr } from './formula.ts'
 
-// What one webhook delivers (app.webhook.payload_fields, migration 0007). A Brame admin agrees it
-// with the client and enters it; the client never sees this config, only the body it produces.
+// What one webhook delivers (app.webhook.payload_fields). A Brame admin agrees it with the client
+// and enters it; the client never sees this config, only the rows it produces.
 //
-//   metrics     which stored metrics appear in every metrics object; absent = every measured one
-//   sections    which lists a source block carries (daily, ctas, pages); absent = all of them
-//   calculated  fields computed by a formula (formula.ts) from ONE source's numbers, e.g.
-//               { name: 'cost', formula: 'impressions / 1000 * price', source: 'zeus', decimals: 2 }
+// Every row is one campaign on one day, from ONE source. Two columns are always there and always
+// first: `Date` and `Campaign` (the campaign's name). Every other column is entered here, in the
+// order the client wants, under the exact name the client wants:
 //
-// A calculated field is computed at every level of its source's block from that level's own
-// numbers — the period totals, each daily entry, each creative — and never by adding up another
-// level's results: a week's cost is the week's impressions / 1000 × price, not the sum of rounded
-// daily costs. A variable without a value, or a division by zero, makes it null, never 0. It
-// appears only in its source's block, so a campaign never shows two costs.
+//   { "source": "zeus",
+//     "columns": [ { "name": "Ad Type",     "value": "Dynamic Ad" },                  fixed text
+//                  { "name": "Impressions", "formula": "impressions", "decimals": 0 },
+//                  { "name": "Cost",        "formula": "impressions / 1000 * price" } ] }
 //
-// Without a field list (NULL) the body is the full v1 body, untouched.
+// A formula (formula.ts) reads that row's own numbers: a stored metric, `clicks` (non-internal CTA
+// clicks) or `price` (the campaign's CPM). It is computed for each row from that row, never by
+// adding up other results. A variable without a value, or a division by zero, makes it null —
+// never 0.
 
 const sql = loadSql(import.meta.url, ['source_metrics', 'fields_scope'] as const)
 
+/** The two columns every row starts with, in this order. */
+export const DATE_COLUMN = 'Date'
+export const CAMPAIGN_COLUMN = 'Campaign'
+export const FIXED_COLUMNS: readonly string[] = [DATE_COLUMN, CAMPAIGN_COLUMN]
+
 /** The campaign's CPM (app.campaign.price, migration 0005), in the campaign's currency. */
 export const PRICE_VARIABLE = 'price'
-/** Non-internal CTA clicks of the level (analytics.cta_clicks), in the formula's source. */
+/** Non-internal CTA clicks of the row (analytics.cta_clicks), in the webhook's source. */
 export const CLICKS_VARIABLE = 'clicks'
 
 /** Every name a formula may use. */
 export const FORMULA_VARIABLES: readonly string[] = [...METRIC_IDS, PRICE_VARIABLE, CLICKS_VARIABLE]
 
-export const DEFAULT_CALCULATION_SOURCE = 'zeus'
+export const DEFAULT_SOURCE = 'zeus'
 export const DEFAULT_DECIMALS = 2
 export const MAX_DECIMALS = 6
-export const MAX_CALCULATED_FIELDS = 20
+export const MAX_COLUMNS = 30
+export const MAX_COLUMN_NAME_LENGTH = 64
+export const MAX_TEXT_VALUE_LENGTH = 200
 
 const METRICS: ReadonlySet<string> = new Set(METRIC_IDS)
 const VARIABLES: ReadonlySet<string> = new Set(FORMULA_VARIABLES)
 
-/**
- * Names a calculated field cannot take: every key a metrics object, a daily entry or a creative
- * already uses, the catalog ids that appear in metrics_available, and the formula variables.
- */
-const RESERVED_NAMES: ReadonlySet<string> = new Set([
-  ...FORMULA_VARIABLES,
-  'cta_counter',
-  'view_counter',
-  'currency',
-  'date',
-  'language',
-  'campaign_tag',
-  'label',
-])
+/** A CSV header and a JSON key alike: printable, one line. */
+const PRINTABLE = /^[^\p{Cc}]+$/u
 
-export const calculatedFieldSchema = z.strictObject({
-  name: z
-    .string()
-    .regex(/^[a-z][a-z0-9_]{0,39}$/, 'lowercase letters, digits and _, starting with a letter'),
-  formula: z.string().min(1).max(MAX_FORMULA_LENGTH),
-  /** external.source id whose block the field is computed in and appears in. */
-  source: z
-    .string()
-    .regex(/^[a-z][a-z0-9_]{0,31}$/, 'a source id such as "zeus"')
-    .default(DEFAULT_CALCULATION_SOURCE),
-  decimals: z.int().min(0).max(MAX_DECIMALS).default(DEFAULT_DECIMALS),
-})
-export type CalculatedField = z.output<typeof calculatedFieldSchema>
+const columnInput = z
+  .strictObject({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_COLUMN_NAME_LENGTH)
+      .regex(PRINTABLE, 'no control characters or line breaks'),
+    formula: z.string().min(1).max(MAX_FORMULA_LENGTH).optional(),
+    decimals: z.int().min(0).max(MAX_DECIMALS).optional(),
+    value: z
+      .string()
+      .min(1)
+      .max(MAX_TEXT_VALUE_LENGTH)
+      .regex(PRINTABLE, 'no control characters or line breaks')
+      .optional(),
+  })
+  .superRefine((column, ctx) => {
+    if ((column.formula === undefined) === (column.value === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [],
+        message: 'give exactly one of "formula" (a calculated number) or "value" (a fixed text)',
+      })
+    }
+    if (column.value !== undefined && column.decimals !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['decimals'],
+        message: 'only a formula column is rounded',
+      })
+    }
+  })
+
+export type Column =
+  { name: string; formula: string; decimals: number } | { name: string; value: string }
 
 /** The shape of app.webhook.payload_fields. Formulas are checked by compileFields, not here. */
 export const payloadFieldsSchema = z
   .strictObject({
-    metrics: z.array(z.enum(METRIC_IDS)).optional(),
-    sections: z.array(z.enum(PAYLOAD_SECTIONS)).optional(),
-    calculated: z.array(calculatedFieldSchema).max(MAX_CALCULATED_FIELDS).default([]),
+    /** external.source id every number of a row comes from; never added across sources. */
+    source: z
+      .string()
+      .regex(/^[a-z][a-z0-9_]{0,31}$/, 'a source id such as "zeus"')
+      .default(DEFAULT_SOURCE),
+    columns: z.array(columnInput).min(1).max(MAX_COLUMNS),
   })
   .superRefine((fields, ctx) => {
-    const repeated = (values: readonly string[]) =>
-      values.find((value, index) => values.indexOf(value) !== index)
-    const metric = repeated(fields.metrics ?? [])
-    if (metric !== undefined) {
-      ctx.addIssue({ code: 'custom', path: ['metrics'], message: `"${metric}" is listed twice` })
-    }
-    const section = repeated(fields.sections ?? [])
-    if (section !== undefined) {
-      ctx.addIssue({ code: 'custom', path: ['sections'], message: `"${section}" is listed twice` })
-    }
-    const names = fields.calculated.map((field) => field.name)
-    names.forEach((name, index) => {
-      if (RESERVED_NAMES.has(name)) {
+    // Case-insensitively: a CSV reader matching headers loosely must not see two of one column.
+    const seen = new Set(FIXED_COLUMNS.map((name) => name.toLowerCase()))
+    fields.columns.forEach((column, index) => {
+      const key = column.name.toLowerCase()
+      if (FIXED_COLUMNS.some((name) => name.toLowerCase() === key)) {
         ctx.addIssue({
           code: 'custom',
-          path: ['calculated', index, 'name'],
-          message: `"${name}" is already a key of the payload or a formula variable`,
+          path: ['columns', index, 'name'],
+          message: `"${DATE_COLUMN}" and "${CAMPAIGN_COLUMN}" are always the first two columns; they cannot be entered`,
         })
-      } else if (names.indexOf(name) !== index) {
+      } else if (seen.has(key)) {
         ctx.addIssue({
           code: 'custom',
-          path: ['calculated', index, 'name'],
-          message: `"${name}" is defined twice`,
+          path: ['columns', index, 'name'],
+          message: `"${column.name}" is defined twice`,
         })
       }
+      seen.add(key)
     })
   })
+  // Stored with its defaults filled in, so a later default never changes a webhook already set up.
+  .transform((fields) => ({
+    source: fields.source,
+    columns: fields.columns.map((column): Column =>
+      column.formula === undefined
+        ? { name: column.name, value: column.value ?? '' }
+        : {
+            name: column.name,
+            formula: column.formula,
+            decimals: column.decimals ?? DEFAULT_DECIMALS,
+          },
+    ),
+  }))
 export type PayloadFields = z.output<typeof payloadFieldsSchema>
 export type PayloadFieldsInput = z.input<typeof payloadFieldsSchema>
 
-export interface CompiledField {
-  name: string
-  source: string
-  decimals: number
-  expr: Expr
-  variables: readonly string[]
-}
+export type CompiledColumn =
+  | {
+      kind: 'formula'
+      name: string
+      decimals: number
+      expr: Expr
+      variables: readonly string[]
+    }
+  | { kind: 'text'; name: string; value: string }
 
-/** A field list, ready to shape bodies with. */
+/** A column list, ready to build rows with. */
 export interface CompiledFields {
-  /** null = every measured metric. */
-  metrics: ReadonlySet<MetricId> | null
-  sections: ReadonlySet<PayloadSection>
-  calculated: readonly CompiledField[]
+  source: string
+  columns: readonly CompiledColumn[]
+  /** Every column name in delivery order, the two fixed ones first. */
+  names: readonly string[]
   usesPrice: boolean
-  /** The sources whose formulas read `clicks`: only those need click counts per level. */
-  clickSources: readonly string[]
+  usesClicks: boolean
 }
 
 /**
@@ -149,11 +159,12 @@ export interface CompiledFields {
  * checked against the database by validateFields; this part needs nothing but the text.
  */
 export function compileFields(fields: PayloadFields): CompiledFields {
-  const calculated = fields.calculated.map((field): CompiledField => {
-    const describe = (message: string) => `calculated field "${field.name}": ${message}`
+  const columns = fields.columns.map((column): CompiledColumn => {
+    if (!('formula' in column)) return { kind: 'text', name: column.name, value: column.value }
+    const describe = (message: string) => `column "${column.name}": ${message}`
     let expr: Expr
     try {
-      expr = parseFormula(field.formula)
+      expr = parseFormula(column.formula)
     } catch (error) {
       if (!(error instanceof InvalidFormulaError)) throw error
       throw new InvalidFormulaError(describe(error.message), { cause: error })
@@ -165,40 +176,32 @@ export function compileFields(fields: PayloadFields): CompiledFields {
         describe(`unknown variable "${unknown}"; use a metric id, "price" or "clicks"`),
       )
     }
-    return {
-      name: field.name,
-      source: field.source,
-      decimals: field.decimals,
-      expr,
-      variables,
-    }
+    return { kind: 'formula', name: column.name, decimals: column.decimals, expr, variables }
   })
 
+  const reads = (variable: string) =>
+    columns.some((column) => column.kind === 'formula' && column.variables.includes(variable))
   return {
-    metrics: fields.metrics ? new Set(fields.metrics) : null,
-    sections: new Set(fields.sections ?? PAYLOAD_SECTIONS),
-    calculated,
-    usesPrice: calculated.some((field) => field.variables.includes(PRICE_VARIABLE)),
-    clickSources: [
-      ...new Set(
-        calculated
-          .filter((field) => field.variables.includes(CLICKS_VARIABLE))
-          .map((field) => field.source),
-      ),
-    ],
+    source: fields.source,
+    columns,
+    names: [...FIXED_COLUMNS, ...columns.map((column) => column.name)],
+    usesPrice: reads(PRICE_VARIABLE),
+    usesClicks: reads(CLICKS_VARIABLE),
   }
 }
 
 /**
- * A field list as stored in app.webhook.payload_fields, ready to use; null when there is none.
- * It was validated when it was saved, so a failure here means the row was edited by hand.
+ * A column list as stored in app.webhook.payload_fields, ready to use. It was validated when it
+ * was saved, so a failure here means the row was edited by hand — or predates version 2.
  */
-export function readStoredFields(value: unknown): CompiledFields | null {
-  if (value === null || value === undefined) return null
+export function readStoredFields(value: unknown): CompiledFields {
+  if (value === null || value === undefined) {
+    throw new InvalidWebhookError('payload_fields is empty: a webhook needs a column list')
+  }
   const parsed = payloadFieldsSchema.safeParse(value)
   if (!parsed.success) {
     throw new InvalidWebhookError(
-      `payload_fields does not match the field list schema: ${z.prettifyError(parsed.error)}`,
+      `payload_fields does not match the column list schema: ${z.prettifyError(parsed.error)}`,
     )
   }
   return compileFields(parsed.data)
@@ -206,28 +209,27 @@ export function readStoredFields(value: unknown): CompiledFields | null {
 
 /**
  * Everything compileFields checks, plus what needs the catalog: the source exists, and it measures
- * every metric its formula reads (`clicks` needs cta_counter). Run before a field list is saved.
+ * every metric a formula reads (`clicks` needs cta_counter). Run before a column list is saved.
  */
 export async function validateFields(q: Queryable, fields: PayloadFields): Promise<CompiledFields> {
   const compiled = compileFields(fields)
-  if (compiled.calculated.length === 0) return compiled
 
   const rows = await q.query<{ source_id: string; metrics: string[] }>(sql.source_metrics)
   const measured = new Map(rows.map((row) => [row.source_id, new Set(row.metrics)]))
+  const metrics = measured.get(compiled.source)
+  if (!metrics) {
+    throw new InvalidWebhookError(
+      `unknown source "${compiled.source}"; one of ${[...measured.keys()].join(', ')}`,
+    )
+  }
 
-  for (const field of compiled.calculated) {
-    const describe = (message: string) => `calculated field "${field.name}": ${message}`
-    const metrics = measured.get(field.source)
-    if (!metrics) {
-      throw new InvalidFormulaError(
-        describe(`unknown source "${field.source}"; one of ${[...measured.keys()].join(', ')}`),
-      )
-    }
-    for (const variable of field.variables) {
+  for (const column of compiled.columns) {
+    if (column.kind !== 'formula') continue
+    for (const variable of column.variables) {
       const needs = variable === CLICKS_VARIABLE ? 'cta_counter' : variable
       if ((METRICS.has(variable) || variable === CLICKS_VARIABLE) && !metrics.has(needs)) {
         throw new InvalidFormulaError(
-          describe(`${field.source} does not measure ${variable}, so it can never have a value`),
+          `column "${column.name}": ${compiled.source} does not measure ${variable}, so it can never have a value`,
         )
       }
     }
@@ -235,12 +237,20 @@ export async function validateFields(q: Queryable, fields: PayloadFields): Promi
   return compiled
 }
 
-/** One campaign a webhook reports on, with what its calculated fields need. */
+/** The metric ids a column list reads, for the rows query. */
+export function metricsRead(fields: CompiledFields): MetricId[] {
+  const read = new Set(
+    fields.columns.flatMap((column) => (column.kind === 'formula' ? column.variables : [])),
+  )
+  return METRIC_IDS.filter((id) => read.has(id))
+}
+
+/** One campaign a webhook reports on, with what its formulas need. */
 export interface ScopeCampaign {
   name: string
   hasPrice: boolean
-  /** Sources the campaign has a link to. */
-  sources: readonly string[]
+  /** Whether the campaign has a link to the webhook's source. */
+  linked: boolean
 }
 
 const NAMES_SHOWN = 10
@@ -251,28 +261,23 @@ function nameList(campaigns: readonly ScopeCampaign[]): string {
   return more > 0 ? `${shown.join(', ')} and ${more} more` : shown.join(', ')
 }
 
-/** Pure: what an admin should know before relying on a field list — never a reason to refuse it. */
+/** Pure: what an admin should know before relying on a column list — never a reason to refuse it. */
 export function fieldWarnings(fields: CompiledFields, scope: readonly ScopeCampaign[]): string[] {
   const warnings: string[] = []
-  if (fields.usesPrice) {
-    const unpriced = scope.filter((campaign) => !campaign.hasPrice)
-    if (unpriced.length > 0) {
-      const names = fields.calculated
-        .filter((field) => field.variables.includes(PRICE_VARIABLE))
-        .map((field) => field.name)
-      warnings.push(
-        `these campaigns have no price, so ${names.join(', ')} will be null for them until one is set: ${nameList(unpriced)}`,
-      )
-    }
+  const unlinked = scope.filter((campaign) => !campaign.linked)
+  if (unlinked.length > 0) {
+    warnings.push(
+      `these campaigns are not linked to ${fields.source}, so they have no rows until they are: ${nameList(unlinked)}`,
+    )
   }
-  for (const source of new Set(fields.calculated.map((field) => field.source))) {
-    const unlinked = scope.filter((campaign) => !campaign.sources.includes(source))
-    if (unlinked.length > 0) {
-      const names = fields.calculated
-        .filter((field) => field.source === source)
-        .map((field) => field.name)
+  if (fields.usesPrice) {
+    const unpriced = scope.filter((campaign) => campaign.linked && !campaign.hasPrice)
+    if (unpriced.length > 0) {
+      const names = fields.columns
+        .filter((column) => column.kind === 'formula' && column.variables.includes(PRICE_VARIABLE))
+        .map((column) => column.name)
       warnings.push(
-        `these campaigns are not linked to ${source}, so ${names.join(', ')} will carry no value for them: ${nameList(unlinked)}`,
+        `these campaigns have no price, so ${names.join(', ')} will be empty for them until one is set: ${nameList(unpriced)}`,
       )
     }
   }
@@ -284,179 +289,11 @@ export async function loadScope(
   q: Queryable,
   companyId: string,
   campaignIds: readonly string[] | null,
+  source: string,
 ): Promise<ScopeCampaign[]> {
-  const rows = await q.query<{ name: string; has_price: boolean; sources: string[] }>(
+  const rows = await q.query<{ name: string; has_price: boolean; linked: boolean }>(
     sql.fields_scope,
-    [companyId, campaignIds],
+    [companyId, campaignIds, source],
   )
-  return rows.map((row) => ({ name: row.name, hasPrice: row.has_price, sources: row.sources }))
-}
-
-/** What the contract expects of the body this field list produces (payload.ts). */
-export function payloadShapeOf(fields: CompiledFields): PayloadShape {
-  return {
-    sections: PAYLOAD_SECTIONS.filter((section) => fields.sections.has(section)),
-    calculated: fields.calculated.map((field) => field.name),
-    price: fields.usesPrice,
-  }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Shaping a body
-// ---------------------------------------------------------------------------------------------
-
-/** app.campaign.price as exact text, and its currency; both null when the price is not known. */
-export interface CampaignPrice {
-  value: string | null
-  currency: string | null
-}
-
-/** Clicks of one campaign in one source, per level. A level without click rows is absent. */
-export interface SourceClicks {
-  total: Fraction | null
-  /** Keyed by dayKey(date, language). */
-  daily: ReadonlyMap<string, Fraction>
-  /** Keyed by campaign_tag. */
-  creatives: ReadonlyMap<string, Fraction>
-}
-
-export interface ShapeInputs {
-  /** By campaign id; needed when a formula uses the price. */
-  prices: ReadonlyMap<string, CampaignPrice>
-  /** By clicksKey(campaign id, source); needed when a formula uses clicks. */
-  clicks: ReadonlyMap<string, SourceClicks>
-}
-
-export const dayKey = (date: string, language: string): string => JSON.stringify([date, language])
-export const clicksKey = (campaignId: string, source: string): string =>
-  JSON.stringify([campaignId, source])
-
-type Shaped = Record<string, unknown>
-
-/**
- * Pure: the body a webhook with this field list sends, from the full v1 body. It must already
- * hold a block for every source a calculated field names wherever the campaign has one
- * (build.ts adds those the webhook's own check-source switch left out).
- */
-export function shapePayload(
-  payload: WebhookPayload,
-  fields: CompiledFields,
-  inputs: ShapeInputs,
-): Shaped {
-  return {
-    ...payload,
-    campaigns: payload.campaigns.map((campaign) => shapeCampaign(campaign, fields, inputs)),
-  }
-}
-
-function shapeCampaign(
-  campaign: WebhookCampaign,
-  fields: CompiledFields,
-  inputs: ShapeInputs,
-): Shaped {
-  const price = inputs.prices.get(campaign.id) ?? { value: null, currency: null }
-  const priceValue = price.value === null ? null : parseDecimal(price.value)
-  return {
-    id: campaign.id,
-    name: campaign.name,
-    primary_source: campaign.primary_source,
-    ...(fields.usesPrice
-      ? {
-          price: price.value === null ? null : Number(price.value),
-          currency: price.value === null ? null : price.currency,
-        }
-      : {}),
-    sources: campaign.sources.map((block) =>
-      shapeBlock(
-        block,
-        fields,
-        priceValue,
-        inputs.clicks.get(clicksKey(campaign.id, block.source)),
-      ),
-    ),
-  }
-}
-
-function shapeBlock(
-  block: WebhookSourceBlock,
-  fields: CompiledFields,
-  price: Fraction | null,
-  clicks: SourceClicks | undefined,
-): Shaped {
-  const formulas = fields.calculated.filter((field) => field.source === block.source)
-  const metricsOf = (values: WebhookMetrics, levelClicks: Fraction | null) =>
-    shapeMetrics(values, fields.metrics, calculate(formulas, values, price, levelClicks))
-
-  const shaped: Shaped = {
-    source: block.source,
-    display_name: block.display_name,
-    role: block.role,
-    day_timezone: block.day_timezone,
-    data_complete_through: block.data_complete_through,
-    last_synced_at: block.last_synced_at,
-    metrics_available: [
-      ...block.metrics_available.filter((id) => stillAvailable(id, fields)),
-      ...formulas.map((field) => field.name),
-    ],
-    totals: metricsOf(block.totals, clicks?.total ?? null),
-    creatives: block.creatives.map((creative) => ({
-      campaign_tag: creative.campaign_tag,
-      label: creative.label,
-      totals: metricsOf(creative.totals, clicks?.creatives.get(creative.campaign_tag) ?? null),
-    })),
-  }
-  if (fields.sections.has('daily')) {
-    shaped.daily = block.daily.map((entry) => ({
-      date: entry.date,
-      language: entry.language,
-      ...metricsOf(entry, clicks?.daily.get(dayKey(entry.date, entry.language)) ?? null),
-    }))
-  }
-  if (fields.sections.has('ctas')) shaped.ctas = block.ctas
-  if (fields.sections.has('pages')) shaped.pages = block.pages
-  return shaped
-}
-
-/** A metrics_available entry survives when its metric, or the list it describes, is delivered. */
-function stillAvailable(id: string, fields: CompiledFields): boolean {
-  if (METRICS.has(id)) return fields.metrics === null || fields.metrics.has(id as MetricId)
-  if (id === 'cta_counter') return fields.sections.has('ctas')
-  if (id === 'view_counter') return fields.sections.has('pages')
-  return true
-}
-
-/** The delivered metrics of one level, measured ones first, then the calculated ones. */
-function shapeMetrics(
-  values: WebhookMetrics,
-  keep: ReadonlySet<MetricId> | null,
-  calculated: Record<string, number | null>,
-): Record<string, number | null> {
-  const out: Record<string, number | null> = {}
-  for (const id of METRIC_IDS) {
-    // Absent stays absent: the source does not measure it.
-    if (Object.hasOwn(values, id) && (keep === null || keep.has(id))) out[id] = values[id] ?? null
-  }
-  return { ...out, ...calculated }
-}
-
-/** Every formula of the block at one level, from that level's own numbers. */
-function calculate(
-  formulas: readonly CompiledField[],
-  values: WebhookMetrics,
-  price: Fraction | null,
-  clicks: Fraction | null,
-): Record<string, number | null> {
-  const lookup = (name: string): Fraction | null => {
-    if (name === PRICE_VARIABLE) return price
-    if (name === CLICKS_VARIABLE) return clicks
-    if (!METRICS.has(name) || !Object.hasOwn(values, name)) return null
-    const value = values[name as MetricId]
-    return typeof value === 'number' ? fromNumber(value) : null
-  }
-  const out: Record<string, number | null> = {}
-  for (const field of formulas) {
-    const value = evaluate(field.expr, lookup)
-    out[field.name] = value === null ? null : toRoundedNumber(value, field.decimals)
-  }
-  return out
+  return rows.map((row) => ({ name: row.name, hasPrice: row.has_price, linked: row.linked }))
 }
