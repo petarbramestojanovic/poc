@@ -4,16 +4,18 @@ import { buildApp } from '../../src/app.ts'
 import type { Config } from '../../src/core/config.ts'
 import { createDb, type Db } from '../../src/core/db.ts'
 import { createLogger } from '../../src/core/log.ts'
+import { setUpCampaign } from '../../src/modules/campaigns/service.ts'
 import type { IngestSummary } from '../../src/modules/salesforce/ingest.ts'
 import { createDefaultRegistry } from '../../src/modules/sync/connectors/index.ts'
 import { at } from '../helpers.ts'
 
-// The daily Salesforce report through POST /inbound/campaigns into the real schema, morning after
-// morning. Accounts are named 'IT Inbound …' (company ids 'it_inbound_…') and opportunity ids start
-// with '006ITINBOUND'; no other test file writes either.
+// Salesforce's Opportunity webhook through POST /inbound/salesforce/opportunities into the real
+// schema, delivery after delivery. Opportunity ids start with '006ITINBOUND', account ids with
+// '001ITINBOUND', and the report-era company keys with 'it_inbound_'; no other test file writes any.
 
 const ADMIN = 'a-long-enough-operator-token-0123456789'
 const INBOUND = 'it-inbound-token-long-enough-0123456789-abcdef'
+const URL = '/inbound/salesforce/opportunities'
 
 const config: Config = {
   databaseUrl: process.env.DATABASE_URL ?? '',
@@ -28,54 +30,50 @@ const config: Config = {
   webhookSchedulerEnabled: false,
 }
 
-const row = (n: number, over: Record<string, unknown> = {}) => ({
-  opportunity_owner: 'Erika Beispiel',
-  opportunity_name: `AT2610 IT Inbound Campaign ${n}`,
-  opportunity_id: `006ITINBOUND00${n}`,
-  account_name: 'IT Inbound Agency GmbH',
-  currency: 'EUR',
-  amount: 10000,
-  billing_country: 'Austria',
-  campaign_start_date: '2026-10-12',
-  campaign_end_date: '2026-11-30',
-  creative_languages: 'German',
-  nn_price: 13.0682,
-  billing_type: 'CPM',
-  targeting: 'A18-55',
-  whitelisted: null,
-  blacklisted: null,
-  deliverables: 1000000,
-  campaign_manager: 'Max Muster',
+const AGENCY = '001ITINBOUNDAGENCY'
+const ROASTERY = '001ITINBOUNDROASTR'
+const OTHER = '001ITINBOUNDOTHERA'
+const LEGACY = '001ITINBOUNDLEGACY'
+const TWIN = '001ITINBOUNDTWINAC'
+
+/** An 18-character opportunity id: '006ITINBOUND000001'. */
+const opp = (n: number) => `006ITINBOUND${String(n).padStart(6, '0')}`
+
+const record = (n: number, over: Record<string, unknown> = {}) => ({
+  attributes: { type: 'Opportunity', url: `/services/data/v66.0/sobjects/Opportunity/${opp(n)}` },
+  Id: opp(n),
+  AccountId: AGENCY,
+  Name: `AT2610 IT Inbound Campaign ${n}`,
+  Amount: 13068.2,
+  Type: 'Media Solutions',
+  CurrencyIsoCode: 'EUR',
+  LastModifiedDate: '2026-10-11T22:00:16.000+0000',
+  Owner_Name__c: 'Erika Beispiel',
+  Account_Name__c: 'IT Inbound Agency GmbH',
+  N_N_Price__c: 13.0682,
+  Campaign_Start_Date__c: '2026-10-12',
+  Campaign_End_Date__c: '2026-11-30',
+  Country__c: 'Austria',
+  Creative_Type__c: 'Reveal Ad',
   ...over,
 })
 
-const report = (campaigns: unknown[], over: Record<string, unknown> = {}) => ({
-  source: 'salesforce_report',
-  report_name: 'Media Solutions - Committed Opps - Daily',
-  report_as_of: '2026-10-06T06:00:03',
-  report_timezone: 'Europe/Zurich',
-  snapshot: true,
-  record_count: campaigns.length,
-  unmapped_columns: [],
-  campaigns,
-  ...over,
-})
-
-/** The first morning: two campaigns of one agency, one direct advertiser on CPC. */
-const morning = () =>
-  report([
-    row(1),
-    row(2, { creative_languages: 'German; French', nn_price: 21.5, currency: 'CHF' }),
-    row(3, {
-      account_name: 'IT Inbound Roastery GmbH',
-      opportunity_name: 'DE2610 IT Inbound Roastery',
-      billing_type: 'CPC',
-      nn_price: 0.5,
-    }),
-  ])
+/** The first delivery: two campaigns of one agency, one direct advertiser on another currency. */
+const first = () => [
+  record(1, { Creative_Languages__c: 'German' }),
+  record(2),
+  record(3, {
+    AccountId: ROASTERY,
+    Account_Name__c: 'IT Inbound Roastery GmbH',
+    Name: 'DE2610 IT Inbound Roastery',
+    N_N_Price__c: 21.5,
+    CurrencyIsoCode: 'CHF',
+  }),
+]
 
 interface StoredCampaign {
   name: string
+  company_id: string
   company: string
   company_ref: string
   starts_on: string
@@ -90,20 +88,22 @@ interface StoredCampaign {
   updated_at: Date
 }
 
-describe('POST /inbound/campaigns', () => {
+describe('POST /inbound/salesforce/opportunities', () => {
   let db: Db
   let app: FastifyInstance
+  const log = createLogger('silent')
 
   const cleanup = async () => {
     await db.query(`DELETE FROM app.campaign WHERE external_id LIKE '006ITINBOUND%'`)
-    await db.query(`DELETE FROM app.company WHERE external_id LIKE 'it_inbound_%'`)
+    await db.query(
+      `DELETE FROM app.company WHERE external_id LIKE '001ITINBOUND%' OR external_id LIKE 'it_inbound_%'`,
+    )
   }
 
   beforeAll(async () => {
     db = createDb(process.env.DATABASE_URL ?? '', { max: 4, ssl: 'disable' })
     // app.close() closes the pool it was given, so the app gets its own.
     const appDb = createDb(process.env.DATABASE_URL ?? '', { max: 4, ssl: 'disable' })
-    const log = createLogger('silent')
     app = buildApp({
       config,
       db: appDb,
@@ -122,9 +122,9 @@ describe('POST /inbound/campaigns', () => {
   const push = async (payload: unknown, token = INBOUND) =>
     app.inject({
       method: 'POST',
-      url: '/inbound/campaigns',
-      headers: { authorization: `Bearer ${token}` },
-      payload: payload as Record<string, unknown>,
+      url: URL,
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      payload: JSON.stringify(payload),
     })
 
   const pushed = async (payload: unknown): Promise<IngestSummary> => {
@@ -136,9 +136,10 @@ describe('POST /inbound/campaigns', () => {
   /** By opportunity id, read back by column name. */
   const stored = async (): Promise<Record<string, StoredCampaign>> => {
     const rows = await db.query<StoredCampaign & { opportunity_id: string }>(
-      `SELECT c.external_id AS opportunity_id, c.name, co.name AS company, co.external_id AS company_ref,
-              c.starts_on, c.ends_on, c.languages, c.price::text AS price, c.currency,
-              c.primary_source, c.status, c.timezone, c.updated_at,
+      `SELECT c.external_id AS opportunity_id, c.name, co.id AS company_id, co.name AS company,
+              co.external_id AS company_ref, c.starts_on, c.ends_on, c.languages,
+              c.price::text AS price, c.currency, c.primary_source, c.status, c.timezone,
+              c.updated_at,
               (SELECT count(*)::int FROM external.campaign_link l WHERE l.campaign_id = c.id) AS links
          FROM app.campaign c JOIN app.company co ON co.id = c.company_id
         WHERE c.external_system = 'salesforce' AND c.external_id LIKE '006ITINBOUND%'`,
@@ -148,23 +149,30 @@ describe('POST /inbound/campaigns', () => {
     )
   }
 
-  it('sets up every campaign of the report under its account', async () => {
-    const summary = await pushed(morning())
+  const companies = async () =>
+    db.query<{ id: string; name: string; external_id: string }>(
+      `SELECT id, name, external_id FROM app.company
+        WHERE external_id LIKE '001ITINBOUND%' OR external_id LIKE 'it_inbound_%'
+        ORDER BY external_id`,
+    )
 
-    expect(summary).toMatchObject({
-      report: { name: 'Media Solutions - Committed Opps - Daily', asOf: '2026-10-06T06:00:03' },
+  it('sets up every campaign of the delivery under its account', async () => {
+    const summary = await pushed(first())
+
+    expect(summary).toEqual({
       received: 3,
       created: 3,
       updated: 0,
       unchanged: 0,
+      skipped: [],
       rejected: [],
       warnings: [],
     })
     const campaigns = await stored()
-    expect(campaigns['006ITINBOUND001']).toMatchObject({
+    expect(campaigns[opp(1)]).toMatchObject({
       name: 'AT2610 IT Inbound Campaign 1',
       company: 'IT Inbound Agency GmbH',
-      company_ref: 'it_inbound_agency_gmbh',
+      company_ref: AGENCY,
       starts_on: '2026-10-12',
       ends_on: '2026-11-30',
       languages: ['de'],
@@ -175,33 +183,28 @@ describe('POST /inbound/campaigns', () => {
       timezone: 'Europe/Zurich',
       links: 0,
     })
-    expect(campaigns['006ITINBOUND002']).toMatchObject({
-      company_ref: 'it_inbound_agency_gmbh',
-      languages: ['de', 'fr'],
+    // The webhook does not promise the languages: without them, the campaign has none.
+    expect(campaigns[opp(2)]).toMatchObject({ company_ref: AGENCY, languages: [] })
+    expect(campaigns[opp(3)]).toMatchObject({
+      company: 'IT Inbound Roastery GmbH',
+      company_ref: ROASTERY,
       price: '21.5000',
       currency: 'CHF',
     })
-    // Always a CPM, whatever the billing type says.
-    expect(campaigns['006ITINBOUND003']).toMatchObject({
-      company: 'IT Inbound Roastery GmbH',
-      company_ref: 'it_inbound_roastery_gmbh',
-      price: '0.5000',
-    })
     // One company per account, however many campaigns it has.
-    const companies = await db.query(
-      `SELECT external_id FROM app.company WHERE external_id LIKE 'it_inbound_%' ORDER BY 1`,
-    )
-    expect(companies).toEqual([
-      { external_id: 'it_inbound_agency_gmbh' },
-      { external_id: 'it_inbound_roastery_gmbh' },
-    ])
+    expect((await companies()).map((company) => company.external_id)).toEqual([AGENCY, ROASTERY])
   })
 
-  it('changes nothing when the same report comes again', async () => {
-    await pushed(morning())
+  it('takes a single record as well as a list', async () => {
+    expect(await pushed(record(4))).toMatchObject({ received: 1, created: 1 })
+    expect((await stored())[opp(4)]).toMatchObject({ company_ref: AGENCY })
+  })
+
+  it('changes nothing when the same records come again', async () => {
+    await pushed(first())
     const before = await stored()
 
-    const again = await pushed(morning())
+    const again = await pushed(first())
 
     expect(again).toMatchObject({ created: 0, updated: 0, unchanged: 3, rejected: [] })
     const after = await stored()
@@ -209,79 +212,137 @@ describe('POST /inbound/campaigns', () => {
     expect(after).toEqual(before)
   })
 
-  it("applies the next morning's changes and leaves alone a campaign that dropped out", async () => {
-    await pushed(morning())
+  it('applies a changed opportunity and keeps the company of a renamed account', async () => {
+    await pushed(first())
+    const before = await stored()
 
-    const next = await pushed(
-      report(
-        [
-          row(1, {
-            opportunity_name: 'AT2610 IT Inbound Campaign 1 Extended',
-            campaign_end_date: '2026-12-15',
-            nn_price: 12.9,
-          }),
-          // Campaign 2 has started, so the report no longer carries it.
-          morning().campaigns[2],
-        ],
-        { report_as_of: '2026-10-07T06:00:03' },
-      ),
-    )
+    const next = await pushed([
+      record(1, {
+        Name: 'AT2610 IT Inbound Campaign 1 Extended',
+        Campaign_End_Date__c: '2026-12-15',
+        N_N_Price__c: 12.9,
+        Account_Name__c: 'IT Inbound Agency Austria GmbH',
+      }),
+    ])
 
-    expect(next).toMatchObject({ received: 2, created: 0, updated: 1, unchanged: 1 })
+    expect(next).toMatchObject({ received: 1, created: 0, updated: 1, unchanged: 0 })
     const campaigns = await stored()
-    expect(campaigns['006ITINBOUND001']).toMatchObject({
+    expect(campaigns[opp(1)]).toMatchObject({
       name: 'AT2610 IT Inbound Campaign 1 Extended',
       ends_on: '2026-12-15',
       price: '12.9000',
+      company_id: before[opp(1)]?.company_id,
+      company: 'IT Inbound Agency Austria GmbH',
     })
-    expect(campaigns['006ITINBOUND002']).toMatchObject({ status: 'active', price: '21.5000' })
+    // The account is one company, so its other campaign shows the new name too.
+    expect(campaigns[opp(2)]?.company).toBe('IT Inbound Agency Austria GmbH')
+    expect(campaigns[opp(3)]).toMatchObject({ price: '21.5000' })
   })
 
-  it('skips the rows it cannot take, says why, and sets up the rest', async () => {
-    await pushed(morning())
+  it('skips the records it cannot take, says why, and sets up the rest', async () => {
+    await pushed(first())
 
-    const next = await pushed(
-      report(
-        [
-          // The opportunity moved to another account: a campaign never changes company.
-          row(1, { account_name: 'IT Inbound Other Agency GmbH' }),
-          row(9, { opportunity_id: '006-not-an-id' }),
-          row(4, { creative_languages: 'German; Klingon' }),
-        ],
-        { unmapped_columns: ['Brand'] },
-      ),
-    )
+    const next = await pushed([
+      // The opportunity moved to another account: a campaign never changes company.
+      record(1, { AccountId: OTHER, Account_Name__c: 'IT Inbound Other Agency GmbH' }),
+      record(9, { Id: '006-not-an-id' }),
+      record(5, { Creative_Languages__c: 'German;Klingon' }),
+    ])
 
     expect(next).toMatchObject({ received: 3, created: 1, updated: 0, unchanged: 0 })
     expect(next.rejected).toEqual([
+      expect.objectContaining({ record: 0, opportunityId: opp(1), error: 'company_mismatch' }),
+      expect.objectContaining({ record: 1, opportunityId: null, error: 'invalid_record' }),
+    ])
+    expect(next.warnings).toEqual([
       expect.objectContaining({
-        row: 0,
-        opportunityId: '006ITINBOUND001',
-        error: 'company_mismatch',
+        record: 2,
+        opportunityId: opp(5),
+        message: expect.stringContaining('Klingon') as string,
       }),
-      expect.objectContaining({ row: 1, opportunityId: null, error: 'invalid_row' }),
     ])
-    expect(next.warnings.map((warning) => [warning.row, warning.opportunityId])).toEqual([
-      [null, null],
-      [2, '006ITINBOUND004'],
-    ])
-    expect(at(next.warnings).message).toContain('Brand')
-    expect(at(next.warnings, 1).message).toContain('Klingon')
     const campaigns = await stored()
-    expect(campaigns['006ITINBOUND001']?.company).toBe('IT Inbound Agency GmbH')
-    expect(campaigns['006ITINBOUND004']?.languages).toEqual(['de'])
-    // The refused row created no company either.
-    expect(
-      await db.query(
-        `SELECT 1 FROM app.company WHERE external_id = 'it_inbound_other_agency_gmbh'`,
-      ),
-    ).toEqual([])
+    expect(campaigns[opp(1)]?.company).toBe('IT Inbound Agency GmbH')
+    expect(campaigns[opp(5)]?.languages).toEqual(['de'])
+    // The refused record created no company either.
+    expect(await db.query(`SELECT 1 FROM app.company WHERE external_id = $1`, [OTHER])).toEqual([])
   })
 
-  it('keeps the platform ids a person added when the report comes again', async () => {
-    await pushed(morning())
+  it('skips campaigns starting before 2026: none is created, and none is updated', async () => {
+    await pushed(first())
+    const before = await stored()
+
+    const next = await pushed([
+      record(10, { Campaign_Start_Date__c: '2025-11-03', Campaign_End_Date__c: '2025-12-31' }),
+      record(11, { Campaign_Start_Date__c: null }),
+      // Moved to start in 2025, so it is left as it was, not renamed.
+      record(1, { Campaign_Start_Date__c: '2025-12-31', Name: 'AT2512 IT Inbound Renamed' }),
+      record(12, { Campaign_Start_Date__c: '2026-01-01' }),
+    ])
+
+    expect(next).toMatchObject({ received: 4, created: 1, updated: 0, unchanged: 0, rejected: [] })
+    expect(next.skipped).toEqual([
+      expect.objectContaining({ record: 0, opportunityId: opp(10) }),
+      expect.objectContaining({ record: 1, opportunityId: opp(11) }),
+      expect.objectContaining({ record: 2, opportunityId: opp(1) }),
+    ])
+    const after = await stored()
+    expect(Object.keys(after).sort()).toEqual([opp(1), opp(2), opp(3), opp(12)])
+    expect(after[opp(1)]).toEqual(before[opp(1)])
+    expect(after[opp(12)]).toMatchObject({ starts_on: '2026-01-01' })
+  })
+
+  it('moves a company the daily report made to its account id, once', async () => {
+    // The daily report keyed the company by its name, and made one campaign under it.
+    const legacy = await setUpCampaign(
+      { db, registry: createDefaultRegistry(), log },
+      {
+        externalRef: { system: 'salesforce', id: opp(6) },
+        company: {
+          name: 'IT Inbound Legacy GmbH',
+          externalRef: { system: 'salesforce', id: 'it_inbound_legacy_gmbh' },
+        },
+        name: 'AT2610 IT Inbound Legacy',
+        startsOn: '2026-10-12',
+        endsOn: '2026-11-30',
+        languages: ['de'],
+        sources: [],
+      },
+    )
+
+    const next = await pushed([
+      record(6, {
+        AccountId: LEGACY,
+        Account_Name__c: 'IT Inbound Legacy GmbH',
+        Name: 'AT2610 IT Inbound Legacy',
+      }),
+      record(7, { AccountId: LEGACY, Account_Name__c: 'IT Inbound Legacy GmbH' }),
+    ])
+
+    // Its campaign is taken up (price is new), and a new one joins the same company.
+    expect(next).toMatchObject({ created: 1, updated: 1, rejected: [] })
+    expect(await companies()).toEqual([
+      { id: legacy.company.id, name: 'IT Inbound Legacy GmbH', external_id: LEGACY },
+    ])
+    const campaigns = await stored()
+    expect(campaigns[opp(6)]).toMatchObject({ company_id: legacy.company.id, languages: ['de'] })
+    expect(campaigns[opp(7)]?.company_id).toBe(legacy.company.id)
+
+    // Another account of the same name no longer finds it: it gets a company of its own.
+    const twin = await pushed([
+      record(8, { AccountId: TWIN, Account_Name__c: 'IT Inbound Legacy GmbH' }),
+    ])
+    expect(twin).toMatchObject({ created: 1, rejected: [] })
+    const after = await stored()
+    expect(after[opp(8)]?.company_ref).toBe(TWIN)
+    expect(after[opp(8)]?.company_id).not.toBe(legacy.company.id)
+  })
+
+  it('keeps the platform ids a person added when the records come again', async () => {
+    await pushed(first())
     const [campaign] = await db.query<{ id: string }>(
-      `SELECT id FROM app.campaign WHERE external_id = '006ITINBOUND001'`,
+      `SELECT id FROM app.campaign WHERE external_id = $1`,
+      [opp(1)],
     )
     const ids = await app.inject({
       method: 'PUT',
@@ -291,27 +352,28 @@ describe('POST /inbound/campaigns', () => {
     })
     expect(ids.statusCode).toBe(200)
 
-    const again = await pushed(morning())
+    const again = await pushed(first())
 
     expect(again).toMatchObject({ unchanged: 3 })
-    expect((await stored())['006ITINBOUND001']).toMatchObject({ links: 1, primary_source: 'nexd' })
+    expect((await stored())[opp(1)]).toMatchObject({ links: 1, primary_source: 'nexd' })
   })
 
-  it('reads a report larger than the 64 KiB admin limit, and stores none of the extra fields', async () => {
-    const long = 'targeting '.repeat(3_000)
-    const big = report([1, 2, 3].map((n) => row(n, { targeting: long })))
+  it('reads a delivery larger than the 64 KiB admin limit, and stores none of the extra fields', async () => {
+    const long = 'description '.repeat(3_000)
+    const big = [1, 2, 3].map((n) => record(n, { Description: long }))
     expect(JSON.stringify(big).length).toBeGreaterThan(64 * 1024)
 
     expect(await pushed(big)).toMatchObject({ created: 3, rejected: [] })
     const [hit] = await db.query<{ n: number }>(
       `SELECT count(*)::int AS n FROM app.campaign c WHERE c.external_id LIKE '006ITINBOUND%'
-          AND (row_to_json(c)::text LIKE '%targeting%' OR row_to_json(c)::text LIKE '%Erika%')`,
+          AND (row_to_json(c)::text LIKE '%description%' OR row_to_json(c)::text LIKE '%Erika%'
+               OR row_to_json(c)::text LIKE '%Reveal%' OR row_to_json(c)::text LIKE '%Austria%')`,
     )
     expect(hit?.n).toBe(0)
   })
 
   it('refuses the admin token', async () => {
-    const res = await push(morning(), ADMIN)
+    const res = await push(first(), ADMIN)
     expect(res.statusCode).toBe(401)
     expect(await stored()).toEqual({})
   })

@@ -70,8 +70,9 @@ const serviceSchema = z
       .string()
       .min(32, 'must be at least 32 characters (generate with: openssl rand -base64 32)'),
     /**
-     * The bearer token of POST /inbound/campaigns, the daily Salesforce report another of our apps
-     * pushes. Its own token, so that app can never reach an admin route. Unset = no /inbound route.
+     * The bearer token of POST /inbound/salesforce/opportunities, Salesforce's webhook of committed
+     * opportunities. Its own token, so the sender can never reach an admin route. Unset = no
+     * /inbound route.
      */
     INBOUND_CAMPAIGNS_TOKEN: z
       .string()
@@ -123,7 +124,7 @@ export interface RuntimeConfig {
 
 export interface Config extends RuntimeConfig {
   readonly adminToken: string
-  /** Unset: POST /inbound/campaigns does not exist. */
+  /** Unset: POST /inbound/salesforce/opportunities does not exist. */
   readonly inboundCampaignsToken?: string
   readonly port: number
   readonly trustProxyHops: number

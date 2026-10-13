@@ -4,7 +4,7 @@ import { ianaTimezone } from '../../core/schemas.ts'
 import { companyRefSchema } from '../companies/input.ts'
 
 // What it takes to set a campaign up, in our own vocabulary and nothing else. This is the one
-// input the setup service understands: the Salesforce report (modules/salesforce/) builds this
+// input the setup service understands: the Salesforce webhook (modules/salesforce/) builds this
 // shape and hands it over, and so would any other CRM. Nothing here knows about Zeus, NEXD or
 // Salesforce — platform shortcuts live in presets.ts, and a CRM's field names stay in that CRM's
 // adapter.

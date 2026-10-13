@@ -19,7 +19,7 @@ Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (plat
 │    sync/          connectors → mapper → engine → day-replace writer         │
 │                   nightly pass 04:00 Europe/Zurich, leader lock key 1       │
 │    webhooks/      minutely tick, leader lock key 2 → build, sign, deliver   │
-│    salesforce/    the daily report → campaigns (POST /inbound/campaigns)    │
+│    salesforce/    opportunity webhook → campaigns (POST /inbound/…)         │
 │    campaigns/     one setup service; people set platform ids only           │
 │    companies/     found or created inside a campaign setup; GET /companies  │
 │    health/        GET /healthz · GET /readyz                                │
@@ -84,16 +84,15 @@ With real keys you can sync into your local database and inspect the rows direct
    npm run sync -- --source zeus --list-pixels
    ```
 
-4. With the service running (`npm run dev`, `INBOUND_CAMPAIGNS_TOKEN` set in `.env`), create the campaign the way production does: push a one-row Salesforce report, then give the campaign its platform ids. Replace every `<…>`; leave out the platform you do not have.
+4. With the service running (`npm run dev`, `INBOUND_CAMPAIGNS_TOKEN` set in `.env`), create the campaign the way production does: push one Salesforce Opportunity record, then give the campaign its platform ids. Replace every `<…>`; leave out the platform you do not have.
 
    ```sh
-   curl -X POST http://127.0.0.1:3000/inbound/campaigns \
-     -H 'authorization: Bearer <inbound token>' -H 'content-type: application/json' -d '{
-       "source": "salesforce_report", "record_count": 1, "campaigns": [ {
-         "opportunity_id": "006<12 or 15 letters and digits>", "opportunity_name": "<AT2610 name>",
-         "account_name": "<client>", "campaign_start_date": "<YYYY-MM-DD>",
-         "campaign_end_date": "<YYYY-MM-DD>", "creative_languages": "German",
-         "nn_price": <CPM>, "currency": "EUR" } ] }'
+   curl -X POST http://127.0.0.1:3000/inbound/salesforce/opportunities \
+     -H 'authorization: Bearer <inbound token>' -H 'content-type: application/json' -d '[ {
+       "Id": "006<15 letters and digits>", "Name": "<AT2610 name>",
+       "AccountId": "001<15 letters and digits>", "Account_Name__c": "<client>",
+       "Campaign_Start_Date__c": "<YYYY-MM-DD>", "Campaign_End_Date__c": "<YYYY-MM-DD>",
+       "N_N_Price__c": <CPM>, "CurrencyIsoCode": "EUR" } ]'
 
    curl -X PUT http://127.0.0.1:3000/campaigns/<campaign id>/platforms/zeus \
      -H 'authorization: Bearer <admin token>' -H 'content-type: application/json' -d '{
@@ -154,37 +153,37 @@ The trigger answers `202` with the run id as soon as the run is open, `429` insi
 
 See [.env.example](.env.example). Secrets live only in environment variables (locally in `.env`, on Render in the dashboard). `external.credential` rows store the _name_ of the variable, never the value.
 
-| Variable                    | Purpose                                                                                                        |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`              | Postgres URL: local direct; on Render the session pooler (5432) or direct, never the transaction pooler (6543) |
-| `DATABASE_SSL`              | `verify-full` (default) or `disable` (loopback hosts only)                                                     |
-| `DATABASE_SSL_CA`           | PEM of the database CA; empty uses the system CAs                                                              |
-| `NEXD_API_KEY`              | NEXD bearer key                                                                                                |
-| `ZEUS_API_TOKEN`            | Zeus bearer token                                                                                              |
-| `SERVICE_ADMIN_TOKEN`       | Bearer token for `/sync/*` and `/webhooks/*` routes, at least 32 characters                                    |
-| `INBOUND_CAMPAIGNS_TOKEN`   | Bearer token of `POST /inbound/campaigns`, different from the admin token; unset = no such route               |
-| `PORT`                      | HTTP port                                                                                                      |
-| `LOG_LEVEL`                 | pino level                                                                                                     |
-| `TRUST_PROXY_HOPS`          | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                            |
-| `SYNC_SCHEDULER_ENABLED`    | Run the 04:00 Europe/Zurich nightly pass in this process (default `true`)                                      |
-| `WEBHOOK_SCHEDULER_ENABLED` | Run the minutely webhook tick in this process (default `true`)                                                 |
-| `RENDER_GIT_COMMIT`         | Set by Render; `/healthz` reports it so a deploy can wait for its own commit                                   |
-| `TZ`                        | Always `UTC`; sources and schedules carry explicit timezones                                                   |
+| Variable                    | Purpose                                                                                                         |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`              | Postgres URL: local direct; on Render the session pooler (5432) or direct, never the transaction pooler (6543)  |
+| `DATABASE_SSL`              | `verify-full` (default) or `disable` (loopback hosts only)                                                      |
+| `DATABASE_SSL_CA`           | PEM of the database CA; empty uses the system CAs                                                               |
+| `NEXD_API_KEY`              | NEXD bearer key                                                                                                 |
+| `ZEUS_API_TOKEN`            | Zeus bearer token                                                                                               |
+| `SERVICE_ADMIN_TOKEN`       | Bearer token for `/sync/*` and `/webhooks/*` routes, at least 32 characters                                     |
+| `INBOUND_CAMPAIGNS_TOKEN`   | Bearer token of `POST /inbound/salesforce/opportunities`, different from the admin token; unset = no such route |
+| `PORT`                      | HTTP port                                                                                                       |
+| `LOG_LEVEL`                 | pino level                                                                                                      |
+| `TRUST_PROXY_HOPS`          | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                             |
+| `SYNC_SCHEDULER_ENABLED`    | Run the 04:00 Europe/Zurich nightly pass in this process (default `true`)                                       |
+| `WEBHOOK_SCHEDULER_ENABLED` | Run the minutely webhook tick in this process (default `true`)                                                  |
+| `RENDER_GIT_COMMIT`         | Set by Render; `/healthz` reports it so a deploy can wait for its own commit                                    |
+| `TZ`                        | Always `UTC`; sources and schedules carry explicit timezones                                                    |
 
 ## Campaigns
 
-**Campaigns come from Salesforce.** Every morning another of our apps posts the "Media Solutions - Committed Opps - Daily" report to `POST /inbound/campaigns`, with its own bearer token (`INBOUND_CAMPAIGNS_TOKEN`), never the admin one. Each row becomes a campaign through the one setup service, `src/modules/campaigns/` (`setUpCampaign`); `src/modules/salesforce/` is the adapter, and Salesforce's field names stop there.
+**Campaigns come from Salesforce.** Salesforce posts each committed opportunity to `POST /inbound/salesforce/opportunities` as its own REST JSON (one record, or a list of up to 200), with a bearer token of its own (`INBOUND_CAMPAIGNS_TOKEN`), never the admin one. Each record becomes a campaign through the one setup service, `src/modules/campaigns/` (`setUpCampaign`); `src/modules/salesforce/` is the adapter, and Salesforce's field names stop there.
 
-| Report field                               | Campaign                                                                                                                    |
-| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `opportunity_id`                           | `externalRef` `salesforce:<id>`: the same opportunity tomorrow updates the same campaign                                    |
-| `opportunity_name`                         | name, as sold (`AT2610 …`: market and month stay in the name)                                                               |
-| `account_name`                             | company; its id is the name in snake_case (`Kaffeerösterei GmbH` → `kaffeeroesterei_gmbh`), as the report has no account id |
-| `campaign_start_date`, `campaign_end_date` | flight                                                                                                                      |
-| `creative_languages`                       | languages (`German` → `de`)                                                                                                 |
-| `nn_price` + `currency`                    | price: always a CPM, whatever the billing type                                                                              |
+| Opportunity field                                | Campaign                                                                              |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `Id`                                             | `externalRef` `salesforce:<Id>`: the same opportunity again updates the same campaign |
+| `Name`                                           | name, as sold (`AT2610 …`: market and month stay in the name)                         |
+| `AccountId`, `Account_Name__c`                   | company, keyed by the account id; a renamed account renames its company               |
+| `Campaign_Start_Date__c`, `Campaign_End_Date__c` | flight                                                                                |
+| `N_N_Price__c` + `CurrencyIsoCode`               | price: always a CPM, whatever the billing type                                        |
+| `Creative_Languages__c`                          | languages (`German` → `de`), when the sender includes it                              |
 
-Everything else in a row is ignored and never stored. A push only creates and updates: a campaign missing from today's report is left alone (the report drops campaigns once they start), a field it leaves out is never cleared, and a campaign never moves to another company. The answer is `200` with what happened to each row (`created`, `updated`, `unchanged`, `rejected` with a reason, `warnings`); the same report sent twice changes nothing.
+Only campaigns starting on or after 2026-01-01 are taken in: a record starting earlier, or with no start date, is listed under `skipped` and changes nothing. Ids are the 18-character form. Everything else in a record (`Amount`, `Type`, owner, country, creative type, …) is ignored and never stored. A push only creates and updates: an opportunity that is not sent again is left alone, a field it leaves out is never cleared, and a campaign never moves to another company. A company the old daily report created (keyed by its name in snake_case) moves to its account id the first time Salesforce names it, with its campaigns and webhooks. The answer is `200` with what happened to each record (`created`, `updated`, `unchanged`, `skipped`, `rejected` with a reason, `warnings`); the same records sent twice change nothing.
 
 **People set platform ids, and nothing else.** A campaign arrives without NEXD or Zeus ids:
 

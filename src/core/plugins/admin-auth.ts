@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
 import type { FastifyReply, FastifyRequest } from 'fastify'
 
 // Phase 1 operator auth: a single shared bearer token on the admin prefixes, and a second one of
-// its own on /inbound, where another of our apps pushes the daily Salesforce report.
+// its own on /inbound, where Salesforce's webhook pushes committed opportunities.
 // Phase 2 swaps the admin hook for Supabase user tokens with company scoping; nothing else changes.
 // Rate limiting needs @fastify/rate-limit, which is outside the fixed stack (plan: ask first).
 

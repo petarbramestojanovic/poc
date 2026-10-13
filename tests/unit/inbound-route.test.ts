@@ -7,11 +7,11 @@ import type { Db } from '../../src/core/db.ts'
 import { createLogger } from '../../src/core/log.ts'
 import { createDefaultRegistry } from '../../src/modules/sync/connectors/index.ts'
 
-// POST /inbound/campaigns before it reaches the service: its own token, the envelope, the body
-// limit. What the service does with a report is tests/integration/inbound.test.ts.
+// POST /inbound/salesforce/opportunities before it reaches the service: its own token, the body,
+// its limit. What the service does with the records is tests/integration/inbound.test.ts.
 
 const ADMIN = 'a-long-enough-operator-token-0123456789'
-const INBOUND = 'a-different-inbound-token-for-the-report-0123'
+const INBOUND = 'a-different-inbound-token-for-salesforce-0123'
 
 const withoutInbound: Config = {
   databaseUrl: 'postgresql://x',
@@ -56,24 +56,23 @@ afterEach(async () => {
 
 const bearer = (token: string) => ({ authorization: `Bearer ${token}` })
 
-const report = (over: Record<string, unknown> = {}) => ({
-  source: 'salesforce_report',
-  report_as_of: '2026-10-06T06:00:03',
-  record_count: 0,
-  campaigns: [],
-  ...over,
-})
+const URL = '/inbound/salesforce/opportunities'
 
 const push = (app: FastifyInstance, headers: Record<string, string>, payload: unknown) =>
-  app.inject({ method: 'POST', url: '/inbound/campaigns', headers, payload: payload as object })
+  app.inject({
+    method: 'POST',
+    url: URL,
+    headers: { ...headers, 'content-type': 'application/json' },
+    payload: JSON.stringify(payload),
+  })
 
-describe('POST /inbound/campaigns', () => {
+describe('POST /inbound/salesforce/opportunities', () => {
   it.each([
     ['no token', {}],
     ['the wrong token', bearer('not-the-inbound-token-not-the-inbound-token')],
     ['the admin token', bearer(ADMIN)],
   ])('answers 401 to %s, before reading the body', async (_name, headers) => {
-    const res = await push(build(), headers, report())
+    const res = await push(build(), headers, [])
     expect(res.statusCode).toBe(401)
     expect(res.json()).toEqual({ error: 'unauthorized' })
   })
@@ -88,8 +87,8 @@ describe('POST /inbound/campaigns', () => {
 
   it('does not exist without its token, whatever is sent', async () => {
     const app = build(withoutInbound)
-    expect((await push(app, bearer(INBOUND), report())).statusCode).toBe(404)
-    expect((await push(app, bearer(ADMIN), report())).statusCode).toBe(404)
+    expect((await push(app, bearer(INBOUND), [])).statusCode).toBe(404)
+    expect((await push(app, bearer(ADMIN), [])).statusCode).toBe(404)
   })
 
   it('answers 404 under /inbound for anything else, still behind its token', async () => {
@@ -103,21 +102,71 @@ describe('POST /inbound/campaigns', () => {
     expect([anonymous.statusCode, known.statusCode]).toEqual([401, 404])
   })
 
-  it.each<[string, Record<string, unknown>]>([
-    ['another source', { source: 'hubspot' }],
-    ['a count that disagrees with the rows', { record_count: 1 }],
-    ['no campaigns list', { campaigns: 'none' }],
-  ])('answers 400 to a body with %s', async (_name, over) => {
-    const res = await push(build(), bearer(INBOUND), report(over))
+  it('no longer takes the daily report', async () => {
+    const res = await build().inject({
+      method: 'POST',
+      url: '/inbound/campaigns',
+      headers: bearer(INBOUND),
+      payload: { source: 'salesforce_report', record_count: 0, campaigns: [] },
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('answers an empty list with an empty summary, without touching the database', async () => {
+    const res = await push(build(), bearer(INBOUND), [])
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({
+      received: 0,
+      created: 0,
+      updated: 0,
+      unchanged: 0,
+      skipped: [],
+      rejected: [],
+      warnings: [],
+    })
+  })
+
+  it('reports a record it cannot read, by position, without touching the database', async () => {
+    const res = await push(build(), bearer(INBOUND), {
+      Id: '006-not-an-id',
+      Campaign_Start_Date__c: '2026-10-12',
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      received: 1,
+      rejected: [{ record: 0, opportunityId: null, error: 'invalid_record' }],
+    })
+  })
+
+  it('skips a campaign starting before 2026, without touching the database', async () => {
+    const res = await push(build(), bearer(INBOUND), [
+      { Id: '006Aa00000BcDeFgHI', Campaign_Start_Date__c: '2025-12-31' },
+    ])
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      received: 1,
+      skipped: [{ record: 0, opportunityId: '006Aa00000BcDeFgHI' }],
+      rejected: [],
+    })
+  })
+
+  it.each<[string, unknown]>([
+    ['text', 'opportunities'],
+    ['null', null],
+    ['more than 200 records', Array.from({ length: 201 }, () => ({}))],
+  ])('answers 400 to a body that is %s', async (_name, body) => {
+    const res = await push(build(), bearer(INBOUND), body)
     expect(res.statusCode).toBe(400)
   })
 
-  it('reads a report larger than the 64 KiB admin limit, and refuses one above 1 MiB', async () => {
+  it('reads a delivery larger than the 64 KiB admin limit, and refuses one above 4 MiB', async () => {
     const app = build()
-    // Refused on its count, so the database is never reached: it got past the body limit.
-    const large = report({ record_count: 1, unmapped_columns: [], padding: 'x'.repeat(200_000) })
-    const tooLarge = report({ padding: 'x'.repeat(1_100_000) })
-    expect((await push(app, bearer(INBOUND), large)).statusCode).toBe(400)
+    // Every record is unreadable, so the database is never reached: it got past the body limit.
+    const large = Array.from({ length: 200 }, () => ({ Description: 'x'.repeat(10_000) }))
+    const tooLarge = [{ Description: 'x'.repeat(4.5 * 1024 * 1024) }]
+    const read = await push(app, bearer(INBOUND), large)
+    expect(read.statusCode).toBe(200)
+    expect(read.json()).toMatchObject({ received: 200 })
     expect((await push(app, bearer(INBOUND), tooLarge)).statusCode).toBe(413)
   })
 })

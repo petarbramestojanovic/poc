@@ -62,7 +62,7 @@ describe('campaign routes, refused before the service', () => {
     expect(res.statusCode).toBe(401)
   })
 
-  // Campaigns and companies come from the Salesforce report, and their own fields belong to it.
+  // Campaigns and companies come from the Salesforce webhook, and their own fields belong to it.
   it.each([
     ['POST', '/campaigns', 'creating a campaign by hand'],
     ['PATCH', `/campaigns/${ID}`, "editing a campaign's own fields"],
