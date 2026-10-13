@@ -20,7 +20,7 @@ import { headlineSource } from './presets.ts'
 import * as repo from './repo.ts'
 import { checkSources } from './validate.ts'
 
-// The one way a campaign gets into the database. The Salesforce report (src/modules/salesforce/) calls
+// The one way a campaign gets into the database. The Salesforce webhook (src/modules/salesforce/) calls
 // setUpCampaign with a platform-neutral CampaignSetup, and any other CRM adapter would too.
 //
 // A setup is safe to send again. With an `externalRef` the second push finds the campaign it

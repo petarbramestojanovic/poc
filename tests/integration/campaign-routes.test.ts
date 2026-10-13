@@ -107,7 +107,7 @@ describe('campaign admin API', () => {
 
   const deps = () => ({ db, registry: createDefaultRegistry(), log: createLogger('silent') })
 
-  /** A campaign the way the Salesforce report creates one: no platform ids. */
+  /** A campaign the way the Salesforce webhook creates one: no platform ids. */
   const seed = async (name = 'IT Routes Cafemio', ref = 'it-routes-006-1') =>
     (
       await setUpCampaign(
@@ -177,7 +177,7 @@ describe('campaign admin API', () => {
     return { summary, seen }
   }
 
-  it('lists a campaign from the report before it has any platform id', async () => {
+  it('lists a campaign from Salesforce before it has any platform id', async () => {
     const campaign = await seed()
 
     const list = await get(`/campaigns?companyId=${campaign.companyId}`)

@@ -8,8 +8,8 @@ import * as repo from './repo.ts'
 import { removePlatform, setPlatformIds, type CampaignDeps } from './service.ts'
 
 // /campaigns, registered inside its own admin scope, so the bearer check runs first. Campaigns
-// and companies are created only by the Salesforce report (POST
-// /inbound/campaigns), and their own fields belong to it: a person reads them here and sets one
+// and companies are created only by the Salesforce webhook (POST
+// /inbound/salesforce/opportunities), and their own fields belong to it: a person reads them here and sets one
 // thing, each platform's ids, through the same presets the setup service has always used.
 //
 // PUT /campaigns/:id/platforms/:platform is the whole id list for that platform. Adding ids always

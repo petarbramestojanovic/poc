@@ -5,7 +5,7 @@ import { externalRefSchema } from '../../core/external-ref.ts'
 import * as repo from './repo.ts'
 
 // /companies, inside its own admin scope (app.ts), so the bearer check runs first. Read-only:
-// companies are created by the Salesforce report, through a campaign setup.
+// companies are created by the Salesforce webhook, through a campaign setup.
 
 export interface CompanyDeps {
   db: Db

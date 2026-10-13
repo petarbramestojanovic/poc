@@ -38,7 +38,7 @@ export interface AppDeps {
   webhooks?: SendDeps
   /**
    * Campaign setup behind /companies, /campaigns and (with config.inboundCampaignsToken)
-   * /inbound/campaigns. Without it they answer 404.
+   * /inbound/salesforce/opportunities. Without it they answer 404.
    */
   campaigns?: CampaignDeps
 }
@@ -144,7 +144,7 @@ export function buildApp({
     )
   }
 
-  // The same shape as an admin scope, with its own token: the sending app can push the report and
+  // The same shape as an admin scope, with its own token: Salesforce can push opportunities and
   // reach nothing else. Without a token there is no /inbound scope, and the root answers 404.
   const inboundToken = config.inboundCampaignsToken
   if (inboundToken !== undefined && campaigns) {
