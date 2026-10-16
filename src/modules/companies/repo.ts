@@ -13,7 +13,6 @@ const sql = loadSql(import.meta.url, [
   'find_company_by_name',
   'insert_company',
   'update_company_name',
-  'update_company_ref',
   'list_companies',
 ] as const)
 
@@ -80,15 +79,6 @@ export async function updateCompanyName(
 ): Promise<CompanyRecord> {
   const rows = await q.query<CompanyRow>(sql.update_company_name, [id, name])
   return toCompany(required(rows[0], 'update_company_name'))
-}
-
-export async function updateCompanyRef(
-  q: Queryable,
-  id: string,
-  ref: ExternalRef,
-): Promise<CompanyRecord> {
-  const rows = await q.query<CompanyRow>(sql.update_company_ref, [id, ref.system, ref.id])
-  return toCompany(required(rows[0], 'update_company_ref'))
 }
 
 export interface CompanyListItem extends CompanyRecord {

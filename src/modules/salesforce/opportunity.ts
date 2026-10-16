@@ -116,16 +116,9 @@ export function toCampaignSetup(record: unknown): RecordOutcome {
   const price = toPrice(opp.N_N_Price__c, opp.CurrencyIsoCode)
   if (price.warning !== undefined) warnings.push(price.warning)
 
-  // The key the daily report gave this account before the webhook carried its id.
-  const formerKey = companyKey(opp.Account_Name__c)
-
   const setup = campaignSetupSchema.safeParse({
     externalRef: { system: REF_SYSTEM, id: opp.Id },
-    company: {
-      name: opp.Account_Name__c,
-      externalRef: { system: REF_SYSTEM, id: opp.AccountId },
-      ...(formerKey === '' ? {} : { formerRef: { system: REF_SYSTEM, id: formerKey } }),
-    },
+    company: { name: opp.Account_Name__c, externalRef: { system: REF_SYSTEM, id: opp.AccountId } },
     // The name as sold, market and month prefix included ('AT2610 Alpenmilch App Launch').
     name: opp.Name,
     startsOn: opp.Campaign_Start_Date__c,
@@ -138,25 +131,6 @@ export function toCampaignSetup(record: unknown): RecordOutcome {
     return { kind: 'invalid', opportunityId: opp.Id, message: describe(setup.error) }
   }
   return { kind: 'setup', opportunityId: opp.Id, setup: setup.data, warnings }
-}
-
-const SPELLED_OUT: Readonly<Record<string, string>> = { ä: 'ae', ö: 'oe', ü: 'ue', ß: 'ss' }
-
-/**
- * The id the daily report (before 2026-10-13) gave a company, made from the account name because
- * that report had no account id: lowercase, German umlauts spelled out, other accents dropped,
- * every run of anything else one '_'. 'Schloß Grünberg Kultur- u. Betriebsges.m.b.H.' →
- * 'schloss_gruenberg_kultur_u_betriebsges_m_b_h'. Used only as `formerRef`, so a company the report
- * created moves to its account id the first time the webhook names it; never to key a new one.
- */
-export function companyKey(accountName: string): string {
-  return accountName
-    .toLowerCase()
-    .replace(/[äöüß]/g, (letter) => SPELLED_OUT[letter] ?? letter)
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
 }
 
 /** Salesforce's language names → the codes our links and campaigns use ('de'). */

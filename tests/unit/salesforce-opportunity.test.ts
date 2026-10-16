@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  companyKey,
   INGEST_FROM,
   languageCodes,
   opportunityDeliverySchema,
@@ -57,8 +56,6 @@ describe('an Opportunity record', () => {
       company: {
         name: 'Medien 7 Planung und -Einkauf GmbH',
         externalRef: { system: 'salesforce', id: '001Aa00000KlMnOpQR' },
-        // The key the daily report gave the account, so a company it created moves over.
-        formerRef: { system: 'salesforce', id: 'medien_7_planung_und_einkauf_gmbh' },
       },
       name: 'AT2610 Alpenmilch App Launch',
       startsOn: '2026-10-09',
@@ -126,10 +123,11 @@ describe('an Opportunity record', () => {
     expect(setup).not.toHaveProperty('languages')
   })
 
-  it('names no former company key when the account name has nothing to make one from', () => {
-    const { setup } = setupOf({ Account_Name__c: '— & —' })
+  it('keys the company by the account id alone and keeps its name exactly', () => {
+    const name = 'Schloß Grünberg Kultur- u. Betriebsges.m.b.H.'
+    const { setup } = setupOf({ Account_Name__c: name })
     expect(setup.company).toEqual({
-      name: '— & —',
+      name,
       externalRef: { system: 'salesforce', id: '001Aa00000KlMnOpQR' },
     })
   })
@@ -221,21 +219,6 @@ describe('the start date cut-off', () => {
     expect(refusalOf({ Campaign_Start_Date__c: '01.01.2026' }).message).toContain(
       'Campaign_Start_Date__c',
     )
-  })
-})
-
-describe('the former company key', () => {
-  it.each([
-    ['Medien 7 Planung und -Einkauf GmbH', 'medien_7_planung_und_einkauf_gmbh'],
-    ['Werbeplus Austria GmbH & Co. KG', 'werbeplus_austria_gmbh_co_kg'],
-    [
-      'Schloß Grünberg Kultur- u. Betriebsges.m.b.H.',
-      'schloss_gruenberg_kultur_u_betriebsges_m_b_h',
-    ],
-    ['Kaffeerösterei GmbH', 'kaffeeroesterei_gmbh'],
-    ['  ÜBER Café — Zürich  ', 'ueber_cafe_zuerich'],
-  ])('of %s is %s, as the daily report made it', (name, key) => {
-    expect(companyKey(name)).toBe(key)
   })
 })
 
