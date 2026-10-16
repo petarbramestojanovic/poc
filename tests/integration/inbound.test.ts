@@ -4,14 +4,13 @@ import { buildApp } from '../../src/app.ts'
 import type { Config } from '../../src/core/config.ts'
 import { createDb, type Db } from '../../src/core/db.ts'
 import { createLogger } from '../../src/core/log.ts'
-import { setUpCampaign } from '../../src/modules/campaigns/service.ts'
 import type { IngestSummary } from '../../src/modules/salesforce/ingest.ts'
 import { createDefaultRegistry } from '../../src/modules/sync/connectors/index.ts'
 import { at } from '../helpers.ts'
 
 // Salesforce's Opportunity webhook through POST /inbound/salesforce/opportunities into the real
-// schema, delivery after delivery. Opportunity ids start with '006ITINBOUND', account ids with
-// '001ITINBOUND', and the report-era company keys with 'it_inbound_'; no other test file writes any.
+// schema, delivery after delivery. Opportunity ids start with '006ITINBOUND' and account ids with
+// '001ITINBOUND'; no other test file writes either.
 
 const ADMIN = 'a-long-enough-operator-token-0123456789'
 const INBOUND = 'it-inbound-token-long-enough-0123456789-abcdef'
@@ -33,8 +32,8 @@ const config: Config = {
 const AGENCY = '001ITINBOUNDAGENCY'
 const ROASTERY = '001ITINBOUNDROASTR'
 const OTHER = '001ITINBOUNDOTHERA'
-const LEGACY = '001ITINBOUNDLEGACY'
-const TWIN = '001ITINBOUNDTWINAC'
+const NAMESAKE_A = '001ITINBOUNDNAMEAA'
+const NAMESAKE_B = '001ITINBOUNDNAMEBB'
 
 /** An 18-character opportunity id: '006ITINBOUND000001'. */
 const opp = (n: number) => `006ITINBOUND${String(n).padStart(6, '0')}`
@@ -95,9 +94,7 @@ describe('POST /inbound/salesforce/opportunities', () => {
 
   const cleanup = async () => {
     await db.query(`DELETE FROM app.campaign WHERE external_id LIKE '006ITINBOUND%'`)
-    await db.query(
-      `DELETE FROM app.company WHERE external_id LIKE '001ITINBOUND%' OR external_id LIKE 'it_inbound_%'`,
-    )
+    await db.query(`DELETE FROM app.company WHERE external_id LIKE '001ITINBOUND%'`)
   }
 
   beforeAll(async () => {
@@ -152,8 +149,7 @@ describe('POST /inbound/salesforce/opportunities', () => {
   const companies = async () =>
     db.query<{ id: string; name: string; external_id: string }>(
       `SELECT id, name, external_id FROM app.company
-        WHERE external_id LIKE '001ITINBOUND%' OR external_id LIKE 'it_inbound_%'
-        ORDER BY external_id`,
+        WHERE external_id LIKE '001ITINBOUND%' ORDER BY external_id`,
     )
 
   it('sets up every campaign of the delivery under its account', async () => {
@@ -292,50 +288,17 @@ describe('POST /inbound/salesforce/opportunities', () => {
     expect(after[opp(12)]).toMatchObject({ starts_on: '2026-01-01' })
   })
 
-  it('moves a company the daily report made to its account id, once', async () => {
-    // The daily report keyed the company by its name, and made one campaign under it.
-    const legacy = await setUpCampaign(
-      { db, registry: createDefaultRegistry(), log },
-      {
-        externalRef: { system: 'salesforce', id: opp(6) },
-        company: {
-          name: 'IT Inbound Legacy GmbH',
-          externalRef: { system: 'salesforce', id: 'it_inbound_legacy_gmbh' },
-        },
-        name: 'AT2610 IT Inbound Legacy',
-        startsOn: '2026-10-12',
-        endsOn: '2026-11-30',
-        languages: ['de'],
-        sources: [],
-      },
-    )
-
-    const next = await pushed([
-      record(6, {
-        AccountId: LEGACY,
-        Account_Name__c: 'IT Inbound Legacy GmbH',
-        Name: 'AT2610 IT Inbound Legacy',
-      }),
-      record(7, { AccountId: LEGACY, Account_Name__c: 'IT Inbound Legacy GmbH' }),
+  it('keeps two accounts of the same name apart: a company is its account, never its name', async () => {
+    const summary = await pushed([
+      record(6, { AccountId: NAMESAKE_A, Account_Name__c: 'IT Inbound Namesake GmbH' }),
+      record(7, { AccountId: NAMESAKE_B, Account_Name__c: 'IT Inbound Namesake GmbH' }),
     ])
 
-    // Its campaign is taken up (price is new), and a new one joins the same company.
-    expect(next).toMatchObject({ created: 1, updated: 1, rejected: [] })
-    expect(await companies()).toEqual([
-      { id: legacy.company.id, name: 'IT Inbound Legacy GmbH', external_id: LEGACY },
-    ])
+    expect(summary).toMatchObject({ created: 2, rejected: [] })
     const campaigns = await stored()
-    expect(campaigns[opp(6)]).toMatchObject({ company_id: legacy.company.id, languages: ['de'] })
-    expect(campaigns[opp(7)]?.company_id).toBe(legacy.company.id)
-
-    // Another account of the same name no longer finds it: it gets a company of its own.
-    const twin = await pushed([
-      record(8, { AccountId: TWIN, Account_Name__c: 'IT Inbound Legacy GmbH' }),
-    ])
-    expect(twin).toMatchObject({ created: 1, rejected: [] })
-    const after = await stored()
-    expect(after[opp(8)]?.company_ref).toBe(TWIN)
-    expect(after[opp(8)]?.company_id).not.toBe(legacy.company.id)
+    expect(campaigns[opp(6)]?.company_ref).toBe(NAMESAKE_A)
+    expect(campaigns[opp(7)]?.company_ref).toBe(NAMESAKE_B)
+    expect(campaigns[opp(6)]?.company_id).not.toBe(campaigns[opp(7)]?.company_id)
   })
 
   it('keeps the platform ids a person added when the records come again', async () => {
