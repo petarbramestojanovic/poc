@@ -102,12 +102,18 @@ describe('an Opportunity record', () => {
   it.each<[string, Record<string, unknown>, string]>([
     ['without N_N_Price__c', { N_N_Price__c: null }, 'no N_N_Price__c'],
     ['without a currency', { CurrencyIsoCode: null }, 'without a CurrencyIsoCode'],
-    ['with a fifth decimal', { N_N_Price__c: 14.25751 }, '4 decimal places'],
+    ['with a seventh decimal', { N_N_Price__c: 14.2575012 }, '6 decimal places'],
     ['with a currency that is not one', { CurrencyIsoCode: 'EUX' }, 'ISO 4217'],
   ])('is still set up %s, with no price and a warning', (_name, over, warning) => {
     const { setup, warnings } = setupOf(over)
     expect(setup.price).toBeUndefined()
     expect(warnings).toEqual([expect.stringContaining(warning)])
+  })
+
+  it.each([0.39525, 5.31686, 14.257501])('keeps a price of %s exactly', (value) => {
+    const { setup, warnings } = setupOf({ N_N_Price__c: value })
+    expect(setup.price).toEqual({ value, currency: 'EUR' })
+    expect(warnings).toEqual([])
   })
 
   it('reads a lower-case currency', () => {

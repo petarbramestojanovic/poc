@@ -171,17 +171,18 @@ describe('campaign setup', () => {
     })
 
     it('stores the price exactly, and no price as NULL rather than 0', async () => {
+      // Five decimals, as Salesforce sells some: numeric(12,4) would have made it 5.3169.
       const priced = await setUpCampaign(
         deps,
-        setup({ price: { value: 15.5876, currency: 'EUR' } }, zeus()),
+        setup({ price: { value: 5.31686, currency: 'EUR' } }, zeus()),
       )
       const unpriced = await setUpCampaign(
         deps,
         setup({ name: 'IT Setup Unpriced', company: { id: priced.company.id } }, nexd),
       )
 
-      expect(priced.campaign.price).toEqual({ value: 15.5876, currency: 'EUR' })
-      expect(await storedPrice(priced.campaign.id)).toEqual({ price: '15.5876', currency: 'EUR' })
+      expect(priced.campaign.price).toEqual({ value: 5.31686, currency: 'EUR' })
+      expect(await storedPrice(priced.campaign.id)).toEqual({ price: '5.316860', currency: 'EUR' })
       expect(unpriced.campaign.price).toBeNull()
       expect(await storedPrice(unpriced.campaign.id)).toEqual({ price: null, currency: null })
     })
@@ -331,7 +332,7 @@ describe('campaign setup', () => {
       expect(second.campaign.endsOn).toBe(first.campaign.endsOn)
       expect(second.campaign.primarySource).toBe('zeus')
       expect(third.campaign.price).toEqual({ value: 20.4, currency: 'EUR' })
-      expect(await storedPrice(first.campaign.id)).toEqual({ price: '20.4000', currency: 'EUR' })
+      expect(await storedPrice(first.campaign.id)).toEqual({ price: '20.400000', currency: 'EUR' })
     })
 
     it('changes the price a push states, such as a renegotiated one', async () => {
@@ -342,7 +343,7 @@ describe('campaign setup', () => {
       expect(first.campaign.price).toBeNull()
       expect(priced.campaign.price).toEqual({ value: 20.4, currency: 'EUR' })
       expect(repriced.campaign.price).toEqual({ value: 18.9, currency: 'CHF' })
-      expect(await storedPrice(first.campaign.id)).toEqual({ price: '18.9000', currency: 'CHF' })
+      expect(await storedPrice(first.campaign.id)).toEqual({ price: '18.900000', currency: 'CHF' })
     })
 
     it('writes nothing when the push changes nothing', async () => {

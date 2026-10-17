@@ -198,7 +198,7 @@ Only campaigns starting on or after 2026-01-01 are taken in: a record starting e
 
 A `PUT` is the whole id list for that platform. Adding ids always works. Changing or dropping one, or a `DELETE`, answers `409 platform_has_data` once that platform has written analytics for the campaign (the rows would stay attributed to the wrong ids), and `409 sync_in_progress` while a sync is fetching. Before that, the link is rebuilt from the request and its sync state forgotten. The headline source follows the ids: Zeus if the campaign has Zeus ids, otherwise NEXD, and Zeus while it has none. There is no create, edit or delete of a campaign by hand.
 
-**Price** is what the client pays for 1000 impressions, up to four decimals, currency as an ISO 4217 code; `NULL` when the report has none, never 0.
+**Price** is what the client pays for 1000 impressions, up to six decimals, currency as an ISO 4217 code; `NULL` when Salesforce has none, never 0.
 
 A new platform needs one preset in `src/modules/campaigns/presets.ts`; another CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
 
