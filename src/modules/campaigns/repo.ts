@@ -73,7 +73,7 @@ interface CampaignRow extends ExternalRefColumns {
   starts_on: IsoDate | null
   ends_on: IsoDate | null
   status: CampaignStatus
-  /** numeric comes back as its decimal text, e.g. '15.5876' (numeric(12,4) pads to '20.4000'). */
+  /** numeric comes back as its decimal text, e.g. '5.316860' (numeric(14,6) pads '20.4' to '20.400000'). */
   price: string | null
   currency: string | null
   created_at: Date

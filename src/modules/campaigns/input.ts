@@ -71,17 +71,17 @@ const KNOWN_CURRENCIES = new Set(Intl.supportedValuesOf('currency'))
 
 /**
  * What the client pays for 1000 impressions (CPM), in `currency`. `value` is a JSON number with
- * at most four decimals: that is what app.campaign.price (numeric(12,4)) holds exactly, and
- * Postgres would round a fifth silently. Its decimal text is what gets stored, so 15.5876 reads
- * back as 15.5876.
+ * at most six decimals: that is what app.campaign.price (numeric(14,6), migration 0009) holds
+ * exactly, and Postgres would round a seventh silently. Its decimal text is what gets stored, so
+ * 5.31686 reads back as 5.31686.
  */
 export const priceSchema = z.strictObject({
   value: z
     .number()
     .min(0)
-    .max(99_999_999.9999)
-    .refine((value) => /^\d+(\.\d{1,4})?$/.test(String(value)), {
-      error: 'at most 4 decimal places',
+    .max(99_999_999.999999)
+    .refine((value) => /^\d+(\.\d{1,6})?$/.test(String(value)), {
+      error: 'at most 6 decimal places',
     }),
   currency: z
     .string()

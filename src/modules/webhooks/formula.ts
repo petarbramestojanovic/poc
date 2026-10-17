@@ -80,7 +80,7 @@ export function parseDecimal(text: string): Fraction {
 /**
  * A JSON number, exactly as it was written. `String(value)` is the shortest decimal that reads back
  * as the same double, which for the values a payload carries (counts, and averages and prices of at
- * most four decimals) is the decimal Postgres sent.
+ * most six decimals) is the decimal Postgres sent.
  */
 export function fromNumber(value: number): Fraction {
   if (!Number.isFinite(value)) throw new RangeError(`not a finite number: ${String(value)}`)

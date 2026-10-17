@@ -60,7 +60,8 @@ const record = (n: number, over: Record<string, unknown> = {}) => ({
 /** The first delivery: two campaigns of one agency, one direct advertiser on another currency. */
 const first = () => [
   record(1, { Creative_Languages__c: 'German' }),
-  record(2),
+  // Five decimals, as Salesforce sells some prices.
+  record(2, { N_N_Price__c: 0.39525 }),
   record(3, {
     AccountId: ROASTERY,
     Account_Name__c: 'IT Inbound Roastery GmbH',
@@ -172,7 +173,7 @@ describe('POST /inbound/salesforce/opportunities', () => {
       starts_on: '2026-10-12',
       ends_on: '2026-11-30',
       languages: ['de'],
-      price: '13.0682',
+      price: '13.068200',
       currency: 'EUR',
       primary_source: 'zeus',
       status: 'active',
@@ -180,11 +181,15 @@ describe('POST /inbound/salesforce/opportunities', () => {
       links: 0,
     })
     // The webhook does not promise the languages: without them, the campaign has none.
-    expect(campaigns[opp(2)]).toMatchObject({ company_ref: AGENCY, languages: [] })
+    expect(campaigns[opp(2)]).toMatchObject({
+      company_ref: AGENCY,
+      languages: [],
+      price: '0.395250',
+    })
     expect(campaigns[opp(3)]).toMatchObject({
       company: 'IT Inbound Roastery GmbH',
       company_ref: ROASTERY,
-      price: '21.5000',
+      price: '21.500000',
       currency: 'CHF',
     })
     // One company per account, however many campaigns it has.
@@ -226,13 +231,13 @@ describe('POST /inbound/salesforce/opportunities', () => {
     expect(campaigns[opp(1)]).toMatchObject({
       name: 'AT2610 IT Inbound Campaign 1 Extended',
       ends_on: '2026-12-15',
-      price: '12.9000',
+      price: '12.900000',
       company_id: before[opp(1)]?.company_id,
       company: 'IT Inbound Agency Austria GmbH',
     })
     // The account is one company, so its other campaign shows the new name too.
     expect(campaigns[opp(2)]?.company).toBe('IT Inbound Agency Austria GmbH')
-    expect(campaigns[opp(3)]).toMatchObject({ price: '21.5000' })
+    expect(campaigns[opp(3)]).toMatchObject({ price: '21.500000' })
   })
 
   it('skips the records it cannot take, says why, and sets up the rest', async () => {
