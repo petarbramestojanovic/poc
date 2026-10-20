@@ -81,19 +81,17 @@ function isConnectionFailure(error: unknown): boolean {
 }
 
 /** DATE columns come back as 'YYYY-MM-DD' strings — the service's IsoDate — never as JS Dates. */
-const DATE_OID = 1082 // pg.types.builtins.DATE
+const DATE_OID = pg.types.builtins.DATE // 1082
 
 type TextParser = (value: string) => unknown
+type TypeId = Parameters<pg.CustomTypesConfig['getTypeParser']>[0]
 
 /** Exported so integration tests read dates exactly as the service does. */
 export const dateAsStringTypes: pg.CustomTypesConfig = {
-  getTypeParser: ((oid: number): TextParser =>
+  getTypeParser: (oid: TypeId): TextParser =>
     oid === DATE_OID
       ? (value: string) => value
-      : (pg.types.getTypeParser(
-          oid,
-          'text',
-        ) as TextParser)) as pg.CustomTypesConfig['getTypeParser'],
+      : (pg.types.getTypeParser(oid, 'text') as TextParser),
 }
 
 /** SSL parameters in the URL would override the explicit `ssl` option in node-postgres. */
