@@ -100,6 +100,51 @@ describe('Zeus connector', () => {
     )
   })
 
+  it('stores null unique counts as 0 and a missing one as absent', async () => {
+    const http = fixtureHttp({
+      campaigns: (s) => {
+        const fixture = fixtureFor(s)
+        const rows = fixture.rows.map((r) => ({ ...r }))
+        rows[0] = { ...rows[0], unique_impressions: null, unique_clicks: null }
+        const withoutUniques = { ...rows[1] }
+        delete withoutUniques.unique_impressions
+        delete withoutUniques.unique_clicks
+        rows[1] = withoutUniques
+        return { ...fixture, rows }
+      },
+    })
+
+    const result = await connector.fetchWindow(context(http, FIXTURE_WINDOW, [ENTITIES.campaign]))
+
+    const day = (date: string) => result.rows.find((r) => r.date === date && r.campaignTag === '')
+    expect(day('2026-09-01')?.metrics).toMatchObject({
+      unique_impressions_reported: 0,
+      unique_clicks_reported: 0,
+    })
+    expect(day('2026-09-02')?.metrics).not.toHaveProperty('unique_impressions_reported')
+    expect(day('2026-09-02')?.metrics).not.toHaveProperty('unique_clicks_reported')
+  })
+
+  it('stores null unique counts on the creatives report as 0', async () => {
+    const http = fixtureHttp({
+      creatives: (s) => {
+        const fixture = fixtureFor(s)
+        const rows = fixture.rows.map((r) => ({ ...r }))
+        rows[0] = { ...rows[0], unique_impressions: null, unique_clicks: null }
+        return { ...fixture, rows }
+      },
+    })
+
+    const result = await connector.fetchWindow(context(http))
+
+    const day = result.rows.find((r) => r.date === '2026-09-01' && r.campaignTag === 'mpu_v1')
+    expect(day?.metrics).toMatchObject({
+      impressions: 20_000,
+      unique_impressions_reported: 0,
+      unique_clicks_reported: 0,
+    })
+  })
+
   it('stores unique clicks above clicks as reported and warns about the contradiction', async () => {
     const http = fixtureHttp({
       campaigns: (s) => {

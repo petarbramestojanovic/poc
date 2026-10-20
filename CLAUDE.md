@@ -42,7 +42,7 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 
 1. **Replace, never increment.** A sync replaces the whole `(campaign, source, language, day)` slice in one transaction under `pg_advisory_xact_lock(hashtext(link_id))`.
 2. **Every covered day is written, including empty ones.** Connectors return `covered` — the window they actually queried and vouch for. The engine replaces every day in it, so a day the source stopped reporting is cleared. A connector that did not query a day must not claim it; `null` means nothing was queried.
-3. **Absent is not zero.** Mappers omit metrics a platform does not measure. Never write `0` for "not measured", never `COALESCE` it away in reads.
+3. **Absent is not zero.** Mappers omit metrics a platform does not measure. Never write `0` for "not measured", never `COALESCE` it away in reads. One approved exception (2026-10-20): Zeus sends `null` for `unique_impressions` / `unique_clicks` on some days, and the Zeus schema stores it as `0` (`uniqueCount`); a missing field still means absent.
 4. **Aggregate by the catalog.** `METRIC_AGGREGATION` / `METRIC_WEIGHT` in `src/modules/sync/types.ts` mirror `analytics.metric` (a test pins both). `sum` adds; `weighted_avg` is weighted by its weight metric; `none` (the `unique_*_reported` scalars) is **never added** — not across entities, days, tags or sources. Use `mergeRows`; do not hand-roll merges.
 5. **Never sum across sources.** Each source is its own series; the campaign's `primary_source` is the headline.
 6. **The cursor moves last.** `sync_state`, the unmapped queue and the run outcome commit together, only after every day's write committed.
