@@ -71,12 +71,33 @@ describe('Zeus connector', () => {
     const http = fixtureHttp({
       creatives: (s) => {
         const fixture = fixtureFor(s)
-        const rows = fixture.rows.map((r) => ({ ...r }))
-        rows[0] = { ...rows[0], clicks: 999_999 }
-        return { ...fixture, rows }
+        return { ...fixture, rows: [...fixture.rows, fixture.rows[0]] }
       },
     })
     await expect(connector.fetchWindow(context(http))).rejects.toThrow(ZeusInvariantError)
+  })
+
+  it('stores counts above impressions as reported and warns about each', async () => {
+    const http = fixtureHttp({
+      creatives: (s) => {
+        const fixture = fixtureFor(s)
+        const rows = fixture.rows.map((r) => ({ ...r }))
+        rows[0] = { ...rows[0], clicks: 20_050, visible_impressions: 20_100 }
+        return { ...fixture, rows }
+      },
+    })
+
+    const result = await connector.fetchWindow(context(http))
+
+    const day = result.rows.find((r) => r.date === '2026-09-01' && r.campaignTag === 'mpu_v1')
+    expect(day?.metrics).toMatchObject({ impressions: 20_000, in_view: 20_100 })
+    expect(day?.ctaClicks).toEqual([{ ctaId: 'clickthrough', count: 20_050 }])
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        'creative 12345 on 2026-09-01: Zeus reports clicks 20050 > impressions 20000; stored as reported',
+        'creative 12345 on 2026-09-01: Zeus reports visible_impressions 20100 > impressions 20000; stored as reported',
+      ]),
+    )
   })
 
   it('stores unique clicks above clicks as reported and warns about the contradiction', async () => {
