@@ -7,6 +7,9 @@ import { z } from 'zod'
 const id = z.union([z.number(), z.string()]).transform(String)
 const optionalText = z.string().nullable().optional()
 const count = z.number().int().nonnegative()
+// Zeus sends null for the unique counts on some days. Stored as 0 by decision (2026-10-20), an
+// exception to "absent is not zero"; a missing field still means absent.
+const uniqueCount = count.nullable().transform((value) => value ?? 0)
 
 export const zeusCreativesRow = z.looseObject({
   date: z.iso.date(),
@@ -15,9 +18,9 @@ export const zeusCreativesRow = z.looseObject({
   creative_id: id,
   creative_name: optionalText,
   impressions: count,
-  unique_impressions: count,
+  unique_impressions: uniqueCount,
   clicks: count,
-  unique_clicks: count,
+  unique_clicks: uniqueCount,
   visible_impressions: count,
   // ctr / visibility are ratios; never stored (RFC-003 §2.2).
 })
@@ -39,9 +42,9 @@ export const zeusCampaignsRow = z.looseObject({
   external_id: optionalText,
   name: optionalText,
   impressions: count,
-  unique_impressions: count.optional(),
+  unique_impressions: uniqueCount.optional(),
   clicks: count,
-  unique_clicks: count.optional(),
+  unique_clicks: uniqueCount.optional(),
   visible_impressions: count,
 })
 export type ZeusCampaignsRow = z.infer<typeof zeusCampaignsRow>
