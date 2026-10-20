@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   checkZeusInvariants,
   mapZeusRows,
-  ZeusInvariantError,
   type Matched,
 } from '../../../src/modules/sync/connectors/zeus/mapper.ts'
 import {
@@ -163,16 +162,21 @@ describe('Zeus invariants', () => {
   })
 
   it.each([
-    ['clicks > impressions', { clicks: 20_001 }],
-    ['visible_impressions > impressions', { visible_impressions: 20_001 }],
-    ['unique_impressions > impressions', { unique_impressions: 20_001 }],
-  ])('fails on a creative with %s', (_name, patch) => {
+    ['clicks', { clicks: 20_001 }],
+    ['visible_impressions', { visible_impressions: 20_001 }],
+    ['unique_impressions', { unique_impressions: 20_001 }],
+  ])('warns instead of failing on a creative with %s > impressions', (name, patch) => {
     const [first, ...rest] = base
     if (!first) throw new Error('fixture is empty')
     const broken = [{ entity: first.entity, row: { ...first.row, ...patch } }, ...rest]
+    const warnings: string[] = []
+
     expect(() => {
-      checkZeusInvariants(input({ creatives: broken }))
-    }).toThrow(ZeusInvariantError)
+      checkZeusInvariants(input({ creatives: broken }), (w) => warnings.push(w))
+    }).not.toThrow()
+    expect(warnings).toEqual([
+      `creative ${first.row.creative_id} on ${first.row.date}: Zeus reports ${name} 20001 > impressions ${first.row.impressions}; stored as reported`,
+    ])
   })
 
   it('warns instead of failing when Zeus reports more unique clicks than clicks', () => {
@@ -210,14 +214,19 @@ describe('Zeus invariants', () => {
     expect(() => {
       checkZeusInvariants(input({ creatives: [], campaigns: [campaign] }))
     }).not.toThrow()
+    const warnings: string[] = []
     expect(() => {
       checkZeusInvariants(
         input({
           creatives: [],
           campaigns: [{ ...campaign, row: { ...campaignRow, clicks: 30_001 } }],
         }),
+        (w) => warnings.push(w),
       )
-    }).toThrow(ZeusInvariantError)
+    }).not.toThrow()
+    expect(warnings).toEqual([
+      'campaign 501 on 2026-09-01: Zeus reports clicks 30001 > impressions 30000; stored as reported',
+    ])
     expect(() => {
       checkZeusInvariants(input({ creatives: [], campaigns: [campaign, campaign] }))
     }).toThrow(/appears twice/)

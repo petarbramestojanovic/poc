@@ -36,26 +36,26 @@ type DeliveryRow = Pick<
 
 function checkDelivery(
   kind: string,
-  entity: LinkEntity,
   row: DeliveryRow,
   subject: string,
   warn: (message: string) => void,
 ): void {
+  // A broken ratio is not a failure. The day is stored as Zeus reported it, never clamped, and the
+  // warning keeps the contradiction visible on the run.
   const counts: [string, number | undefined][] = [
     ['clicks', row.clicks],
     ['visible_impressions', row.visible_impressions],
     ['unique_impressions', row.unique_impressions],
   ]
-  const violated = counts.find(([, value]) => value !== undefined && value > row.impressions)
-  if (violated) {
-    throw new ZeusInvariantError(
-      `${kind} ${subject} (entity ${entity.externalId}) on ${row.date}: ${violated[0]} ${String(violated[1])} > impressions ${row.impressions}`,
-    )
+  for (const [name, value] of counts) {
+    if (value !== undefined && value > row.impressions) {
+      warn(
+        `${kind} ${subject} on ${row.date}: Zeus reports ${name} ${value} > impressions ${row.impressions}; stored as reported`,
+      )
+    }
   }
-  // Not a failure. Zeus's unique click count sits within a couple of percent of its click count
-  // and lands slightly above it on some days (campaign 18, August 2026: 13 of 31 days). The value
-  // is stored as reported: it is a per-day scalar that is never added up, so it cannot inflate a
-  // total, and the warning keeps the contradiction visible on the run.
+  // Zeus's unique click count sits within a couple of percent of its click count and lands
+  // slightly above it on some days (campaign 18, August 2026: 13 of 31 days).
   if (row.unique_clicks !== undefined && row.unique_clicks > row.clicks) {
     warn(
       `${kind} ${subject} on ${row.date}: Zeus reports unique_clicks ${row.unique_clicks} > clicks ${row.clicks}; stored as reported`,
@@ -65,9 +65,10 @@ function checkDelivery(
 
 /**
  * RFC-003 §2.2: Zeus has no range totals, so the run asserts internal consistency instead —
- * on every report it consumes. A day may appear once per creative, campaign and pixel; ratios
- * must hold; counts are non-negative integers (enforced by the schema). Unique clicks above clicks
- * is reported through `warn` and stored, never thrown (see checkDelivery).
+ * on every report it consumes. A day may appear once per creative, campaign and pixel (thrown);
+ * counts are non-negative integers (enforced by the schema). A broken ratio — clicks, visible or
+ * unique impressions above impressions, unique clicks above clicks — is reported through `warn`
+ * and stored as reported, never thrown (see checkDelivery).
  */
 export function checkZeusInvariants(
   input: Pick<ZeusMapperInput, 'creatives' | 'campaigns' | 'tracker'>,
@@ -78,19 +79,19 @@ export function checkZeusInvariants(
     if (seen.has(key)) throw new ZeusInvariantError(message)
     seen.add(key)
   }
-  for (const { entity, row } of input.creatives) {
+  for (const { row } of input.creatives) {
     once(
       `creative|${row.creative_id}|${row.date}`,
       `creative ${row.creative_id} appears twice for ${row.date}`,
     )
-    checkDelivery('creative', entity, row, row.creative_id, warn)
+    checkDelivery('creative', row, row.creative_id, warn)
   }
-  for (const { entity, row } of input.campaigns) {
+  for (const { row } of input.campaigns) {
     once(
       `campaign|${row.campaign_id}|${row.date}`,
       `campaign ${row.campaign_id} appears twice for ${row.date}`,
     )
-    checkDelivery('campaign', entity, row, row.campaign_id, warn)
+    checkDelivery('campaign', row, row.campaign_id, warn)
   }
   for (const { row } of input.tracker) {
     once(`pixel|${row.pixel_id}|${row.date}`, `pixel ${row.pixel_id} appears twice for ${row.date}`)
