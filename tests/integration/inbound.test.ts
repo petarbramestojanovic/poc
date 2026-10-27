@@ -316,7 +316,7 @@ describe('POST /inbound/salesforce/opportunities', () => {
       method: 'PUT',
       url: `/campaigns/${campaign?.id ?? ''}/platforms/nexd`,
       headers: { authorization: `Bearer ${ADMIN}` },
-      payload: { creatives: [{ liveId: 'it-inbound-nx-1' }] },
+      payload: { creatives: [{ liveId: 'it-inbound-nx-1', label: 'V1' }] },
     })
     expect(ids.statusCode).toBe(200)
 

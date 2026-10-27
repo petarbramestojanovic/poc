@@ -147,7 +147,7 @@ describe('campaign setup', () => {
           { company: { name: 'IT Setup Two Co' }, name: 'IT Setup Two' },
           {
             ...zeus({ campaignId: 'it-setup-19' }),
-            nexd: { creatives: [{ liveId: 'it-setup-nx-2' }] },
+            nexd: { creatives: [{ liveId: 'it-setup-nx-2', label: 'V2' }] },
           },
         ),
       )

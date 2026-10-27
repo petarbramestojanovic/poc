@@ -101,7 +101,7 @@ describe('campaign routes, refused before the service', () => {
     {
       name: 'NEXD ids under the Zeus route',
       url: `/campaigns/${ID}/platforms/zeus`,
-      payload: { creatives: [{ liveId: 'nx_1' }] },
+      payload: { creatives: [{ liveId: 'nx_1', label: 'V1' }] },
       message: 'campaignId',
     },
   ])('PUT rejects $name with 400', async ({ url, payload, message }) => {

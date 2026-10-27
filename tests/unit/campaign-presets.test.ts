@@ -80,18 +80,33 @@ describe('zeus preset', () => {
 describe('nexd preset', () => {
   it('sets up one creative entity per live id, tagged with it', () => {
     const setup = nexdSetup(
-      nexdPresetSchema.parse({ creatives: [{ liveId: 'nx_1', label: 'V1' }, { liveId: 'nx_2' }] }),
+      nexdPresetSchema.parse({
+        creatives: [
+          { liveId: 'nx_1', label: 'V1' },
+          { liveId: 'nx_2', label: 'V2' },
+        ],
+      }),
     )
 
     expect(setup.entities).toEqual([
       { level: 'creative', externalId: 'nx_1', label: 'V1', campaignTag: 'nx_1' },
-      { level: 'creative', externalId: 'nx_2', campaignTag: 'nx_2' },
+      { level: 'creative', externalId: 'nx_2', label: 'V2', campaignTag: 'nx_2' },
     ])
     expect(setup.config).toEqual({})
   })
 
+  it('needs a label for every creative: it is the name a client sees, and NEXD gives none', () => {
+    const without = nexdPresetSchema.safeParse({ creatives: [{ liveId: 'nx_1' }] })
+    const blank = nexdPresetSchema.safeParse({ creatives: [{ liveId: 'nx_1', label: '  ' }] })
+    expect(without.success).toBe(false)
+    expect(blank.success).toBe(false)
+    expect(without.success || without.error.issues[0]?.path).toEqual(['creatives', 0, 'label'])
+  })
+
   it('maps the two events that mean the same in every creative, and only those', () => {
-    const setup = nexdSetup(nexdPresetSchema.parse({ creatives: [{ liveId: 'nx_1' }] }))
+    const setup = nexdSetup(
+      nexdPresetSchema.parse({ creatives: [{ liveId: 'nx_1', label: 'V1' }] }),
+    )
     expect(setup.eventMap).toEqual([
       { eventName: 'Unique [Touch]', targetKind: 'metric', targetId: 'interactions' },
       { eventName: 'Unique [Hover]', targetKind: 'metric', targetId: 'hovered' },
@@ -114,7 +129,7 @@ describe('platform presets', () => {
       }),
     )
     const nexd = PLATFORM_PRESETS.nexd.toSetup(
-      PLATFORM_PRESETS.nexd.schema.parse({ creatives: [{ liveId: 'nx_1' }] }),
+      PLATFORM_PRESETS.nexd.schema.parse({ creatives: [{ liveId: 'nx_1', label: 'V1' }] }),
     )
     expect([zeus.source, zeus.language, nexd.source, nexd.language]).toEqual([
       'zeus',

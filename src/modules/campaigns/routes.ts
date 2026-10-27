@@ -5,16 +5,17 @@ import { externalRefSchema } from '../../core/external-ref.ts'
 import type { SourceSetup } from './input.ts'
 import { PLATFORM_PRESETS, type PresetPlatform } from './presets.ts'
 import * as repo from './repo.ts'
-import { removePlatform, setPlatformIds, type CampaignDeps } from './service.ts'
+import { PLATFORM_OUTCOMES, removePlatform, setPlatformIds, type CampaignDeps } from './service.ts'
 
 // /campaigns, registered inside its own admin scope, so the bearer check runs first. Campaigns
 // and companies are created only by the Salesforce webhook (POST
 // /inbound/salesforce/opportunities), and their own fields belong to it: a person reads them here and sets one
 // thing, each platform's ids, through the same presets the setup service has always used.
 //
-// PUT /campaigns/:id/platforms/:platform is the whole id list for that platform. Adding ids always
-// works; changing or dropping one answers 409 platform_has_data once that platform has written
-// analytics for the campaign. DELETE takes the platform off under the same rule.
+// PUT /campaigns/:id/platforms/:platform is the whole id list for that platform. Adding ids and
+// renaming them (their labels) always works; changing or dropping an id answers 409
+// platform_has_data once that platform has written analytics for the campaign. DELETE takes the
+// platform off under the same rule.
 
 const externalRefResponse = externalRefSchema.nullable()
 
@@ -65,7 +66,7 @@ const detailResponse = campaignResponse.extend({
   links: z.array(linkDetail),
 })
 const changeResponse = z.object({
-  outcome: z.enum(['created', 'added', 'replaced', 'unchanged']),
+  outcome: z.enum(PLATFORM_OUTCOMES),
   campaign: detailResponse,
 })
 

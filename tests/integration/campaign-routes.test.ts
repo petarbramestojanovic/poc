@@ -51,7 +51,13 @@ interface Detail {
     id: string
     source: string
     config: Record<string, unknown>
-    entities: { level: string; externalId: string; role: string | null }[]
+    entities: {
+      level: string
+      externalId: string
+      role: string | null
+      label: string | null
+      campaignTag: string
+    }[]
   }[]
 }
 interface Change {
@@ -322,9 +328,69 @@ describe('campaign admin API', () => {
     expect(added.json<Change>().outcome).toBe('added')
 
     // The rule is per platform: NEXD has written nothing for this campaign, so it can still change.
-    await put(campaign.id, 'nexd', { creatives: [{ liveId: 'it-routes-nx-1' }] })
-    const nexd = await put(campaign.id, 'nexd', { creatives: [{ liveId: 'it-routes-nx-2' }] })
+    await put(campaign.id, 'nexd', { creatives: [{ liveId: 'it-routes-nx-1', label: 'V1' }] })
+    const nexd = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-2', label: 'V2' }],
+    })
     expect(nexd.json<Change>().outcome).toBe('replaced')
+  })
+
+  it('renames a creative at any time: a label is a name, not an id', async () => {
+    const campaign = await seed()
+    const created = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1', label: 'KW43 Kids' }],
+    })
+    // NEXD has written a day for this campaign, so its ids are frozen.
+    await db.query(
+      `INSERT INTO analytics.advanced_analytics
+         (campaign_id, source, language, campaign_tag, events_date, impressions, data_source)
+       VALUES ($1, 'nexd', '', 'it-routes-nx-1', '2026-09-01', 10, 'sync')`,
+      [campaign.id],
+    )
+
+    const renamed = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1', label: 'KW43 Kids (DE)' }],
+    })
+    const same = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1', label: 'KW43 Kids (DE)' }],
+    })
+    const renamedAndAdded = await put(campaign.id, 'nexd', {
+      creatives: [
+        { liveId: 'it-routes-nx-1', label: 'KW43 Kids' },
+        { liveId: 'it-routes-nx-2', label: 'KW44 Run Club' },
+      ],
+    })
+    const retagged = await put(campaign.id, 'nexd', {
+      creatives: [
+        { liveId: 'it-routes-nx-1', label: 'KW43 Kids', tag: 'kids' },
+        { liveId: 'it-routes-nx-2', label: 'KW44 Run Club' },
+      ],
+    })
+
+    expect(created.json<Change>().outcome).toBe('created')
+    expect(renamed.statusCode).toBe(200)
+    expect(renamed.json<Change>().outcome).toBe('updated')
+    expect(at(renamed.json<Change>().campaign.links).entities).toEqual([
+      {
+        level: 'creative',
+        externalId: 'it-routes-nx-1',
+        role: null,
+        label: 'KW43 Kids (DE)',
+        campaignTag: 'it-routes-nx-1',
+      },
+    ])
+    expect(same.json<Change>().outcome).toBe('unchanged')
+    expect(renamedAndAdded.json<Change>().outcome).toBe('added')
+    expect(at(renamedAndAdded.json<Change>().campaign.links).entities.map((e) => e.label)).toEqual([
+      'KW43 Kids',
+      'KW44 Run Club',
+    ])
+    // The tag keys the rows already written: still 409, and the labels above stay as they were.
+    expect(retagged.statusCode).toBe(409)
+    expect(retagged.json()).toMatchObject({ error: 'platform_has_data' })
+    expect(
+      await db.query(`SELECT label FROM external.link_entity WHERE external_id = 'it-routes-nx-1'`),
+    ).toEqual([{ label: 'KW43 Kids' }])
   })
 
   it('changes no id while a sync is fetching with them', async () => {
@@ -350,7 +416,9 @@ describe('campaign admin API', () => {
     const headline = (res: Awaited<ReturnType<typeof put>>) =>
       res.json<Change>().campaign.primarySource
 
-    const nexdOnly = await put(campaign.id, 'nexd', { creatives: [{ liveId: 'it-routes-nx-1' }] })
+    const nexdOnly = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1', label: 'V1' }],
+    })
     const both = await put(campaign.id, 'zeus', zeusIds())
     const zeusRemoved = await remove(campaign.id, 'zeus')
     const noneLeft = await remove(campaign.id, 'nexd')
