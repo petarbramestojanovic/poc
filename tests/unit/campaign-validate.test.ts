@@ -34,7 +34,7 @@ describe('checkSources', () => {
         pixels: [{ code: 'abc', role: 'engagement' }],
       }),
     )
-    const nexd = nexdSetup(nexdPresetSchema.parse({ creatives: [{ liveId: 'nx_1' }] }))
+    const nexd = nexdSetup(nexdPresetSchema.parse({ creatives: [{ liveId: 'nx_1', label: 'V1' }] }))
 
     expect(checkSources(registry, [zeus, nexd]).map((s) => s.source)).toEqual(['zeus', 'nexd'])
   })

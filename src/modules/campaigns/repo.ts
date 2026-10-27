@@ -24,6 +24,7 @@ const sql = loadSql(import.meta.url, [
   'insert_pages',
   'find_entity_owners',
   'insert_entities',
+  'update_entity_labels',
   'insert_event_map',
   'list_link_entities',
   'link_activity',
@@ -387,6 +388,21 @@ export async function insertEntities(
     entities.map((entity) => entity.role ?? null),
     entities.map((entity) => entity.label ?? null),
     entities.map((entity) => entity.campaignTag),
+  ])
+  return rows.length
+}
+
+/** Renames the entities whose label the request states differently; returns how many that was. */
+export async function updateEntityLabels(
+  q: Queryable,
+  linkId: string,
+  entities: readonly EntitySetup[],
+): Promise<number> {
+  const rows = await q.query(sql.update_entity_labels, [
+    linkId,
+    entities.map((entity) => entity.level),
+    entities.map((entity) => entity.externalId),
+    entities.map((entity) => entity.label ?? null),
   ])
   return rows.length
 }

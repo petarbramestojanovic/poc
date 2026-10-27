@@ -232,18 +232,23 @@ async function applySource(tx: Tx, campaignId: string, source: SourceSetup): Pro
 export interface PlatformChange {
   /**
    * created: the campaign had no link for this platform. added: new ids joined the link.
-   * replaced: the link had no analytics yet and was rebuilt from the request. unchanged: nothing to do.
+   * updated: only labels changed. replaced: the link had no analytics yet and was rebuilt from
+   * the request. unchanged: nothing to do.
    */
-  outcome: 'created' | 'added' | 'replaced' | 'unchanged'
+  outcome: 'created' | 'added' | 'updated' | 'replaced' | 'unchanged'
   campaign: repo.CampaignRecord
 }
 
+export const PLATFORM_OUTCOMES = ['created', 'added', 'updated', 'replaced', 'unchanged'] as const
+
 /**
  * Sets one platform's ids on a campaign: PUT /campaigns/:id/platforms/:source. The request is the
- * whole list for that link. Ids it adds are always taken, like a push would. Anything it changes
- * or leaves out — a wrong Zeus campaign id, the other kind of id, a creative that is not ours — is
- * only allowed while the link has written no analytics rows and no sync run is fetching with it,
- * and then the link is rebuilt from the request, so no sync state claims days for the old ids.
+ * whole list for that link. Ids it adds are always taken, like a push would, and a label — the
+ * name a report prints, not part of any row's key — may change at any time. Anything else it
+ * changes or leaves out — a wrong Zeus campaign id, the other kind of id, a creative that is not
+ * ours, a tag — is only allowed while the link has written no analytics rows and no sync run is
+ * fetching with it, and then the link is rebuilt from the request, so no sync state claims days
+ * for the old ids.
  */
 export async function setPlatformIds(
   deps: CampaignDeps,
@@ -276,7 +281,8 @@ export async function setPlatformIds(
           credentialId === link.credentialId
         if (onlyAdds) {
           const applied = await applySource(tx, campaignId, source)
-          outcome = applied.entitiesAdded > 0 ? 'added' : 'unchanged'
+          const relabelled = await repo.updateEntityLabels(tx, link.id, source.entities)
+          outcome = applied.entitiesAdded > 0 ? 'added' : relabelled > 0 ? 'updated' : 'unchanged'
         } else {
           await assertIdsChangeable(tx, {
             id: link.id,
@@ -327,7 +333,10 @@ export async function removePlatform(
   return campaign
 }
 
-/** Every id the link has is still in the request, unchanged in role, label and tag. */
+/**
+ * Every id the link has is still in the request, unchanged in role and tag. The label is not
+ * identity: a request may rename an entity without rebuilding the link.
+ */
 function keepsEvery(current: readonly EntitySetup[], wanted: readonly EntitySetup[]): boolean {
   return current.every((have) =>
     wanted.some(
@@ -335,7 +344,6 @@ function keepsEvery(current: readonly EntitySetup[], wanted: readonly EntitySetu
         want.level === have.level &&
         want.externalId === have.externalId &&
         (want.role ?? null) === (have.role ?? null) &&
-        (want.label ?? null) === (have.label ?? null) &&
         want.campaignTag === have.campaignTag,
     ),
   )

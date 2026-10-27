@@ -84,8 +84,12 @@ export const NEXD_STANDARD_EVENTS = [
 ] as const
 
 export const nexdPresetSchema = z.strictObject({
-  /** One entry per NEXD creative (live id). A creative's tag defaults to its live id. */
-  creatives: z.array(z.strictObject({ liveId: nonEmptyId, label, tag })).min(1),
+  /**
+   * One entry per NEXD creative (live id). A creative's tag defaults to its live id. The label is
+   * the name a client sees for the creative's rows (NEXD's own API returns none), so it is
+   * required here, unlike on Zeus, whose reports carry a creative_name.
+   */
+  creatives: z.array(z.strictObject({ liveId: nonEmptyId, label: label.unwrap(), tag })).min(1),
   ...linkFields,
 })
 export type NexdPreset = z.infer<typeof nexdPresetSchema>
@@ -98,7 +102,7 @@ export function nexdSetup(input: NexdPreset): SourceSetup {
     entities: input.creatives.map((creative) => ({
       level: 'creative',
       externalId: creative.liveId,
-      ...(creative.label === undefined ? {} : { label: creative.label }),
+      label: creative.label,
       campaignTag: creative.tag ?? creative.liveId,
     })),
     // 'Page seen [...]' and 'CTR [...]' are named per creative, so they are not guessed here:
