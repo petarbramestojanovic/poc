@@ -128,7 +128,8 @@ export async function enqueueDueWebhooks(
       }
 
       const period = reportPeriod(webhook.frequency, webhook.timezone, now)
-      const incomplete = await incompleteCampaigns(tx, webhook, fields.source, period)
+      // Only the first row set's source holds a report back; the others go out with what there is.
+      const incomplete = await incompleteCampaigns(tx, webhook, fields.waitSource, period)
       if (incomplete.length > 0) {
         if (now < waitDeadline(webhook.nextRunAt, webhook.timezone)) {
           result.waiting += 1

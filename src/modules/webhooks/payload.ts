@@ -1,11 +1,13 @@
 import { z } from 'zod'
 import type { DateWindow } from '../../core/dates.ts'
 import { renderCsv } from './csv.ts'
+import { CREATIVE_COLUMN } from './fields.ts'
 import { FREQUENCIES, type Frequency } from './periods.ts'
 import type { ReportRow } from './rows.ts'
 
 // The report a webhook delivers, version 2 (docs/WEBHOOK-PAYLOAD-v2.md): flat rows, one per
-// campaign and day, `Date` and `Campaign` first and then the webhook's own columns. Two formats:
+// campaign (or creative) and day, `Date` and `Campaign` (and `Creative`) first and then the
+// webhook's own columns. Two formats:
 //
 //   json  the rows inside a small envelope, POSTed as the signed body
 //   csv   the same rows as a CSV file, served at a signed link that is POSTed instead (exports.ts)
@@ -83,11 +85,16 @@ export const reportBodySchema = z.strictObject({
 })
 export type ReportBody = z.infer<typeof reportBodySchema>
 
-/** The JSON body of one column list: exactly these keys in every row, Date and Campaign as text. */
+/**
+ * The JSON body of one column list: exactly these keys in every row, Date and Campaign as text,
+ * Creative (when the list has it) as text or null.
+ */
 export function reportBodySchemaFor(names: readonly string[]): z.ZodType {
-  const [date, campaign, ...columns] = names
-  const shape: Record<string, z.ZodType> = Object.fromEntries(columns.map((name) => [name, cell]))
+  const [date, campaign, ...rest] = names
+  const creative = rest[0] === CREATIVE_COLUMN ? rest.shift() : undefined
+  const shape: Record<string, z.ZodType> = Object.fromEntries(rest.map((name) => [name, cell]))
   if (date !== undefined) shape[date] = z.iso.date()
   if (campaign !== undefined) shape[campaign] = z.string()
+  if (creative !== undefined) shape[creative] = z.string().nullable()
   return reportBodySchema.extend({ rows: z.array(z.strictObject(shape)) })
 }

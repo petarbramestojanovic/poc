@@ -24,7 +24,9 @@ import { at } from '../helpers.ts'
 //   * an archived campaign with Zeus numbers in the week must not appear; one whose flight ended
 //     in June but has Zeus numbers in the week must; NEXD numbers never appear,
 //   * a report waits for a campaign in flight whose Zeus link has not been synced through the
-//     period — but not for an archived one, nor one whose flight is over.
+//     period — but not for an archived one, nor one whose flight is over,
+//   * a second row set adds one NEXD row per creative under the Zeus campaign row, named by the
+//     creative entity's label, and only the first row set's source holds the report back.
 
 const COMPANY = '00000000-0000-4000-8000-000000000701'
 const PRICED = '00000000-0000-4000-8000-000000000711'
@@ -221,6 +223,11 @@ describe('webhook rows (migration 0008)', () => {
       ],
     )
     await db.query(
+      `INSERT INTO external.link_entity (link_id, source_id, level, external_id, label, campaign_tag)
+       VALUES ($1, 'nexd', 'creative', 'itf-nx-n1', 'KW37 Kids', 'n1')`,
+      [NEXD_LINK],
+    )
+    await db.query(
       `INSERT INTO analytics.advanced_analytics
          (campaign_id, source, language, campaign_tag, events_date, impressions, in_view,
           game_started, dwell_avg_ms, data_source)
@@ -400,6 +407,79 @@ describe('webhook rows (migration 0008)', () => {
     const { webhook: created } = await createWebhook(deps(), webhook())
     await dueNow(created.id)
 
+    expect(await enqueueDueWebhooks(deps())).toMatchObject({ enqueued: 1, waiting: 0 })
+  })
+
+  it('adds one NEXD row per creative under the Zeus campaign row, each from its own source', async () => {
+    const { webhook: created } = await createWebhook(
+      deps(),
+      webhook({
+        format: 'csv',
+        auth: { token: 'fnl_it_token' },
+        campaignIds: [PRICED],
+        fields: payloadFieldsSchema.parse({
+          columns: ['Creative Format', 'Impressions', 'Clicks', 'Cost'],
+          rows: [
+            {
+              source: 'zeus',
+              values: {
+                Impressions: { formula: 'impressions', decimals: 0 },
+                Clicks: { formula: 'clicks', decimals: 0 },
+                Cost: { formula: 'impressions / 1000 * price' },
+              },
+            },
+            {
+              source: 'nexd',
+              level: 'creative',
+              values: {
+                'Creative Format': { value: 'Display' },
+                Impressions: { formula: 'impressions', decimals: 0 },
+                Cost: { formula: 'impressions / 1000 * price' },
+              },
+            },
+          ],
+        }),
+      }),
+    )
+
+    await sendNow(deps(), { webhookId: created.id, period: PERIOD, deliverNow: false })
+
+    // The NEXD creative n1 is named by its entity's label; its 1200 impressions never reach the
+    // Zeus row (2002), and the Zeus clicks never reach it.
+    expect((await stored(created.id)).payload).toBe(
+      'Date,Campaign,Creative,Creative Format,Impressions,Clicks,Cost\r\n' +
+        '2026-09-07,ITF A Priced,,,2002,10,31.21\r\n' +
+        '2026-09-07,ITF A Priced,KW37 Kids,Display,1200,,18.71\r\n' +
+        '2026-09-08,ITF A Priced,,,1001,30,15.6\r\n' +
+        '2026-09-09,ITF A Priced,,,500,5,7.79\r\n' +
+        '2026-09-10,ITF A Priced,,,100,,1.56\r\n',
+    )
+  })
+
+  it("waits for the first row set's source only", async () => {
+    const { webhook: created } = await createWebhook(
+      deps(),
+      webhook({
+        campaignIds: [PRICED],
+        fields: payloadFieldsSchema.parse({
+          columns: ['Impressions'],
+          rows: [
+            { source: 'zeus', values: { Impressions: { formula: 'impressions' } } },
+            {
+              source: 'nexd',
+              level: 'creative',
+              values: { Impressions: { formula: 'impressions' } },
+            },
+          ],
+        }),
+      }),
+    )
+    await dueNow(created.id)
+
+    // Zeus not synced through the period: waits, whatever NEXD has.
+    expect(await enqueueDueWebhooks(deps())).toMatchObject({ enqueued: 0, waiting: 1 })
+    // Zeus synced; the NEXD link was never synced, and does not hold the report.
+    await syncedThrough('2026-09-13')
     expect(await enqueueDueWebhooks(deps())).toMatchObject({ enqueued: 1, waiting: 0 })
   })
 
