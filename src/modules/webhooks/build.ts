@@ -6,16 +6,24 @@ import { METRIC_IDS, type MetricId } from '../sync/types.ts'
 import type { CompiledFields } from './fields.ts'
 import { renderDocument, type Format } from './payload.ts'
 import type { Frequency } from './periods.ts'
-import { assembleRows, type MetricsRecord, type ReportRow } from './rows.ts'
+import {
+  assembleRows,
+  labelKey,
+  type MetricsRecord,
+  type ReportRow,
+  type SourceData,
+} from './rows.ts'
 
 // The one place a report is built: the tick's enqueue, send-now and preview all call buildReport,
 // so a preview shows exactly what a delivery would store and send. Postgres reads the stored rows
-// of the webhook's one source; rows.ts merges them into one row per campaign and day and computes
-// the columns; payload.ts renders the document.
+// of each source the column list's row sets name; rows.ts groups them per row set (one row per
+// campaign and day, or per creative and day) and computes the columns; payload.ts renders the
+// document.
 
 const sql = loadSql(import.meta.url, [
   'report_metrics',
   'report_clicks',
+  'report_labels',
   'report_readiness',
 ] as const)
 
@@ -31,7 +39,7 @@ export interface ReportTarget {
 }
 
 export interface Report {
-  /** Column names in delivery order, `Date` and `Campaign` first. */
+  /** Column names in delivery order, `Date` and `Campaign` (and `Creative`, if any) first. */
   names: readonly string[]
   rows: readonly ReportRow[]
 }
@@ -50,7 +58,14 @@ interface ClicksRow {
   campaign: string
   price: string | null
   events_date: string
+  campaign_tag: string
   clicks: string
+}
+
+interface LabelRow {
+  campaign_id: string
+  campaign_tag: string
+  label: string
 }
 
 /** The rows of one webhook for one period. Empty when no campaign has a number in it. */
@@ -61,22 +76,37 @@ export async function buildReport(
   fields: CompiledFields,
   log?: Logger,
 ): Promise<Report> {
-  const params = [target.companyId, target.campaignIds, fields.source, period.from, period.to]
+  const data: SourceData[] = []
   // One after the other: inside a transaction every statement shares one connection anyway.
-  const metrics = await q.query<MetricsRow>(sql.report_metrics, params)
-  const clicks = fields.usesClicks ? await q.query<ClicksRow>(sql.report_clicks, params) : []
+  for (const source of fields.sources) {
+    const sets = fields.rowSets.filter((set) => set.source === source)
+    const params = [target.companyId, target.campaignIds, source, period.from, period.to]
+    const metrics = await q.query<MetricsRow>(sql.report_metrics, params)
+    const clicks = sets.some((set) => set.usesClicks)
+      ? await q.query<ClicksRow>(sql.report_clicks, params)
+      : []
+    const labels = sets.some((set) => set.level === 'creative')
+      ? await q.query<LabelRow>(sql.report_labels, params.slice(0, 3))
+      : []
+    data.push({
+      source,
+      metrics: metrics.map(toMetricsRecord),
+      clicks: clicks.map((row) => ({
+        campaignId: row.campaign_id,
+        campaign: row.campaign,
+        price: row.price,
+        date: row.events_date,
+        campaignTag: row.campaign_tag,
+        clicks: row.clicks,
+      })),
+      labels: new Map(
+        labels.map((row) => [labelKey(row.campaign_id, row.campaign_tag), row.label]),
+      ),
+    })
+  }
 
-  const rows = assembleRows(
-    fields,
-    metrics.map(toMetricsRecord),
-    clicks.map((row) => ({
-      campaignId: row.campaign_id,
-      campaign: row.campaign,
-      price: row.price,
-      date: row.events_date,
-      clicks: row.clicks,
-    })),
-    (message) => log?.warn({ webhookId: target.id, period }, message),
+  const rows = assembleRows(fields, data, (message) =>
+    log?.warn({ webhookId: target.id, period }, message),
   )
   return { names: fields.names, rows }
 }

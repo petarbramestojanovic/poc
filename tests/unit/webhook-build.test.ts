@@ -11,8 +11,9 @@ import { at } from '../helpers.ts'
 import { fakeDb } from './webhook-fakes.ts'
 
 // What buildReport asks Postgres, and how it reads the answer: bigint and numeric columns arrive as
-// text, a NULL column is a metric the source does not measure, and the clicks are read only when a
-// formula needs them.
+// text, a NULL column is a metric the source does not measure, the clicks are read only when a
+// formula needs them, the creative labels only for a creative-level row set, and every source a
+// row set names is read once.
 
 const COMPANY = '00000000-0000-4000-8000-000000000001'
 const CAMPAIGN = '00000000-0000-4000-8000-000000000002'
@@ -36,6 +37,17 @@ const COST = fields({
   ],
 })
 const CLICKS = fields({ columns: [{ name: 'Clicks', formula: 'clicks', decimals: 0 }] })
+const TWO_SOURCES = fields({
+  columns: ['Impressions'],
+  rows: [
+    { source: 'zeus', values: { Impressions: { formula: 'impressions', decimals: 0 } } },
+    {
+      source: 'nexd',
+      level: 'creative',
+      values: { Impressions: { formula: 'impressions', decimals: 0 } },
+    },
+  ],
+})
 
 const metricsRow = (over: Record<string, unknown> = {}) => ({
   campaign_id: CAMPAIGN,
@@ -60,9 +72,16 @@ const metricsRow = (over: Record<string, unknown> = {}) => ({
 })
 
 function database(clicks: unknown[] = []) {
-  return fakeDb((text) => {
-    if (text.includes('FROM analytics.advanced_analytics')) return [metricsRow()]
+  return fakeDb((text, params) => {
+    if (text.includes('FROM analytics.advanced_analytics')) {
+      return params[2] === 'nexd'
+        ? [metricsRow({ campaign_tag: 'nx_kw43', impressions: '114043' })]
+        : [metricsRow()]
+    }
     if (text.includes('FROM analytics.cta_clicks')) return clicks
+    if (text.includes('FROM external.link_entity')) {
+      return [{ campaign_id: CAMPAIGN, campaign_tag: 'nx_kw43', label: 'KW43 Kids' }]
+    }
     if (text.includes('FROM app.campaign c')) return [{ name: 'Late Campaign' }]
     return []
   })
@@ -86,10 +105,11 @@ describe('buildReport', () => {
     expect(report.rows).toEqual([['2026-10-08', 'DE2610 Tchibo Caffè Crema', 12610, 196.56]])
   })
 
-  it('reads no clicks when no formula needs them', async () => {
+  it('reads no clicks when no formula needs them, and no labels below creative level', async () => {
     const db = database()
     await buildReport(db.db, TARGET, PERIOD, COST)
     expect(db.matching('FROM analytics.cta_clicks')).toEqual([])
+    expect(db.matching('FROM external.link_entity')).toEqual([])
   })
 
   it('reads the clicks a formula needs, with the same scope', async () => {
@@ -99,6 +119,7 @@ describe('buildReport', () => {
         campaign: 'DE2610 Tchibo Caffè Crema',
         price: null,
         events_date: '2026-10-08',
+        campaign_tag: 'mpu_v1',
         clicks: '42',
       },
     ])
@@ -113,6 +134,25 @@ describe('buildReport', () => {
       '2026-10-08',
     ])
     expect(report.rows).toEqual([['2026-10-08', 'DE2610 Tchibo Caffè Crema', 42]])
+  })
+
+  it('reads each source once, and the creative labels of a creative-level row set', async () => {
+    const db = database()
+
+    const report = await buildReport(db.db, TARGET, PERIOD, TWO_SOURCES)
+
+    expect(db.matching('FROM analytics.advanced_analytics').map((q) => q.params[2])).toEqual([
+      'zeus',
+      'nexd',
+    ])
+    expect(db.matching('FROM external.link_entity').map((q) => q.params)).toEqual([
+      [COMPANY, [CAMPAIGN], 'nexd'],
+    ])
+    expect(report.names).toEqual(['Date', 'Campaign', 'Creative', 'Impressions'])
+    expect(report.rows).toEqual([
+      ['2026-10-08', 'DE2610 Tchibo Caffè Crema', null, 12610],
+      ['2026-10-08', 'DE2610 Tchibo Caffè Crema', 'KW43 Kids', 114043],
+    ])
   })
 })
 

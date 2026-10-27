@@ -78,6 +78,15 @@ describe('reportBodySchemaFor', () => {
     expect(schema.safeParse(body({ Date: '2026-10-08', Campaign: 'X' })).success).toBe(false)
   })
 
+  it('takes Creative as text or null when the column list has it, and only then', () => {
+    const withCreative = reportBodySchemaFor(['Date', 'Campaign', 'Creative', 'Cost'])
+    const row = { Date: '2026-10-08', Campaign: 'X', Creative: 'KW43 Kids', Cost: 1 }
+    expect(withCreative.safeParse(body(row)).success).toBe(true)
+    expect(withCreative.safeParse(body({ ...row, Creative: null })).success).toBe(true)
+    expect(withCreative.safeParse(body({ ...row, Creative: 7 })).success).toBe(false)
+    expect(schema.safeParse(body(row)).success).toBe(false)
+  })
+
   it('refuses a date that is not a calendar day', () => {
     expect(schema.safeParse(body({ Date: '2026-02-31', Campaign: 'X', Cost: 1 })).success).toBe(
       false,

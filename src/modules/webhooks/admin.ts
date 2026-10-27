@@ -6,7 +6,7 @@ import { loadSql } from '../../core/sql-file.ts'
 import { InvalidScheduleError, InvalidWebhookError, WebhookNotFoundError } from './errors.ts'
 import {
   fieldWarnings,
-  loadScope,
+  loadScopes,
   readStoredFields,
   validateFields,
   type CompiledFields,
@@ -411,7 +411,7 @@ async function warningsFor(
   companyId: string,
   campaignIds: readonly string[] | null,
 ): Promise<string[]> {
-  return fieldWarnings(fields, await loadScope(db, companyId, campaignIds, fields.source))
+  return fieldWarnings(fields, await loadScopes(db, fields, companyId, campaignIds))
 }
 
 export async function listWebhooks(db: Db, id?: string): Promise<WebhookSummary[]> {
