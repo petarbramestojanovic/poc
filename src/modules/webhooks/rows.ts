@@ -14,8 +14,9 @@ import { evaluate, fromNumber, parseDecimal, toRoundedNumber, type Fraction } fr
 // creatives merged by the catalog (mergeRows: sums add, weighted averages weigh, the never-summed
 // per-day scalars are kept only when they agree); at creative level one per creative (campaign_tag)
 // and day, languages merged the same way. A day without a single stored row has no report row: it
-// is skipped, never filled with zeros. Rows of different row sets are never combined: two sources
-// are two series in one table.
+// is skipped, never filled with zeros. Nor has a row whose numbers are all 0 or empty (hasData): a
+// source that reports a stopped creative as a day of zeros has nothing to say about that day. Rows
+// of different row sets are never combined: two sources are two series in one table.
 
 /** What one cell holds: the date and the names, a fixed text, or a formula's number (null = none). */
 export type CellValue = string | number | null
@@ -149,7 +150,7 @@ function buildRowSet(
     }
   }
 
-  return [...groups.values()].map((group): Built => {
+  return [...groups.values()].flatMap((group): Built[] => {
     const merged =
       mergeRows(group.rows, (message) => {
         warn(`${group.campaign}: ${message}`)
@@ -168,10 +169,12 @@ function buildRowSet(
     const creative = perCreative
       ? (source.labels.get(labelKey(group.campaignId, group.campaignTag)) ?? group.campaignTag)
       : ''
+    const exact: (Fraction | null)[] = []
     const cells = set.cells.map((cell): CellValue => {
       switch (cell.kind) {
         case 'formula': {
           const value = evaluate(cell.expr, lookup)
+          exact.push(value)
           return value === null ? null : toRoundedNumber(value, cell.decimals)
         }
         case 'text':
@@ -183,7 +186,9 @@ function buildRowSet(
       }
     })
 
-    return {
+    if (!hasData(exact)) return []
+
+    const built: Built = {
       date: group.date,
       campaign: group.campaign,
       campaignId: group.campaignId,
@@ -200,7 +205,17 @@ function buildRowSet(
         ...cells,
       ],
     }
+    return [built]
   })
+}
+
+/**
+ * Whether a row says anything: some formula of it has a value other than 0, compared exactly,
+ * before rounding, so a real but tiny number keeps its row. Fixed texts and row variables say
+ * nothing about the day. A row set without a formula keeps every row it has stored data for.
+ */
+function hasData(values: readonly (Fraction | null)[]): boolean {
+  return values.length === 0 || values.some((value) => value !== null && value.n !== 0n)
 }
 
 /**

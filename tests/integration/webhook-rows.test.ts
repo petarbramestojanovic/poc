@@ -224,7 +224,8 @@ describe('webhook rows (migration 0008)', () => {
     )
     await db.query(
       `INSERT INTO external.link_entity (link_id, source_id, level, external_id, label, campaign_tag)
-       VALUES ($1, 'nexd', 'creative', 'itf-nx-n1', 'KW37 Kids', 'n1')`,
+       VALUES ($1, 'nexd', 'creative', 'itf-nx-n1', 'KW37 Kids', 'n1'),
+              ($1, 'nexd', 'creative', 'itf-nx-n2', 'KW33 Ladies', 'n2')`,
       [NEXD_LINK],
     )
     await db.query(
@@ -238,6 +239,8 @@ describe('webhook rows (migration 0008)', () => {
          ($1, 'zeus', 'de', 'z2', '2026-09-09',  500,  400, NULL, NULL,    'sync'),
          ($1, 'zeus', 'de', 'z1', '2026-09-10',  100,   90, NULL, NULL,    'sync'),
          ($1, 'nexd', 'de', 'n1', '2026-09-07', 1200, 1000, 100,  1000.00, 'sync'),
+         ($1, 'nexd', 'de', 'n1', '2026-09-08',    0,    0,   0,     0.00, 'sync'),
+         ($1, 'nexd', 'de', 'n2', '2026-09-07',    0,    0,   0,     0.00, 'sync'),
          ($2, 'zeus', 'de', 'z9', '2026-09-08',  999,  900, NULL, NULL,    'sync'),
          ($3, 'zeus', 'de', 'z8', '2026-09-08',   50,   40, NULL, NULL,    'sync'),
          ($4, 'nexd', 'de', 'n1', '2026-09-08',   50,   40, NULL, NULL,    'sync')`,
@@ -445,7 +448,8 @@ describe('webhook rows (migration 0008)', () => {
     await sendNow(deps(), { webhookId: created.id, period: PERIOD, deliverNow: false })
 
     // The NEXD creative n1 is named by its entity's label; its 1200 impressions never reach the
-    // Zeus row (2002), and the Zeus clicks never reach it.
+    // Zeus row (2002), and the Zeus clicks never reach it. The days NEXD reported as zeros — n1
+    // after it stopped, n2 before it started — have no row.
     expect((await stored(created.id)).payload).toBe(
       'Date,Campaign,Creative,Creative Format,Impressions,Clicks,Cost\r\n' +
         '2026-09-07,ITF A Priced,,,2002,10,31.21\r\n' +
@@ -454,6 +458,37 @@ describe('webhook rows (migration 0008)', () => {
         '2026-09-09,ITF A Priced,,,500,5,7.79\r\n' +
         '2026-09-10,ITF A Priced,,,100,,1.56\r\n',
     )
+  })
+
+  it('refuses to send a period in which every creative reported zeros', async () => {
+    const { webhook: created } = await createWebhook(
+      deps(),
+      webhook({
+        campaignIds: [PRICED],
+        fields: payloadFieldsSchema.parse({
+          columns: ['Impressions'],
+          rows: [
+            {
+              source: 'nexd',
+              level: 'creative',
+              values: { Impressions: { formula: 'impressions', decimals: 0 } },
+            },
+          ],
+        }),
+      }),
+    )
+
+    await expect(
+      sendNow(deps(), {
+        webhookId: created.id,
+        period: { from: '2026-09-08', to: '2026-09-08' },
+        deliverNow: false,
+      }),
+    ).rejects.toMatchObject({ code: 'empty_period' })
+    const deliveries = await db.query('SELECT id FROM app.webhook_delivery WHERE webhook_id = $1', [
+      created.id,
+    ])
+    expect(deliveries).toEqual([])
   })
 
   it("waits for the first row set's source only", async () => {

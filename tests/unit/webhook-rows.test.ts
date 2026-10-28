@@ -14,6 +14,8 @@ import {
 //   * the campaign runs in German and French: two language rows of 1001 impressions each make one
 //     report row of 2002, whose cost (31.21) is not the sum of the rounded per-language costs (31.20),
 //   * a day without a stored row must be skipped, not reported as zeros,
+//   * a row whose numbers are all 0 or empty must be skipped too (NEXD reports a stopped creative
+//     as a day of zeros), while a row with any other number stays,
 //   * a campaign without a price must get an empty cost, never 0,
 //   * two row sets are two series: a Zeus campaign row and NEXD creative rows under it, nothing
 //     added across them, each column filled only by the row set that binds it.
@@ -140,9 +142,59 @@ describe('assembleRows', () => {
   })
 
   it('leaves a metric the source does not measure empty', () => {
-    const viewable = fields({ columns: [{ name: 'Viewable', formula: 'in_view / impressions' }] })
+    const viewable = fields({
+      columns: [
+        { name: 'Impressions', formula: 'impressions', decimals: 0 },
+        { name: 'Viewable', formula: 'in_view / impressions' },
+      ],
+    })
     const [row] = assembleRows(viewable, [zeus([metrics({ metrics: { impressions: 1000 } })])])
-    expect(row).toEqual(['2026-10-08', 'DE2610 Tchibo Caffè Crema', null])
+    expect(row).toEqual(['2026-10-08', 'DE2610 Tchibo Caffè Crema', 1000, null])
+  })
+
+  describe('a row with nothing in it', () => {
+    it('is skipped when every number on it is 0, and its neighbours stay', () => {
+      const rows = assembleRows(TCHIBO, [
+        zeus(
+          [
+            metrics({ date: '2026-10-07', metrics: { impressions: 0, in_view: 0 } }),
+            metrics({ date: '2026-10-08' }),
+          ],
+          [clicks({ date: '2026-10-07', clicks: '0' }), clicks({ date: '2026-10-08' })],
+        ),
+      ])
+      expect(rows).toEqual([
+        ['2026-10-08', 'DE2610 Tchibo Caffè Crema', 'Dynamic Ad', 1001, 7, 15.6],
+      ])
+    })
+
+    it('stays when any number on it is not 0: no impressions but late clicks', () => {
+      const rows = assembleRows(TCHIBO, [
+        zeus([metrics({ metrics: { impressions: 0 } })], [clicks({ clicks: '3' })]),
+      ])
+      expect(rows).toEqual([['2026-10-08', 'DE2610 Tchibo Caffè Crema', 'Dynamic Ad', 0, 3, 0]])
+    })
+
+    it('is skipped when every number on it is empty', () => {
+      const viewable = fields({ columns: [{ name: 'Viewable', formula: 'in_view / impressions' }] })
+      expect(assembleRows(viewable, [zeus([metrics({ metrics: { impressions: 1000 } })])])).toEqual(
+        [],
+      )
+    })
+
+    it('is judged on the exact value: a cost that rounds to 0.00 keeps its row', () => {
+      const cost = fields({ columns: [{ name: 'Cost', formula: 'impressions / 1000 * price' }] })
+      const rows = assembleRows(cost, [
+        zeus([metrics({ price: '0.004', metrics: { impressions: 1 } })]),
+      ])
+      expect(rows).toEqual([['2026-10-08', 'DE2610 Tchibo Caffè Crema', 0]])
+    })
+
+    it('never decides a row set without a formula: fixed texts keep every stored day', () => {
+      const text = fields({ columns: [{ name: 'Ad Type', value: 'Dynamic Ad' }] })
+      const rows = assembleRows(text, [zeus([metrics({ metrics: { impressions: 0 } })])])
+      expect(rows).toEqual([['2026-10-08', 'DE2610 Tchibo Caffè Crema', 'Dynamic Ad']])
+    })
   })
 
   it('weighs averages and never adds the per-day unique scalars across languages', () => {
@@ -269,6 +321,23 @@ describe('assembleRows', () => {
           1777.66,
         ],
       ])
+    })
+
+    it('skips a stopped creative NEXD still reports as zeros, and keeps the others', () => {
+      const stopped = metrics({
+        campaignTag: 'nx_kw33',
+        metrics: { impressions: 0, in_view: 0, game_started: 0, dwell_avg_ms: 0 },
+      })
+      const rows = assembleRows(ROWS, [
+        zeus([metrics({ metrics: { impressions: 1074817 } })], [clicks({ clicks: '39062' })]),
+        nexd([kw43, stopped], [...names, [labelKey(A, 'nx_kw33'), 'KW33 Ladies']]),
+      ])
+      expect(rows.map((row) => row[2])).toEqual([null, 'KW43 Kids'])
+    })
+
+    it('sends nothing for a period in which every creative reported zeros', () => {
+      const stopped = metrics({ campaignTag: 'nx_kw33', metrics: { impressions: 0 } })
+      expect(assembleRows(ROWS, [nexd([stopped], names)])).toEqual([])
     })
 
     it('prints the tag for a creative nobody labelled', () => {
