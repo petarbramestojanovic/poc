@@ -7,6 +7,28 @@ import { SEED, sqlstateOf, useTransactionalClient } from './db.ts'
 
 const DENIED = '42501' // insufficient_privilege
 
+// What a logged-in reader may see of app.campaign since 0010: of what the deal says, the manager.
+const READABLE_CAMPAIGN_COLUMNS = [
+  'company_id',
+  'created_at',
+  'currency',
+  'ends_on',
+  'external_id',
+  'external_system',
+  'id',
+  'languages',
+  'legacy_campaign_id',
+  'manager_external_id',
+  'manager_name',
+  'name',
+  'price',
+  'primary_source',
+  'starts_on',
+  'status',
+  'timezone',
+  'updated_at',
+]
+
 describe('RLS and the reader grants', () => {
   const { sql } = useTransactionalClient()
 
@@ -53,6 +75,42 @@ describe('RLS and the reader grants', () => {
     ])('never reads %s (%s)', async (table) => {
       await asAuthenticated()
       expect(await sqlstateOf(() => sql(`SELECT count(*) FROM ${table}`))).toBe(DENIED)
+    })
+
+    it('reads exactly these columns of app.campaign, so a new column starts closed', async () => {
+      const rows = await sql<{ column_name: string; readable: boolean }>(
+        `SELECT column_name, has_column_privilege('authenticated', 'app.campaign', column_name, 'SELECT') AS readable
+           FROM information_schema.columns
+          WHERE table_schema = 'app' AND table_name = 'campaign'`,
+      )
+      const readable = rows.filter((row) => row.readable).map((row) => row.column_name)
+      expect(readable.sort()).toEqual(READABLE_CAMPAIGN_COLUMNS)
+    })
+
+    it.each(READABLE_CAMPAIGN_COLUMNS)('reads app.campaign.%s', async (column) => {
+      await asAuthenticated()
+      expect(await sqlstateOf(() => sql(`SELECT ${column} FROM app.campaign`))).toBeUndefined()
+    })
+
+    it.each([
+      'amount',
+      'amount_currency',
+      'deal_type',
+      'country',
+      'creative_types',
+      'owner_name',
+      'external_modified_at',
+    ])(
+      'never reads app.campaign.%s: the deal stays closed, but for its manager',
+      async (column) => {
+        await asAuthenticated()
+        expect(await sqlstateOf(() => sql(`SELECT ${column} FROM app.campaign`))).toBe(DENIED)
+      },
+    )
+
+    it('cannot get at them with SELECT * either', async () => {
+      await asAuthenticated()
+      expect(await sqlstateOf(() => sql('SELECT * FROM app.campaign'))).toBe(DENIED)
     })
 
     it('calls the analytics read functions, but not the payload builders', async () => {

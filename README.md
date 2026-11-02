@@ -90,7 +90,7 @@ With real keys you can sync into your local database and inspect the rows direct
    curl -X POST http://127.0.0.1:3000/inbound/salesforce/opportunities \
      -H 'authorization: Bearer <inbound token>' -H 'content-type: application/json' -d '[ {
        "Id": "006<15 letters and digits>", "Name": "<AT2610 name>",
-       "AccountId": "001<15 letters and digits>", "Account_Name__c": "<client>",
+       "AccountId": "001<15 letters and digits>", "Account": { "Name": "<client>" },
        "Campaign_Start_Date__c": "<YYYY-MM-DD>", "Campaign_End_Date__c": "<YYYY-MM-DD>",
        "N_N_Price__c": <CPM>, "CurrencyIsoCode": "EUR" } ]'
 
@@ -174,16 +174,22 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 
 **Campaigns come from Salesforce.** Salesforce posts each committed opportunity to `POST /inbound/salesforce/opportunities` as its own REST JSON (one record, or a list of up to 200), with a bearer token of its own (`INBOUND_CAMPAIGNS_TOKEN`), never the admin one. Each record becomes a campaign through the one setup service, `src/modules/campaigns/` (`setUpCampaign`); `src/modules/salesforce/` is the adapter, and Salesforce's field names stop there.
 
-| Opportunity field                                | Campaign                                                                              |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------- |
-| `Id`                                             | `externalRef` `salesforce:<Id>`: the same opportunity again updates the same campaign |
-| `Name`                                           | name, as sold (`AT2610 …`: market and month stay in the name)                         |
-| `AccountId`, `Account_Name__c`                   | company, keyed by the account id; a renamed account renames its company               |
-| `Campaign_Start_Date__c`, `Campaign_End_Date__c` | flight                                                                                |
-| `N_N_Price__c` + `CurrencyIsoCode`               | price: always a CPM, whatever the billing type                                        |
-| `Creative_Languages__c`                          | languages (`German` → `de`), when the sender includes it                              |
+| Opportunity field                                 | Campaign                                                                              |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `Id`                                              | `externalRef` `salesforce:<Id>`: the same opportunity again updates the same campaign |
+| `Name`                                            | name, as sold (`AT2610 …`: market and month stay in the name)                         |
+| `AccountId`, `Account.Name` or `Account_Name__c`  | company, keyed by the account id; a renamed account renames its company               |
+| `Campaign_Start_Date__c`, `Campaign_End_Date__c`  | flight                                                                                |
+| `N_N_Price__c` + `CurrencyIsoCode`                | price: always a CPM, whatever the billing type                                        |
+| `Creative_Languages__c`                           | languages (`German` → `de`), when the sender includes it                              |
+| `Amount` + `CurrencyIsoCode`                      | deal: its total, up to two decimals                                                   |
+| `Type`, `Country__c`                              | deal: its type and country, as Salesforce names them                                  |
+| `Creative_Type__c`                                | deal: its creative types (`Catcher;Reveal Ad` → two values)                           |
+| `Owner.Name` or `Owner_Name__c`                   | deal: the person who owns it                                                          |
+| `Campaign_Manager__c`, `Campaign_Manager__r.Name` | deal: its manager's id and, when it comes, name                                       |
+| `LastModifiedDate`                                | deal: when Salesforce last changed the record                                         |
 
-Only campaigns starting on or after 2026-01-01 are taken in: a record starting earlier, or with no start date, is listed under `skipped` and changes nothing. Ids are the 18-character form. Everything else in a record (`Amount`, `Type`, owner, country, creative type, …) is ignored and never stored. A push only creates and updates: an opportunity that is not sent again is left alone, a field it leaves out is never cleared, and a campaign never moves to another company. The answer is `200` with what happened to each record (`created`, `updated`, `unchanged`, `skipped`, `rejected` with a reason, `warnings`); the same records sent twice change nothing.
+Only campaigns starting on or after 2026-01-01 are taken in: a record starting earlier, or with no start date, is listed under `skipped` and changes nothing. Ids are the 18-character form. The names of the account, the owner and the manager may come inside their relationships (`"Owner": { "Name": … }`) or flat (`"Owner.Name": …`). Everything else in a record (`Description`, `StageName`, …) is ignored and never stored. A push only creates and updates: an opportunity that is not sent again is left alone, a field it leaves out is never cleared, and a campaign never moves to another company. The answer is `200` with what happened to each record (`created`, `updated`, `unchanged`, `skipped`, `rejected` with a reason, `warnings`); the same records sent twice change nothing.
 
 **People set platform ids, and nothing else.** A campaign arrives without NEXD or Zeus ids:
 
@@ -199,6 +205,8 @@ Only campaigns starting on or after 2026-01-01 are taken in: a record starting e
 A `PUT` is the whole id list for that platform. Adding ids always works. Changing or dropping one, or a `DELETE`, answers `409 platform_has_data` once that platform has written analytics for the campaign (the rows would stay attributed to the wrong ids), and `409 sync_in_progress` while a sync is fetching. Before that, the link is rebuilt from the request and its sync state forgotten. The headline source follows the ids: Zeus if the campaign has Zeus ids, otherwise NEXD, and Zeus while it has none. There is no create, edit or delete of a campaign by hand.
 
 **Price** is what the client pays for 1000 impressions, up to six decimals, currency as an ISO 4217 code; `NULL` when Salesforce has none, never 0.
+
+**The deal** is what Salesforce says about the deal behind a campaign. It is stored in columns of `app.campaign`. A logged-in reader can select only the manager's, since the rest holds totals and the owner's name: the reader's grant lists its columns, so `SELECT *` is refused. The admin routes return them as `amount`, `dealType`, `country`, `creativeTypes`, `ownerName`, `manager` and `externalModifiedAt`. They describe: no sync, report or rule reads them. A field that cannot be used is left out with a warning, and the campaign is still set up.
 
 A new platform needs one preset in `src/modules/campaigns/presets.ts`; another CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
 
