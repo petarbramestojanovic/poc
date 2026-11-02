@@ -137,6 +137,13 @@ async function createCampaign(
     endsOn: setup.endsOn ?? null,
     status: setup.status,
     price: setup.price ?? null,
+    amount: setup.amount ?? null,
+    dealType: setup.dealType ?? null,
+    country: setup.country ?? null,
+    creativeTypes: setup.creativeTypes ?? [],
+    ownerName: setup.ownerName ?? null,
+    manager: nextManager(null, setup.manager),
+    externalModifiedAt: setup.externalModifiedAt ?? null,
     externalRef: setup.externalRef,
   })
 }
@@ -159,6 +166,13 @@ async function applyPush(
     endsOn: setup.endsOn ?? current.endsOn,
     status: setup.status ?? current.status,
     price: setup.price ?? current.price,
+    amount: setup.amount ?? current.amount,
+    dealType: setup.dealType ?? current.dealType,
+    country: setup.country ?? current.country,
+    creativeTypes: setup.creativeTypes ?? current.creativeTypes,
+    ownerName: setup.ownerName ?? current.ownerName,
+    manager: nextManager(current.manager, setup.manager),
+    externalModifiedAt: setup.externalModifiedAt ?? current.externalModifiedAt,
   }
   const unchanged = (Object.keys(next) as (keyof repo.CampaignValues)[]).every(
     (key) => JSON.stringify(next[key]) === JSON.stringify(current[key]),
@@ -166,6 +180,21 @@ async function applyPush(
   if (unchanged) return { campaign: current, updated: false }
   if (next.primarySource !== current.primarySource) await assertSourceExists(tx, next.primarySource)
   return { campaign: await repo.updateCampaign(tx, current.id, next), updated: true }
+}
+
+/**
+ * An id may come without its name. That keeps the name only while it is the same person: the
+ * previous manager's name must not stay on the next manager's id.
+ */
+function nextManager(
+  current: repo.CampaignManager | null,
+  stated: CampaignSetup['manager'],
+): repo.CampaignManager | null {
+  if (stated === undefined) return current
+  return {
+    id: stated.id,
+    name: stated.name ?? (current?.id === stated.id ? current.name : null),
+  }
 }
 
 async function assertSourceExists(tx: Tx, sourceId: string): Promise<void> {
@@ -390,16 +419,7 @@ async function assertIdsChangeable(
 async function settleHeadline(tx: Tx, campaign: repo.CampaignRecord): Promise<repo.CampaignRecord> {
   const headline = headlineSource(await repo.listLinkSources(tx, campaign.id))
   if (headline === campaign.primarySource) return campaign
-  return repo.updateCampaign(tx, campaign.id, {
-    name: campaign.name,
-    primarySource: headline,
-    timezone: campaign.timezone,
-    languages: campaign.languages,
-    startsOn: campaign.startsOn,
-    endsOn: campaign.endsOn,
-    status: campaign.status,
-    price: campaign.price,
-  })
+  return repo.updateCampaign(tx, campaign.id, { ...campaign, primarySource: headline })
 }
 
 async function resolveCredential(

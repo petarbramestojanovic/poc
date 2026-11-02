@@ -171,6 +171,27 @@ describe('migration 0001_foundation', () => {
     expect(code).toBe(UNIQUE_VIOLATION)
   })
 
+  it.each<[string, string]>([
+    ['an amount without a currency', 'amount = 100'],
+    ['a currency without an amount', `amount_currency = 'EUR'`],
+    ['a manager name without an id', `manager_name = 'Max'`],
+    ['a negative amount', `amount = -1, amount_currency = 'EUR'`],
+    ['a currency that is no code', `amount = 1, amount_currency = 'euro'`],
+  ])('a campaign cannot hold %s', async (_name, change) => {
+    const code = await sqlstateOf(() =>
+      sql(`UPDATE app.campaign SET ${change} WHERE id = $1`, [SEED.campaignId]),
+    )
+    expect(code).toBe(CHECK_VIOLATION)
+  })
+
+  it('a campaign whose deal nobody has described has no creative types, not NULL', async () => {
+    const [row] = await sql<{ creative_types: string[] }>(
+      'SELECT creative_types FROM app.campaign WHERE id = $1',
+      [SEED.campaignId],
+    )
+    expect(row?.creative_types).toEqual([])
+  })
+
   it('webhook urls must be https', async () => {
     const code = await sqlstateOf(() =>
       sql(

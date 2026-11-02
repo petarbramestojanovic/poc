@@ -6,7 +6,7 @@ import {
   type ExternalRef,
   type ExternalRefColumns,
 } from '../../core/external-ref.ts'
-import type { EntitySetup, Price, SourceSetup } from './input.ts'
+import type { Amount, EntitySetup, Price, SourceSetup } from './input.ts'
 
 // Every campaign-setup statement, one function each. SQL lives in ./sql/*.sql and is read at
 // import time. Rows are turned into the camelCase records the service and the routes speak.
@@ -36,7 +36,23 @@ const sql = loadSql(import.meta.url, [
 
 export type CampaignStatus = 'draft' | 'active' | 'archived'
 
-export interface CampaignRecord {
+export interface CampaignManager {
+  id: string
+  name: string | null
+}
+
+/** What the CRM says about the deal behind a campaign. Any part of it may not be known. */
+export interface CampaignDealFields {
+  amount: Amount | null
+  dealType: string | null
+  country: string | null
+  creativeTypes: string[]
+  ownerName: string | null
+  manager: CampaignManager | null
+  externalModifiedAt: string | null
+}
+
+export interface CampaignRecord extends CampaignDealFields {
   id: string
   companyId: string
   name: string
@@ -53,7 +69,7 @@ export interface CampaignRecord {
 }
 
 /** The editable columns of a campaign, all of them: an edit writes the merged row back. */
-export interface CampaignValues {
+export interface CampaignValues extends CampaignDealFields {
   name: string
   primarySource: string
   timezone: string
@@ -77,6 +93,16 @@ interface CampaignRow extends ExternalRefColumns {
   /** numeric comes back as its decimal text, e.g. '5.316860' (numeric(14,6) pads '20.4' to '20.400000'). */
   price: string | null
   currency: string | null
+  /** numeric comes back as its decimal text, e.g. '7128.70'. */
+  amount: string | null
+  amount_currency: string | null
+  deal_type: string | null
+  country: string | null
+  creative_types: string[]
+  owner_name: string | null
+  manager_external_id: string | null
+  manager_name: string | null
+  external_modified_at: Date | null
   created_at: Date
   updated_at: Date
 }
@@ -96,6 +122,20 @@ const toCampaign = (row: CampaignRow): CampaignRecord => ({
     row.price !== null && row.currency !== null
       ? { value: Number(row.price), currency: row.currency }
       : null,
+  // The table keeps these two both set or both NULL (campaign_amount_pair).
+  amount:
+    row.amount !== null && row.amount_currency !== null
+      ? { value: Number(row.amount), currency: row.amount_currency }
+      : null,
+  dealType: row.deal_type,
+  country: row.country,
+  creativeTypes: row.creative_types,
+  ownerName: row.owner_name,
+  manager:
+    row.manager_external_id === null
+      ? null
+      : { id: row.manager_external_id, name: row.manager_name },
+  externalModifiedAt: row.external_modified_at?.toISOString() ?? null,
   externalRef: toExternalRef(row),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -123,7 +163,7 @@ export async function findCampaignByRef(
   )
 }
 
-export interface NewCampaign {
+export interface NewCampaign extends CampaignDealFields {
   companyId: string
   name: string
   primarySource: string
@@ -149,6 +189,7 @@ export async function insertCampaign(q: Queryable, campaign: NewCampaign): Promi
     campaign.externalRef?.system ?? null,
     campaign.externalRef?.id ?? null,
     ...priceParams(campaign.price),
+    ...dealParams(campaign),
   ])
   return toCampaign(required(rows[0], 'insert_campaign'))
 }
@@ -168,6 +209,7 @@ export async function updateCampaign(
     values.endsOn,
     values.status,
     ...priceParams(values.price),
+    ...dealParams(values),
   ])
   return toCampaign(required(rows[0], 'update_campaign'))
 }
@@ -175,6 +217,19 @@ export async function updateCampaign(
 /** The price as its decimal text, so the numeric column stores exactly what was validated. */
 const priceParams = (price: Price | null): [string | null, string | null] =>
   price === null ? [null, null] : [String(price.value), price.currency]
+
+/** In the order of insert_campaign.sql and update_campaign.sql, which both end with these. */
+const dealParams = (deal: CampaignDealFields): unknown[] => [
+  deal.amount === null ? null : String(deal.amount.value),
+  deal.amount?.currency ?? null,
+  deal.dealType,
+  deal.country,
+  deal.creativeTypes,
+  deal.ownerName,
+  deal.manager?.id ?? null,
+  deal.manager?.name ?? null,
+  deal.externalModifiedAt,
+]
 
 export interface LinkSummary {
   id: string

@@ -1,7 +1,12 @@
 import { z } from 'zod'
 import {
+  amountSchema,
   campaignSetupSchema,
+  creativeTypesSchema,
+  dealTextSchema,
+  dealTimestampSchema,
   priceSchema,
+  type Amount,
   type CampaignSetup,
   type Price,
 } from '../campaigns/input.ts'
@@ -9,13 +14,14 @@ import {
 // Salesforce's webhook of "Opportunity (BMS)" records, as Salesforce itself posts them to
 // POST /inbound/salesforce/opportunities (its REST JSON: API field names, an `attributes` block),
 // and how one record becomes a CampaignSetup. Pure: no I/O. Salesforce's field names stop at this
-// file.
+// file. The fields it sends are those of the tab '2.11.2026' of "All Opportunities - BMS", with the
+// names of the account, the owner and the manager behind their relationships (relatedName).
 //
 // A record arrives whenever the opportunity is committed or changed. Only campaigns starting on or
 // after INGEST_FROM are taken in; the rest are skipped. One that never arrives again
 // means nothing, so a push only ever creates or updates. Of a record, only the fields in
-// recordSchema are read; the rest (Amount, Type, owner, country, creative type, LastModifiedDate …)
-// is ignored and never stored.
+// recordSchema and dealFields are read; the rest (Description, StageName, Probability …) is ignored
+// and never stored.
 
 /** externalRef.system of the campaigns and companies this webhook creates. */
 export const REF_SYSTEM = 'salesforce'
@@ -52,6 +58,8 @@ const salesforceId = (prefix: string, what: string) =>
 
 const opportunityId = salesforceId('006', 'opportunity')
 
+const userId = salesforceId('005', 'user')
+
 /**
  * The first campaign start taken in. A campaign starting earlier, or with no start date, is
  * skipped whatever else the record says: it is neither set up nor updated, and not an error.
@@ -60,19 +68,37 @@ export const INGEST_FROM = '2026-01-01'
 
 const startSchema = z.looseObject({ Campaign_Start_Date__c: z.iso.date().nullish() })
 
-const recordSchema = z.looseObject({
-  Id: opportunityId,
-  Name: z.string().trim().min(1).max(200),
-  AccountId: salesforceId('001', 'account'),
-  Account_Name__c: z.string().trim().min(1).max(200),
-  CurrencyIsoCode: z.string().trim().nullish(),
-  Campaign_Start_Date__c: z.iso.date(),
-  Campaign_End_Date__c: z.iso.date().nullish(),
-  /** Not among the fields the webhook promises; read when it comes. */
-  Creative_Languages__c: z.string().nullish(),
-  /** The CPM the campaign is sold at. Always a CPM, whatever the billing type says. */
-  N_N_Price__c: z.number().nullish(),
-})
+const accountName = z.string().trim().min(1).max(200)
+
+/**
+ * The name behind a relationship. REST JSON nests it, { Owner: { attributes, Name } }, and a
+ * flattened record has it under 'Owner.Name' beside Owner: '[User]'. Either may come.
+ */
+const relatedName = (opp: Record<string, unknown>, relationship: string): unknown =>
+  (opp[relationship] as { Name?: unknown } | null | undefined)?.Name ?? opp[`${relationship}.Name`]
+
+/** The field a sender may still send, or the relationship. The field wins when both come. */
+const companyNameOf = (opp: Record<string, unknown>): unknown =>
+  opp.Account_Name__c ?? relatedName(opp, 'Account')
+
+const recordSchema = z
+  .looseObject({
+    Id: opportunityId,
+    Name: z.string().trim().min(1).max(200),
+    AccountId: salesforceId('001', 'account'),
+    Account_Name__c: accountName.nullish(),
+    CurrencyIsoCode: z.string().trim().nullish(),
+    Campaign_Start_Date__c: z.iso.date(),
+    Campaign_End_Date__c: z.iso.date().nullish(),
+    /** Not among the fields the webhook promises; read when it comes. */
+    Creative_Languages__c: z.string().nullish(),
+    /** The CPM the campaign is sold at. Always a CPM, whatever the billing type says. */
+    N_N_Price__c: z.number().nullish(),
+  })
+  .refine((opp) => accountName.safeParse(companyNameOf(opp)).success, {
+    error: 'no account name, here or in Account.Name',
+    path: ['Account_Name__c'],
+  })
 
 export type RecordOutcome =
   | { kind: 'setup'; opportunityId: string; setup: CampaignSetup; warnings: string[] }
@@ -116,9 +142,14 @@ export function toCampaignSetup(record: unknown): RecordOutcome {
   const price = toPrice(opp.N_N_Price__c, opp.CurrencyIsoCode)
   if (price.warning !== undefined) warnings.push(price.warning)
 
+  const deal = dealFields(opp, warnings)
+
   const setup = campaignSetupSchema.safeParse({
     externalRef: { system: REF_SYSTEM, id: opp.Id },
-    company: { name: opp.Account_Name__c, externalRef: { system: REF_SYSTEM, id: opp.AccountId } },
+    company: {
+      name: companyNameOf(opp),
+      externalRef: { system: REF_SYSTEM, id: opp.AccountId },
+    },
     // The name as sold, market and month prefix included ('AT2610 Alpenmilch App Launch').
     name: opp.Name,
     startsOn: opp.Campaign_Start_Date__c,
@@ -126,6 +157,7 @@ export function toCampaignSetup(record: unknown): RecordOutcome {
     ...(opp.Campaign_End_Date__c ? { endsOn: opp.Campaign_End_Date__c } : {}),
     ...(languages.codes.length > 0 ? { languages: languages.codes } : {}),
     ...(price.value === undefined ? {} : { price: price.value }),
+    ...deal,
   })
   if (!setup.success) {
     return { kind: 'invalid', opportunityId: opp.Id, message: describe(setup.error) }
@@ -196,6 +228,97 @@ function toPrice(
   const price = priceSchema.safeParse({ value, currency: currency.toUpperCase() })
   if (!price.success) return { warning: `N_N_Price__c left out: ${describe(price.error)}` }
   return { value: price.data }
+}
+
+/** A multi-select picklist as its values: 'Catcher;Reveal Ad'. */
+const creativeTypes = z
+  .string()
+  .transform((value) => [
+    ...new Set(
+      value
+        .split(';')
+        .map((part) => part.trim())
+        .filter(Boolean),
+    ),
+  ])
+  .pipe(creativeTypesSchema)
+
+/** Salesforce writes the offset without its colon ('…000+0000'), which the ISO check refuses. */
+const salesforceTimestamp = z
+  .string()
+  .transform((value) => value.replace(/([+-]\d{2})(\d{2})$/, '$1:$2'))
+  .pipe(dealTimestampSchema)
+
+/**
+ * What the record says about the deal. None of it decides anything, so a field that cannot be used
+ * is left out with a warning and never costs the campaign; one the record does not have is simply
+ * not known, and is no warning. Left out rather than null: a push never clears what it does not state.
+ */
+function dealFields(
+  opp: z.infer<typeof recordSchema>,
+  warnings: string[],
+): Record<string, unknown> {
+  const managerId = read('Campaign_Manager__c', opp.Campaign_Manager__c, userId, warnings)
+  const managerName = read(
+    'Campaign_Manager__r.Name',
+    relatedName(opp, 'Campaign_Manager__r'),
+    dealTextSchema,
+    warnings,
+  )
+  if (managerName !== undefined && managerId === undefined) {
+    warnings.push('Campaign_Manager__r.Name left out: no usable Campaign_Manager__c')
+  }
+
+  const fields = {
+    amount: toAmount(opp.Amount, opp.CurrencyIsoCode, warnings),
+    dealType: read('Type', opp.Type, dealTextSchema, warnings),
+    country: read('Country__c', opp.Country__c, dealTextSchema, warnings),
+    creativeTypes: read('Creative_Type__c', opp.Creative_Type__c, creativeTypes, warnings),
+    ownerName: read(
+      'Owner_Name__c',
+      opp.Owner_Name__c ?? relatedName(opp, 'Owner'),
+      dealTextSchema,
+      warnings,
+    ),
+    manager:
+      managerId === undefined
+        ? undefined
+        : { id: managerId, ...(managerName === undefined ? {} : { name: managerName }) },
+    externalModifiedAt: read(
+      'LastModifiedDate',
+      opp.LastModifiedDate,
+      salesforceTimestamp,
+      warnings,
+    ),
+  }
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined))
+}
+
+function read<S extends z.ZodType>(
+  field: string,
+  value: unknown,
+  schema: S,
+  warnings: string[],
+): z.output<S> | undefined {
+  if (value === null || value === undefined || value === '') return undefined
+  const parsed = schema.safeParse(value)
+  if (parsed.success) return parsed.data
+  warnings.push(`${field} left out: ${describe(parsed.error)}`)
+  return undefined
+}
+
+/** Amount in the record's currency. Like the price, what cannot be stored exactly is left out. */
+function toAmount(
+  value: unknown,
+  currency: string | null | undefined,
+  warnings: string[],
+): Amount | undefined {
+  if (value === null || value === undefined) return undefined
+  if (!currency) {
+    warnings.push('Amount without a CurrencyIsoCode: left out')
+    return undefined
+  }
+  return read('Amount', { value, currency: currency.toUpperCase() }, amountSchema, warnings)
 }
 
 /** Field paths and messages only: never the values, which may be confidential deal terms. */

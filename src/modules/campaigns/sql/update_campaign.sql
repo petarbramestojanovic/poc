@@ -9,7 +9,18 @@ UPDATE app.campaign
        status = $8,
        price = $9::numeric,
        currency = $10,
+       amount = $11::numeric,
+       amount_currency = $12,
+       deal_type = $13,
+       country = $14,
+       creative_types = $15::text[],
+       owner_name = $16,
+       manager_external_id = $17,
+       manager_name = $18,
+       external_modified_at = $19::timestamptz,
        updated_at = now()
  WHERE id = $1
 RETURNING id, company_id, name, primary_source, timezone, languages, starts_on, ends_on, status,
-          price, currency, external_system, external_id, created_at, updated_at;
+          price, currency, amount, amount_currency, deal_type, country, creative_types, owner_name,
+          manager_external_id, manager_name, external_modified_at, external_system, external_id,
+          created_at, updated_at;

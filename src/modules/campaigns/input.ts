@@ -69,6 +69,11 @@ export type SourceSetup = z.infer<typeof sourceSetupSchema>
 
 const KNOWN_CURRENCIES = new Set(Intl.supportedValuesOf('currency'))
 
+const currencySchema = z
+  .string()
+  .regex(/^[A-Z]{3}$/, 'an ISO 4217 code such as "EUR"')
+  .refine((code) => KNOWN_CURRENCIES.has(code), { error: 'not an ISO 4217 currency' })
+
 /**
  * What the client pays for 1000 impressions (CPM), in `currency`. `value` is a JSON number with
  * at most six decimals: that is what app.campaign.price (numeric(14,6), migration 0009) holds
@@ -83,12 +88,40 @@ export const priceSchema = z.strictObject({
     .refine((value) => /^\d+(\.\d{1,6})?$/.test(String(value)), {
       error: 'at most 6 decimal places',
     }),
-  currency: z
-    .string()
-    .regex(/^[A-Z]{3}$/, 'an ISO 4217 code such as "EUR"')
-    .refine((code) => KNOWN_CURRENCIES.has(code), { error: 'not an ISO 4217 currency' }),
+  currency: currencySchema,
 })
 export type Price = z.infer<typeof priceSchema>
+
+/**
+ * A deal's total, in `currency`. At most two decimals, for the same reason as the price:
+ * app.campaign.amount is numeric(14,2) (migration 0010) and Postgres would round a third.
+ */
+export const amountSchema = z.strictObject({
+  value: z
+    .number()
+    .min(0)
+    .max(999_999_999_999.99)
+    .refine((value) => /^\d+(\.\d{1,2})?$/.test(String(value)), {
+      error: 'at most 2 decimal places',
+    }),
+  currency: currencySchema,
+})
+export type Amount = z.infer<typeof amountSchema>
+
+export const dealTextSchema = name
+
+export const creativeTypesSchema = z.array(dealTextSchema).min(1).max(50)
+
+/** With its offset, and stored in one spelling, so one instant sent twice is not a change. */
+export const dealTimestampSchema = z.iso
+  .datetime({ offset: true })
+  .transform((value) => new Date(value).toISOString())
+
+/** The CRM's id of the person: a name without one could not tell two namesakes apart. */
+export const managerSchema = z.strictObject({
+  id: z.string().trim().min(1).max(255),
+  name: dealTextSchema.optional(),
+})
 
 export const CAMPAIGN_STATUSES = ['draft', 'active', 'archived'] as const
 
@@ -104,6 +137,15 @@ export const campaignFields = {
   status: z.enum(CAMPAIGN_STATUSES).optional(),
   /** A push, like with the dates, can never clear it. */
   price: priceSchema.nullable().optional(),
+  // What the CRM says about the deal behind the campaign. It describes: no sync, report or rule
+  // reads it. A push can change these but never clear them.
+  amount: amountSchema.optional(),
+  dealType: dealTextSchema.optional(),
+  country: dealTextSchema.optional(),
+  creativeTypes: creativeTypesSchema.optional(),
+  ownerName: dealTextSchema.optional(),
+  manager: managerSchema.optional(),
+  externalModifiedAt: dealTimestampSchema.optional(),
 }
 
 /** Shared by every schema that carries both dates. */
