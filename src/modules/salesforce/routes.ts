@@ -1,6 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify'
-import type { CampaignDeps } from '../campaigns/service.ts'
-import { ingestOpportunities, ingestSummarySchema } from './ingest.ts'
+import { ingestOpportunities, ingestSummarySchema, type IngestDeps } from './ingest.ts'
 import { opportunityDeliverySchema, recordsOf, type OpportunityDelivery } from './opportunity.ts'
 
 // /inbound: where other systems push to us, behind a token of its own (app.ts), never the admin
@@ -11,7 +10,7 @@ import { opportunityDeliverySchema, recordsOf, type OpportunityDelivery } from '
 /** MAX_RECORDS full records; the service-wide 64 KiB would stop at about six. */
 export const INBOUND_BODY_LIMIT = 4 * 1024 * 1024
 
-export const inboundRoutes: FastifyPluginAsync<{ deps: CampaignDeps }> = async (app, { deps }) => {
+export const inboundRoutes: FastifyPluginAsync<{ deps: IngestDeps }> = async (app, { deps }) => {
   app.post<{ Body: OpportunityDelivery }>(
     '/salesforce/opportunities',
     {

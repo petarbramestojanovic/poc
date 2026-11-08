@@ -17,6 +17,7 @@ import { requireAdminToken, requireBearerToken } from './core/plugins/admin-auth
 import { campaignRoutes } from './modules/campaigns/routes.ts'
 import { provisioningRoutes } from './modules/provisioning/routes.ts'
 import type { ProvisioningDeps } from './modules/provisioning/service.ts'
+import { provisionInBackground } from './modules/provisioning/trigger.ts'
 import { companyRoutes } from './modules/companies/routes.ts'
 import { healthRoutes } from './modules/health/routes.ts'
 import { inboundRoutes } from './modules/salesforce/routes.ts'
@@ -160,7 +161,20 @@ export function buildApp({
         inbound.setNotFoundHandler(async (_request, reply) =>
           reply.code(404).send({ error: 'not_found' }),
         )
-        await inbound.register(inboundRoutes, { deps: campaigns })
+        // Every campaign the push creates is provisioned behind the answer, when enabled; the
+        // tracker lets app.close() wait for a job in flight.
+        const afterCreated =
+          provisioning && config.provisioningEnabled
+            ? (campaign: { id: string; name: string }) =>
+                void provisionInBackground(
+                  { ...provisioning, ...(tracker ? { tracker } : {}) },
+                  campaign,
+                  'crm',
+                )
+            : undefined
+        await inbound.register(inboundRoutes, {
+          deps: { ...campaigns, ...(afterCreated ? { afterCreated } : {}) },
+        })
       },
       { prefix: INBOUND_PREFIX },
     )

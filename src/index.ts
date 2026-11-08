@@ -113,6 +113,12 @@ if (config.inboundCampaignsToken === undefined) {
   )
 }
 
+if (!config.provisioningEnabled) {
+  logger.info(
+    'provisioning on Salesforce push disabled (PROVISIONING_ENABLED is not true); POST /campaigns/:id/provision still works',
+  )
+}
+
 if (config.publicBaseUrl === undefined) {
   logger.info('csv webhooks unavailable (neither PUBLIC_BASE_URL nor RENDER_EXTERNAL_URL is set)')
 }
