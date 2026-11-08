@@ -94,8 +94,8 @@ describe('Zeus connector', () => {
     expect(day?.ctaClicks).toEqual([{ ctaId: 'clickthrough', count: 20_050 }])
     expect(result.warnings).toEqual(
       expect.arrayContaining([
-        'creative 12345 on 2026-09-01: Zeus reports clicks 20050 > impressions 20000; stored as reported',
-        'creative 12345 on 2026-09-01: Zeus reports visible_impressions 20100 > impressions 20000; stored as reported',
+        'creative ENG Swipe MPU V1 on 2026-09-01: Zeus reports clicks 20050 > impressions 20000; stored as reported',
+        'creative ENG Swipe MPU V1 on 2026-09-01: Zeus reports visible_impressions 20100 > impressions 20000; stored as reported',
       ]),
     )
   })

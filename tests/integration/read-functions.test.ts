@@ -167,18 +167,23 @@ describe('migration 0003_read_functions', () => {
   })
 
   describe('analytics.get_creative_breakdown', () => {
-    it('labels each creative from external.link_entity', async () => {
+    it('labels each creative by its record (app.creative, 0012), not by a platform entity', async () => {
+      // The record is renamed; the NEXD entity's label stays 'Dev creative V1'.
+      await sql(
+        `UPDATE app.creative SET name = 'KW36 Kids' WHERE campaign_id = $1 AND tag = 'nx_dev_v1'`,
+        [CAMPAIGN],
+      )
       const rows = await call('get_creative_breakdown', 'nexd')
 
       expect(rows.map((row) => [row.campaign_tag, row.label])).toEqual([
-        ['nx_dev_v1', 'Dev creative V1'],
+        ['nx_dev_v1', 'KW36 Kids'],
         ['nx_dev_v2', 'Dev creative V2'],
       ])
       expect(Number(at(rows).impressions)).toBe(3000)
       expect(at(rows).unique_impressions_reported).toBeNull()
     })
 
-    it('leaves the label null for a tag no entity claims', async () => {
+    it('leaves the label null for a tag no creative or entity claims', async () => {
       const rows = await call('get_creative_breakdown', 'zeus')
 
       expect(rows.map((row) => [row.campaign_tag, row.label])).toEqual([

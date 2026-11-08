@@ -15,6 +15,7 @@ export const zeusCreativesRow = z.looseObject({
   date: z.iso.date(),
   campaign_id: id,
   external_id: optionalText,
+  /** On the real account this is the creative's name, a string (checked 2026-11-03); matched to the link's creative entity. */
   creative_id: id,
   creative_name: optionalText,
   impressions: count,

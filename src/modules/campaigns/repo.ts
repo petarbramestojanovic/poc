@@ -6,6 +6,7 @@ import {
   type ExternalRef,
   type ExternalRefColumns,
 } from '../../core/external-ref.ts'
+import type { ProvisionedResourceRecord } from '../sync/types.ts'
 import type { Amount, EntitySetup, Price, SourceSetup } from './input.ts'
 
 // Every campaign-setup statement, one function each. SQL lives in ./sql/*.sql and is read at
@@ -35,6 +36,7 @@ const sql = loadSql(import.meta.url, [
   'insert_creative',
   'list_creatives',
   'update_creative_names',
+  'list_provisioned_resources',
 ] as const)
 
 export type CampaignStatus = 'draft' | 'active' | 'archived'
@@ -361,6 +363,25 @@ export async function insertCreative(
 /** After a relabel: a creative's name follows its own entity's label. Returns how many changed. */
 export async function updateCreativeNames(q: Queryable, linkId: string): Promise<number> {
   return (await q.query(sql.update_creative_names, [linkId])).length
+}
+
+/** What the platforms created for the campaign (external.provisioned_resource), oldest first. */
+export async function listProvisionedResources(
+  q: Queryable,
+  campaignId: string,
+): Promise<ProvisionedResourceRecord[]> {
+  const rows = await q.query<{
+    source_id: string
+    kind: string
+    external_id: string
+    creative_id: string | null
+  }>(sql.list_provisioned_resources, [campaignId])
+  return rows.map((row) => ({
+    source: row.source_id,
+    kind: row.kind,
+    externalId: row.external_id,
+    creativeId: row.creative_id,
+  }))
 }
 
 // --- sources, links and what hangs off them -------------------------------------------------
