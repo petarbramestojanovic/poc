@@ -14,7 +14,13 @@ const nonEmptyId = id.refine((value) => value.length > 0 && value.length <= 255,
   error: 'must not be empty',
 })
 const label = z.string().trim().min(1).max(200).optional()
+/**
+ * The creative a tag names (app.creative.tag). Left out on a creative, the setup service makes
+ * it one of ours, tagged with its own id. A pixel's tag must be one of the campaign's creatives.
+ */
 const tag = z.string().trim().max(200).optional()
+/** The creative's type as the CRM names it; left out = not known. */
+const creativeType = z.string().trim().min(1).max(200).optional()
 const linkFields = {
   /** '' (the default) = not split by language. */
   language: z.string().trim().max(16).optional(),
@@ -45,11 +51,16 @@ export const zeusPresetSchema = z.strictObject({
       }),
     )
     .default([]),
-  /** Optional per-creative breakdown. A creative's tag defaults to its id. */
-  creatives: z.array(z.strictObject({ id: nonEmptyId, label, tag })).default([]),
+  /** Optional per-creative breakdown. A new creative becomes one of ours, tagged with its own id. */
+  creatives: z
+    .array(z.strictObject({ id: nonEmptyId, label, tag, type: creativeType }))
+    .default([]),
   ...linkFields,
 })
 export type ZeusPreset = z.infer<typeof zeusPresetSchema>
+
+const defined = <T extends object>(value: T): Partial<T> =>
+  Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>
 
 export function zeusSetup(input: ZeusPreset): SourceSetup {
   return sourceSetupSchema.parse({
@@ -58,20 +69,25 @@ export function zeusSetup(input: ZeusPreset): SourceSetup {
     ...(input.credential === undefined ? {} : { credential: input.credential }),
     config: { clickthrough_cta_id: CLICKTHROUGH_CTA.ctaId, campaign_id_param: input.idType },
     entities: [
-      { level: 'campaign', externalId: input.campaignId },
-      ...input.creatives.map((creative) => ({
-        level: 'creative',
-        externalId: creative.id,
-        ...(creative.label === undefined ? {} : { label: creative.label }),
-        campaignTag: creative.tag ?? creative.id,
-      })),
-      ...input.pixels.map((pixel) => ({
-        level: 'pixel',
-        externalId: pixel.code,
-        role: pixel.role,
-        ...(pixel.label === undefined ? {} : { label: pixel.label }),
-        campaignTag: pixel.tag ?? '',
-      })),
+      { level: 'campaign', externalId: input.campaignId, campaignTag: '' },
+      ...input.creatives.map((creative) =>
+        defined({
+          level: 'creative',
+          externalId: creative.id,
+          label: creative.label,
+          campaignTag: creative.tag,
+          creativeType: creative.type,
+        }),
+      ),
+      ...input.pixels.map((pixel) =>
+        defined({
+          level: 'pixel',
+          externalId: pixel.code,
+          role: pixel.role,
+          label: pixel.label,
+          campaignTag: pixel.tag ?? '',
+        }),
+      ),
     ],
     ctas: [CLICKTHROUGH_CTA],
   })
@@ -85,11 +101,14 @@ export const NEXD_STANDARD_EVENTS = [
 
 export const nexdPresetSchema = z.strictObject({
   /**
-   * One entry per NEXD creative (live id). A creative's tag defaults to its live id. The label is
-   * the name a client sees for the creative's rows (NEXD's own API returns none), so it is
-   * required here, unlike on Zeus, whose reports carry a creative_name.
+   * One entry per NEXD creative (live id). A new creative becomes one of ours, tagged with its
+   * own id; `tag` names an existing creative instead (the same creative on another platform). The
+   * label is the name a client sees for the creative's rows (NEXD's own API returns none), so it
+   * is required here, unlike on Zeus, whose reports carry a creative_name.
    */
-  creatives: z.array(z.strictObject({ liveId: nonEmptyId, label: label.unwrap(), tag })).min(1),
+  creatives: z
+    .array(z.strictObject({ liveId: nonEmptyId, label: label.unwrap(), tag, type: creativeType }))
+    .min(1),
   ...linkFields,
 })
 export type NexdPreset = z.infer<typeof nexdPresetSchema>
@@ -99,12 +118,15 @@ export function nexdSetup(input: NexdPreset): SourceSetup {
     source: 'nexd',
     language: input.language ?? '',
     ...(input.credential === undefined ? {} : { credential: input.credential }),
-    entities: input.creatives.map((creative) => ({
-      level: 'creative',
-      externalId: creative.liveId,
-      label: creative.label,
-      campaignTag: creative.tag ?? creative.liveId,
-    })),
+    entities: input.creatives.map((creative) =>
+      defined({
+        level: 'creative',
+        externalId: creative.liveId,
+        label: creative.label,
+        campaignTag: creative.tag,
+        creativeType: creative.type,
+      }),
+    ),
     // 'Page seen [...]' and 'CTR [...]' are named per creative, so they are not guessed here:
     // they arrive in external.unmapped_event and are mapped once someone has seen them.
     eventMap: [...NEXD_STANDARD_EVENTS],

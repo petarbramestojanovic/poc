@@ -85,8 +85,9 @@ export async function buildReport(
     const clicks = sets.some((set) => set.usesClicks)
       ? await q.query<ClicksRow>(sql.report_clicks, params)
       : []
+    // Creatives are named once, not per source: the first two params are the report's scope.
     const labels = sets.some((set) => set.level === 'creative')
-      ? await q.query<LabelRow>(sql.report_labels, params.slice(0, 3))
+      ? await q.query<LabelRow>(sql.report_labels, params.slice(0, 2))
       : []
     data.push({
       source,

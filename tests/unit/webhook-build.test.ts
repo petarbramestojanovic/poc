@@ -79,7 +79,7 @@ function database(clicks: unknown[] = []) {
         : [metricsRow()]
     }
     if (text.includes('FROM analytics.cta_clicks')) return clicks
-    if (text.includes('FROM external.link_entity')) {
+    if (text.includes('FROM app.creative')) {
       return [{ campaign_id: CAMPAIGN, campaign_tag: 'nx_kw43', label: 'KW43 Kids' }]
     }
     if (text.includes('FROM app.campaign c')) return [{ name: 'Late Campaign' }]
@@ -109,7 +109,7 @@ describe('buildReport', () => {
     const db = database()
     await buildReport(db.db, TARGET, PERIOD, COST)
     expect(db.matching('FROM analytics.cta_clicks')).toEqual([])
-    expect(db.matching('FROM external.link_entity')).toEqual([])
+    expect(db.matching('FROM app.creative')).toEqual([])
   })
 
   it('reads the clicks a formula needs, with the same scope', async () => {
@@ -145,9 +145,8 @@ describe('buildReport', () => {
       'zeus',
       'nexd',
     ])
-    expect(db.matching('FROM external.link_entity').map((q) => q.params)).toEqual([
-      [COMPANY, [CAMPAIGN], 'nexd'],
-    ])
+    // Creatives are ours and named once, so the labels are read for the report's scope, not per source.
+    expect(db.matching('FROM app.creative').map((q) => q.params)).toEqual([[COMPANY, [CAMPAIGN]]])
     expect(report.names).toEqual(['Date', 'Campaign', 'Creative', 'Impressions'])
     expect(report.rows).toEqual([
       ['2026-10-08', 'DE2610 Tchibo Caffè Crema', null, 12610],

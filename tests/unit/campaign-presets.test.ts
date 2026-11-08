@@ -44,20 +44,26 @@ describe('zeus preset', () => {
     ])
   })
 
-  it('tags a creative with its own id by default', () => {
+  it('leaves a creative untagged for the service to make it one of ours, unless a tag names one', () => {
     const setup = zeusSetup(
       zeusPresetSchema.parse({
         campaignId: '18',
         idType: 'external_id',
-        creatives: [{ id: 501, label: 'MPU V1' }],
+        creatives: [
+          { id: 501, label: 'MPU V1', type: 'Swipe Card' },
+          { id: 502, tag: 'nx_1' },
+        ],
       }),
     )
+    // No tag and no platform id in sight: the setup service tags the new creative with its own id.
     expect(setup.entities[1]).toEqual({
       level: 'creative',
       externalId: '501',
       label: 'MPU V1',
-      campaignTag: '501',
+      creativeType: 'Swipe Card',
     })
+    // A tag says which creative of the campaign this Zeus id is (the same one NEXD knows as nx_1).
+    expect(setup.entities[2]).toEqual({ level: 'creative', externalId: '502', campaignTag: 'nx_1' })
   })
 
   it('never guesses which of the two Zeus ids was meant', () => {
@@ -78,19 +84,26 @@ describe('zeus preset', () => {
 })
 
 describe('nexd preset', () => {
-  it('sets up one creative entity per live id, tagged with it', () => {
+  it('sets up one creative entity per live id, each a creative of ours unless a tag names one', () => {
     const setup = nexdSetup(
       nexdPresetSchema.parse({
         creatives: [
           { liveId: 'nx_1', label: 'V1' },
-          { liveId: 'nx_2', label: 'V2' },
+          { liveId: 'nx_2', label: 'V2', tag: 'mpu_v1', type: 'Reveal Ad' },
         ],
       }),
     )
 
+    // The live id is never the tag any more: no platform id enters an analytics row.
     expect(setup.entities).toEqual([
-      { level: 'creative', externalId: 'nx_1', label: 'V1', campaignTag: 'nx_1' },
-      { level: 'creative', externalId: 'nx_2', label: 'V2', campaignTag: 'nx_2' },
+      { level: 'creative', externalId: 'nx_1', label: 'V1' },
+      {
+        level: 'creative',
+        externalId: 'nx_2',
+        label: 'V2',
+        campaignTag: 'mpu_v1',
+        creativeType: 'Reveal Ad',
+      },
     ])
     expect(setup.config).toEqual({})
   })
