@@ -48,6 +48,13 @@ interface Detail {
   name: string
   primarySource: string
   creatives: { id: string; tag: string; type: string | null; name: string; createdAt: string }[]
+  externalIds: {
+    source: string
+    level: string
+    creativeId: string | null
+    externalId: string
+    linked: boolean
+  }[]
   links: {
     id: string
     source: string
@@ -301,6 +308,72 @@ describe('campaign admin API', () => {
     expect(
       await db.query(`SELECT 1 FROM external.link_entity WHERE external_id = 'it-routes-81'`),
     ).toEqual([])
+  })
+
+  it('lists the ids ATK must be told once the builder has created the campaign and a creative', async () => {
+    const campaign = await seed()
+    // A creative of ours, before any platform knows it.
+    await put(campaign.id, 'nexd', { creatives: [{ liveId: 'it-routes-nx-1', label: 'Swipe' }] })
+    const before = await app.inject({
+      method: 'GET',
+      url: `/campaigns/${campaign.id}`,
+      headers: auth,
+    })
+    expect(before.json<Detail>().externalIds).toEqual([]) // nothing to derive from yet
+
+    // Provisioning (PR 3) will write these; until then, the rows it would write.
+    const creative = at(before.json<Detail>().creatives)
+    await db.query(
+      `INSERT INTO external.provisioned_resource (source_id, campaign_id, creative_id, kind, external_id)
+       VALUES ('nexd', $1, NULL, 'campaign', 'it-routes-nxc-1'),
+              ('nexd', $1, $2, 'creative', 'it-routes-nxcr-1')`,
+      [campaign.id, creative.id],
+    )
+    const derived = await app.inject({
+      method: 'GET',
+      url: `/campaigns/${campaign.id}`,
+      headers: auth,
+    })
+    expect(derived.json<Detail>().externalIds).toEqual([
+      {
+        source: 'zeus',
+        level: 'campaign',
+        creativeId: null,
+        externalId: 'SF-it-routes-006-1_nexd-it-routes-nxc-1',
+        linked: false,
+      },
+      {
+        source: 'zeus',
+        level: 'creative',
+        creativeId: creative.id,
+        externalId: 'SF-it-routes-006-1_nexd-it-routes-nxc-1_nexd-it-routes-nxcr-1',
+        linked: false,
+      },
+    ])
+
+    // Once the Zeus ids are set (by hand today), the list says so.
+    await put(
+      campaign.id,
+      'zeus',
+      zeusIds({
+        campaignId: 'SF-it-routes-006-1_nexd-it-routes-nxc-1',
+        idType: 'external_id',
+        pixels: [],
+        creatives: [
+          {
+            id: 'SF-it-routes-006-1_nexd-it-routes-nxc-1_nexd-it-routes-nxcr-1',
+            tag: creative.tag,
+          },
+        ],
+      }),
+    )
+    const linked = await app.inject({
+      method: 'GET',
+      url: `/campaigns/${campaign.id}`,
+      headers: auth,
+    })
+    expect(linked.json<Detail>().externalIds.map((e) => e.linked)).toEqual([true, true])
+    expect(linked.json<Detail>().creatives).toHaveLength(1) // the Zeus id joined the same creative
   })
 
   it('gives the ids of a rebuilt link their creatives back: a creative outlives its link', async () => {

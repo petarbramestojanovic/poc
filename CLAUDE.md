@@ -61,6 +61,7 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 - Errors: shape surprises extend `ConnectorContractError`; numbers that do not add up extend `VerificationError`.
 - Responses identical across links (e.g. Zeus's unfiltered tracker) go through `ctx.memo.getOrLoad(key, …)`, keyed by credential, report and window.
 - `checkConnection` answers `ok: true` only when the key is known to be accepted. 429 and 5xx mean "cannot tell" → `ok: false`. Give probes a `deadlineMs`.
+- **Provisioning capabilities** are optional and checked with type guards (`derivesExternalIds`), so the campaigns service still knows no platform by name. `deriveExternalIds(input)` is pure: from the campaign's CRM reference, its creatives and `external.provisioned_resource` it derives the ids _its_ platform must be given, leaving out what cannot be derived yet (never a guess). Zeus implements it (`zeus/handoff.ts`: `SF-<Opp>_nexd-<Campaign>[_nexd-<Creative>]`, the format agreed with ATK); `GET /campaigns/:id` lists the result as `externalIds` with `linked`. Platform names inside a connector are fine; inside `app` or the campaigns service they are not.
 - Vendor-supplied names are Map keys (`unmapped: Map<string, number>`), never plain-object keys.
 
 ## Engine and database

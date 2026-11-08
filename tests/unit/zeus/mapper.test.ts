@@ -16,7 +16,7 @@ import { ENTITIES, loadFixture } from './helpers.ts'
 const creatives = (): Matched<ZeusCreativesRow>[] =>
   loadFixture('creatives').rows.map((raw) => {
     const row = zeusCreativesRow.parse(raw)
-    return { entity: row.creative_id === '12345' ? ENTITIES.mpuV1 : ENTITIES.mpuV2, row }
+    return { entity: row.creative_id === 'ENG Swipe MPU V1' ? ENTITIES.mpuV1 : ENTITIES.mpuV2, row }
   })
 
 const tracker = (): Matched<ZeusTrackerRow>[] =>
