@@ -284,6 +284,12 @@ export interface ProvisionCampaignInput {
   campaign: ExternalIdInput['campaign']
   /** This platform's campaign-level resources so far: a step already done is not done twice. */
   existing: readonly ProvisionedResourceRecord[]
+  /**
+   * The ids the campaign's link to this platform already carries, set by a person. A campaign
+   * that exists on the platform already (set up before provisioning did) is adopted from its
+   * campaign-level id here, never created a second time.
+   */
+  linked?: readonly { level: EntityLevel; externalId: string }[]
 }
 
 export interface ProvisionCreativeInput {

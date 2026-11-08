@@ -99,18 +99,29 @@ export const NEXD_STANDARD_EVENTS = [
   { eventName: 'Unique [Hover]', targetKind: 'metric', targetId: 'hovered' },
 ] as const
 
-export const nexdPresetSchema = z.strictObject({
-  /**
-   * One entry per NEXD creative (live id). A new creative becomes one of ours, tagged with its
-   * own id; `tag` names an existing creative instead (the same creative on another platform). The
-   * label is the name a client sees for the creative's rows (NEXD's own API returns none), so it
-   * is required here, unlike on Zeus, whose reports carry a creative_name.
-   */
-  creatives: z
-    .array(z.strictObject({ liveId: nonEmptyId, label: label.unwrap(), tag, type: creativeType }))
-    .min(1),
-  ...linkFields,
-})
+export const nexdPresetSchema = z
+  .strictObject({
+    /**
+     * The NEXD campaign the creatives live in, for a campaign set up before provisioning existed:
+     * provisioning adds new creatives to it instead of creating a second NEXD campaign. The sync
+     * never reads it (NEXD is read per creative).
+     */
+    campaignId: nonEmptyId.optional(),
+    /**
+     * One entry per NEXD creative (live id). A new creative becomes one of ours, tagged with its
+     * own id; `tag` names an existing creative instead (the same creative on another platform). The
+     * label is the name a client sees for the creative's rows (NEXD's own API returns none), so it
+     * is required here, unlike on Zeus, whose reports carry a creative_name.
+     */
+    creatives: z
+      .array(z.strictObject({ liveId: nonEmptyId, label: label.unwrap(), tag, type: creativeType }))
+      .default([]),
+    ...linkFields,
+  })
+  .refine((input) => input.campaignId !== undefined || input.creatives.length > 0, {
+    error: 'name the NEXD campaign, at least one creative, or both',
+    path: ['creatives'],
+  })
 export type NexdPreset = z.infer<typeof nexdPresetSchema>
 
 export function nexdSetup(input: NexdPreset): SourceSetup {
@@ -118,15 +129,20 @@ export function nexdSetup(input: NexdPreset): SourceSetup {
     source: 'nexd',
     language: input.language ?? '',
     ...(input.credential === undefined ? {} : { credential: input.credential }),
-    entities: input.creatives.map((creative) =>
-      defined({
-        level: 'creative',
-        externalId: creative.liveId,
-        label: creative.label,
-        campaignTag: creative.tag,
-        creativeType: creative.type,
-      }),
-    ),
+    entities: [
+      ...(input.campaignId === undefined
+        ? []
+        : [{ level: 'campaign', externalId: input.campaignId, campaignTag: '' }]),
+      ...input.creatives.map((creative) =>
+        defined({
+          level: 'creative',
+          externalId: creative.liveId,
+          label: creative.label,
+          campaignTag: creative.tag,
+          creativeType: creative.type,
+        }),
+      ),
+    ],
     // 'Page seen [...]' and 'CTR [...]' are named per creative, so they are not guessed here:
     // they arrive in external.unmapped_event and are mapped once someone has seen them.
     eventMap: [...NEXD_STANDARD_EVENTS],
