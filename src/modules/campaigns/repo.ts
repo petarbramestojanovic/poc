@@ -37,6 +37,7 @@ const sql = loadSql(import.meta.url, [
   'list_creatives',
   'update_creative_names',
   'list_provisioned_resources',
+  'reidentify_entity',
 ] as const)
 
 export type CampaignStatus = 'draft' | 'active' | 'archived'
@@ -546,6 +547,16 @@ export async function insertEntities(
     entities.map((entity) => entity.creativeId),
   ])
   return rows.length
+}
+
+/** Gives one entity a new platform id, keeping its tag and creative; true when it was there. */
+export async function reidentifyEntity(
+  q: Queryable,
+  linkId: string,
+  change: { level: string; from: string; to: string },
+): Promise<boolean> {
+  const rows = await q.query(sql.reidentify_entity, [linkId, change.level, change.from, change.to])
+  return rows.length === 1
 }
 
 /** Renames the entities whose label the request states differently; returns how many that was. */
