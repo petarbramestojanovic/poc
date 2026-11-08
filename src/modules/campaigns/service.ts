@@ -1,6 +1,7 @@
 import type { Db, Tx } from '../../core/db.ts'
 import type { Logger } from '../../core/log.ts'
 import type { ConnectorRegistry } from '../sync/registry.ts'
+import { derivesExternalIds, type DerivedExternalId, type ExternalIdInput } from '../sync/types.ts'
 import {
   CampaignNotFoundError,
   CompanyMismatchError,
@@ -362,6 +363,56 @@ async function settleCreatives(
   }
 
   return { entities, creativesAdded }
+}
+
+// --- the ids another platform must be told ----------------------------------------------------
+
+/** A derived id, with whether the campaign already has it as a platform id of that source. */
+export interface ExternalIdView extends DerivedExternalId {
+  source: string
+  linked: boolean
+}
+
+/**
+ * What each platform that derives its ids (connector capability `deriveExternalIds`) wants to be
+ * given for this campaign: the hand-off list a person reads to ATK today, and provisioning will
+ * send tomorrow. Derived from the campaign's reference, its creatives and what the other platforms
+ * created for it, so it fills in as provisioning progresses; `linked` says which of them the
+ * campaign's links already carry.
+ */
+export async function describeExternalIds(
+  deps: CampaignDeps,
+  campaign: repo.CampaignDetail,
+): Promise<ExternalIdView[]> {
+  const derivers = deps.registry
+    .ids()
+    .map((id) => deps.registry.get(id))
+    .filter(derivesExternalIds)
+  if (derivers.length === 0) return []
+
+  const resources = await repo.listProvisionedResources(deps.db, campaign.id)
+  const input: ExternalIdInput = {
+    campaign: { id: campaign.id, name: campaign.name, externalRef: campaign.externalRef },
+    creatives: campaign.creatives.map((c) => ({
+      id: c.id,
+      tag: c.tag,
+      type: c.type,
+      name: c.name,
+    })),
+    resources,
+  }
+  const linked = new Set(
+    campaign.links.flatMap((link) =>
+      link.entities.map((e) => `${link.source}/${e.level}/${e.externalId}`),
+    ),
+  )
+  return derivers.flatMap((connector) =>
+    connector.deriveExternalIds(input).map((derived) => ({
+      source: connector.id,
+      ...derived,
+      linked: linked.has(`${connector.id}/${derived.level}/${derived.externalId}`),
+    })),
+  )
 }
 
 // --- platform ids, set by a person ------------------------------------------------------------

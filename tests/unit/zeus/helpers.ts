@@ -119,14 +119,14 @@ export const ENTITIES = {
   },
   mpuV1: {
     level: 'creative',
-    externalId: '12345',
+    externalId: 'ENG Swipe MPU V1',
     role: null,
     label: 'ENG Swipe MPU V1',
     campaignTag: 'mpu_v1',
   },
   mpuV2: {
     level: 'creative',
-    externalId: '12346',
+    externalId: 'ENG Swipe MPU V2',
     role: null,
     label: 'ENG Swipe MPU V2',
     campaignTag: 'mpu_v2',
