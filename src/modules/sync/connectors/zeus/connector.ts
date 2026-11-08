@@ -19,20 +19,29 @@ import type {
   SourceConnector,
   SyncContext,
 } from '../../types.ts'
-import { checkZeusInvariants, mapZeusRows, type ZeusMapperInput } from './mapper.ts'
+import {
+  checkZeusInvariants,
+  mapZeusRows,
+  ZeusInvariantError,
+  type Matched,
+  type ZeusMapperInput,
+} from './mapper.ts'
 import {
   zeusCampaignsRow,
   zeusCreativesRow,
   zeusLinkConfig,
   zeusReport,
   zeusTrackerRow,
+  type ZeusCampaignsRow,
+  type ZeusCreativesRow,
   type ZeusLinkConfig,
   type ZeusTrackerRow,
 } from './schema.ts'
 
 // Zeus (ATK): three GETs per ≤31-day chunk. `creatives` filtered by the link's campaign id,
 // `tracker` fetched unfiltered and matched locally (code → external_id → name, RFC-003 §2.3),
-// `campaigns` only when the link has no creative entity. The id is sent in the one parameter the
+// `campaigns` filtered the same way: written when the link has no creative entity, otherwise read
+// only to see which days have numbers (coverageStart). The id is sent in the one parameter the
 // link's `campaign_id_param` names, never retried in the other: see getFiltered.
 
 export const ZEUS_MAX_WINDOW_DAYS = 31
@@ -84,6 +93,8 @@ interface FetchState {
   warnings: Set<string>
   /** Set when Zeus answered with a `to` earlier than requested (its own clamp). */
   servedTo: IsoDate | undefined
+  /** The campaign's own rows, read beside its creatives and never written: see coverageStart. */
+  campaignTotals: Matched<ZeusCampaignsRow>[]
 }
 
 /** One report as Zeus answered it: its rows, and the last day it answered for. */
@@ -101,6 +112,49 @@ function noteServed(state: FetchState, window: DateWindow, servedTo: IsoDate): v
   if (servedTo < window.to && (state.servedTo === undefined || servedTo < state.servedTo)) {
     state.servedTo = servedTo
   }
+}
+
+function daysWithNumbers(
+  rows: Matched<Pick<ZeusCampaignsRow, 'date' | 'impressions' | 'clicks'>>[],
+  window: DateWindow,
+): Set<IsoDate> {
+  const days = new Set<IsoDate>()
+  for (const { row } of rows) {
+    const inWindow = row.date >= window.from && row.date <= window.to
+    if (inWindow && (row.impressions > 0 || row.clicks > 0)) days.add(row.date)
+  }
+  return days
+}
+
+/**
+ * The first day a link with creatives may claim. Zeus can start breaking a campaign into creatives
+ * long after it began delivering (campaign 91: 2026-10-27), and its creatives report has nothing
+ * for the days before. A covered day with nothing is cleared, so a day with numbers in the
+ * campaigns report and none on a linked creative is never claimed: before the first day that has
+ * them it stays as stored. After that day, or with no such day at all, the breakdown is broken,
+ * and the run fails with every stored day intact.
+ */
+function coverageStart(
+  window: DateWindow,
+  creatives: Matched<ZeusCreativesRow>[],
+  totals: Matched<ZeusCampaignsRow>[],
+  warn: (warning: string) => void,
+): IsoDate {
+  const divided = daysWithNumbers(creatives, window)
+  const undivided = [...daysWithNumbers(totals, window)].filter((day) => !divided.has(day)).sort()
+  const firstDivided = [...divided].sort()[0]
+  const broken = undivided.filter((day) => firstDivided === undefined || day > firstDivided)
+  if (broken.length > 0) {
+    throw new ZeusInvariantError(
+      `creatives: no numbers on a linked creative for ${broken.join(', ')} although the campaigns report has them; refusing to clear those days`,
+    )
+  }
+  const last = undivided.at(-1)
+  if (last === undefined) return window.from
+  warn(
+    `creatives: ${undivided.length} day(s) through ${last} have numbers in the campaigns report and none on a linked creative; left as stored`,
+  )
+  return addDays(last, 1)
 }
 
 export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusConnector {
@@ -215,6 +269,18 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     const campaign = ctx.entities.find((e) => e.level === 'campaign')
     const creatives = ctx.entities.filter((e) => e.level === 'creative')
     const pixels = ctx.entities.filter((e) => e.level === 'pixel')
+    const campaignRows = (entity: LinkEntity) =>
+      getFiltered(
+        ctx,
+        'campaigns',
+        window,
+        zeusCampaignsRow,
+        config.campaign_id_param,
+        entity.externalId,
+        campaignOf(entity.externalId),
+        (row) => `campaign_id ${row.campaign_id}`,
+        state,
+      )
 
     if (creatives.length > 0) {
       const byId = new Map(creatives.map((e) => [e.externalId, e]))
@@ -255,19 +321,15 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
         }
         input.creatives.push({ entity, row })
       }
+      if (campaign) {
+        for (const row of await campaignRows(campaign)) {
+          state.campaignTotals.push({ entity: campaign, row })
+        }
+      }
     } else if (campaign) {
-      const rows = await getFiltered(
-        ctx,
-        'campaigns',
-        window,
-        zeusCampaignsRow,
-        config.campaign_id_param,
-        campaign.externalId,
-        campaignOf(campaign.externalId),
-        (row) => `campaign_id ${row.campaign_id}`,
-        state,
-      )
-      for (const row of rows) input.campaigns.push({ entity: campaign, row })
+      for (const row of await campaignRows(campaign)) {
+        input.campaigns.push({ entity: campaign, row })
+      }
     } else {
       throw new ZeusContractError(
         `link ${ctx.link.id} has neither a campaign nor a creative entity`,
@@ -338,7 +400,7 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     },
 
     async fetchWindow(ctx): Promise<FetchResult> {
-      const state: FetchState = { warnings: new Set(), servedTo: undefined }
+      const state: FetchState = { warnings: new Set(), servedTo: undefined, campaignTotals: [] }
       const input: ZeusMapperInput = {
         language: ctx.link.language,
         clickthroughCtaId: ctx.config.clickthrough_cta_id,
@@ -368,7 +430,10 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
         await fetchChunk(ctx, chunk, input, state, ctx.memo)
       }
 
-      checkZeusInvariants(input, (warning) => state.warnings.add(warning))
+      checkZeusInvariants(
+        { ...input, campaigns: [...input.campaigns, ...state.campaignTotals] },
+        (warning) => state.warnings.add(warning),
+      )
       const coveredTo = state.servedTo ?? window.to
       if (coveredTo < window.to) {
         state.warnings.add(
@@ -377,12 +442,19 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
       }
       const warnings = [...state.warnings]
       if (coveredTo < window.from) return { rows: [], warnings, covered: null }
-      // A day after the last one every report served is incomplete (impressions without the
-      // pixel fires, say): it is neither written nor claimed, and the next run picks it up.
-      const rows = mapZeusRows(input, (w) => warnings.push(w)).filter(
-        (row) => row.date <= coveredTo,
+      const coveredFrom = coverageStart(
+        { from: window.from, to: coveredTo },
+        input.creatives,
+        state.campaignTotals,
+        (w) => warnings.push(w),
       )
-      return { rows, warnings, covered: { from: window.from, to: coveredTo } }
+      // A day after the last one every report served is incomplete (impressions without the
+      // pixel fires, say): it is neither written nor claimed, and the next run picks it up. A day
+      // before coveredFrom stays as stored, pixel fires included.
+      const rows = mapZeusRows(input, (w) => warnings.push(w)).filter(
+        (row) => row.date >= coveredFrom && row.date <= coveredTo,
+      )
+      return { rows, warnings, covered: { from: coveredFrom, to: coveredTo } }
     },
 
     /** Discovery for onboarding: every pixel the token can see, with fires over the last 7 days. */
