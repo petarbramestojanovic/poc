@@ -20,6 +20,7 @@ import * as credentials from '../sync/repo.ts'
 import {
   provisions,
   type Credential,
+  type EntityLevel,
   type ExternalIdInput,
   type ProvisionContext,
   type RawCapture,
@@ -68,10 +69,16 @@ export interface ProvisioningResult {
 const MAX_STEPS = 60
 const MAX_STEP_CHARS = 4_000
 
+export interface ProvisionOptions {
+  /** Only these creatives (by id) are created on the platforms; the campaign step still runs. */
+  creativeIds?: readonly string[]
+}
+
 export async function provisionCampaign(
   deps: ProvisioningDeps,
   campaignId: string,
   trigger: repo.ProvisioningTrigger,
+  options: ProvisionOptions = {},
 ): Promise<ProvisioningResult> {
   const provisioners = deps.registry
     .ids()
@@ -83,10 +90,16 @@ export async function provisionCampaign(
   }
 
   const detail = await findCampaignDetail(deps.campaigns, campaignId)
-  const creatives = await ensureCreativesForTypes(deps.campaigns, campaignId)
+  const all = await ensureCreativesForTypes(deps.campaigns, campaignId)
+  const creatives =
+    options.creativeIds === undefined
+      ? all
+      : all.filter((creative) => options.creativeIds?.includes(creative.id))
   if (creatives.length === 0) {
     throw new NothingToProvisionError(
-      `campaign ${campaignId} names no creative type, so there is no creative to create`,
+      options.creativeIds === undefined
+        ? `campaign ${campaignId} names no creative type, so there is no creative to create`
+        : `campaign ${campaignId} has none of the creatives named`,
     )
   }
 
@@ -139,6 +152,11 @@ export async function provisionCampaign(
       const campaignStep = await connector.provisionCampaign(ctx, {
         campaign,
         existing: (await own()).filter((r) => r.creativeId === null),
+        linked: detail.links
+          .filter((link) => link.source === connector.id)
+          .flatMap((link) =>
+            link.entities.map((e) => ({ level: e.level as EntityLevel, externalId: e.externalId })),
+          ),
       })
       resourcesAdded += await repo.insertResources(
         deps.db,

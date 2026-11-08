@@ -257,7 +257,9 @@ export function createNexdConnector(options: NexdConnectorOptions = {}): NexdCon
       maxWindowDays: NEXD_MAX_WINDOW_DAYS,
       verifiesAgainstTotals: true,
     },
-    identity: { levels: ['creative'], multiple: true },
+    // The campaign-level id is the NEXD campaign a person names so provisioning adds creatives to
+    // it (provision.ts); the sync reads creatives only.
+    identity: { levels: ['campaign', 'creative'], multiple: true },
 
     describe: () => ({ configSchema: nexdLinkConfig }),
 

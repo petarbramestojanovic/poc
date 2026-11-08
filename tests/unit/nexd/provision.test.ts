@@ -301,6 +301,20 @@ describe('NEXD provisioning', () => {
     ])
   })
 
+  it('adopts the NEXD campaign a person already named on the link instead of creating one', async () => {
+    const fake = fakeNexd()
+    const step = await provisioner().provisionCampaign(context(fake), {
+      campaign: CAMPAIGN,
+      existing: [],
+      linked: [
+        { level: 'creative', externalId: 'oldLive' },
+        { level: 'campaign', externalId: 'nxExisting' },
+      ],
+    })
+    expect(step.resources).toEqual([{ kind: NEXD_RESOURCE.campaign, externalId: 'nxExisting' }])
+    expect(fake.seen).toEqual([]) // nothing asked of NEXD
+  })
+
   it('is a capability the NEXD connector declares, with the folder it was given', async () => {
     const connector = createNexdConnector({
       baseUrl: 'https://nexd.test',
