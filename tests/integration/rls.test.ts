@@ -61,6 +61,7 @@ describe('RLS and the reader grants', () => {
       'external.sync_state',
       'external.unmapped_event',
       'app.campaign',
+      'app.creative',
     ])('reads %s', async (table) => {
       await asAuthenticated()
       expect(await sqlstateOf(() => sql(`SELECT count(*) FROM ${table}`))).toBeUndefined()
@@ -72,6 +73,7 @@ describe('RLS and the reader grants', () => {
       ['app.company', 'not needed: company names come from the admin API'],
       ['app.webhook', 'holds the signing secret'],
       ['app.webhook_delivery', 'holds every payload we sent'],
+      ['external.provisioned_resource', 'platform-side ids; nothing a reader shows'],
     ])('never reads %s (%s)', async (table) => {
       await asAuthenticated()
       expect(await sqlstateOf(() => sql(`SELECT count(*) FROM ${table}`))).toBe(DENIED)

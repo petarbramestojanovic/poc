@@ -222,11 +222,19 @@ describe('webhook rows (migration 0008)', () => {
         ZEUS_CREDENTIAL,
       ],
     )
+    // Two creatives of the priced campaign (migration 0011), each with its NEXD live id. The
+    // report prints the creative's name.
     await db.query(
-      `INSERT INTO external.link_entity (link_id, source_id, level, external_id, label, campaign_tag)
-       VALUES ($1, 'nexd', 'creative', 'itf-nx-n1', 'KW37 Kids', 'n1'),
-              ($1, 'nexd', 'creative', 'itf-nx-n2', 'KW33 Ladies', 'n2')`,
-      [NEXD_LINK],
+      `INSERT INTO app.creative (campaign_id, tag, name)
+       VALUES ($1, 'n1', 'KW37 Kids'), ($1, 'n2', 'KW33 Ladies')`,
+      [PRICED],
+    )
+    await db.query(
+      `INSERT INTO external.link_entity (link_id, source_id, level, external_id, label, campaign_tag, creative_id)
+       SELECT $1, 'nexd', 'creative', e.external_id, c.name, c.tag, c.id
+         FROM (VALUES ('itf-nx-n1', 'n1'), ('itf-nx-n2', 'n2')) AS e(external_id, tag)
+         JOIN app.creative c ON c.campaign_id = $2 AND c.tag = e.tag`,
+      [NEXD_LINK, PRICED],
     )
     await db.query(
       `INSERT INTO analytics.advanced_analytics
@@ -447,7 +455,7 @@ describe('webhook rows (migration 0008)', () => {
 
     await sendNow(deps(), { webhookId: created.id, period: PERIOD, deliverNow: false })
 
-    // The NEXD creative n1 is named by its entity's label; its 1200 impressions never reach the
+    // The NEXD creative n1 is named by its creative's name; its 1200 impressions never reach the
     // Zeus row (2002), and the Zeus clicks never reach it. The days NEXD reported as zeros — n1
     // after it stopped, n2 before it started — have no row.
     expect((await stored(created.id)).payload).toBe(

@@ -59,8 +59,18 @@ const linkDetail = linkSummary.extend({
       role: z.string().nullable(),
       label: z.string().nullable(),
       campaignTag: z.string(),
+      creativeId: z.guid().nullable(),
     }),
   ),
+})
+
+/** A creative of the campaign: ours, the thing each platform's creative ids point at. */
+const creativeSummary = z.object({
+  id: z.guid(),
+  tag: z.string(),
+  type: z.string().nullable(),
+  name: z.string(),
+  createdAt: z.iso.datetime({ offset: true }),
 })
 
 // --- /campaigns -----------------------------------------------------------------------------
@@ -70,6 +80,7 @@ const listQuery = z.strictObject({ companyId: z.guid().optional() })
 const platformQuery = z.strictObject({ language: z.string().trim().max(16).default('') })
 const detailResponse = campaignResponse.extend({
   companyName: z.string(),
+  creatives: z.array(creativeSummary),
   links: z.array(linkDetail),
 })
 const changeResponse = z.object({

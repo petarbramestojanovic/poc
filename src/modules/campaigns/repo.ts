@@ -32,6 +32,9 @@ const sql = loadSql(import.meta.url, [
   'list_link_sources',
   'list_campaigns',
   'get_campaign',
+  'insert_creative',
+  'list_creatives',
+  'update_creative_names',
 ] as const)
 
 export type CampaignStatus = 'draft' | 'active' | 'archived'
@@ -271,24 +274,93 @@ export interface LinkDetail {
     role: string | null
     label: string | null
     campaignTag: string
+    /** The creative the entity's rows belong to; null on the campaign's own row. */
+    creativeId: string | null
   }[]
+}
+
+/** A creative as the detail route shows it (jsonb_agg hands the timestamp over as ISO text). */
+export interface CreativeSummary {
+  id: string
+  tag: string
+  type: string | null
+  name: string
+  createdAt: string
 }
 
 export interface CampaignDetail extends CampaignRecord {
   companyName: string
+  creatives: CreativeSummary[]
   links: LinkDetail[]
 }
 
 export async function getCampaign(q: Queryable, id: string): Promise<CampaignDetail | undefined> {
-  const rows = await q.query<CampaignRow & { company_name: string; links: LinkDetail[] }>(
-    sql.get_campaign,
-    [id],
-  )
+  const rows = await q.query<
+    CampaignRow & { company_name: string; creatives: CreativeSummary[]; links: LinkDetail[] }
+  >(sql.get_campaign, [id])
   return first(rows, (row) => ({
     ...toCampaign(row),
     companyName: row.company_name,
+    creatives: row.creatives,
     links: row.links,
   }))
+}
+
+// --- creatives ------------------------------------------------------------------------------
+
+/** One creative of a campaign (app.creative, migration 0011): ours, pointed at by platform ids. */
+export interface CreativeRecord {
+  id: string
+  campaignId: string
+  /** What the writer stamps on its rows; the creative's own id unless it was keyed by hand. */
+  tag: string
+  type: string | null
+  name: string
+  createdAt: Date
+  updatedAt: Date
+}
+
+interface CreativeRow {
+  id: string
+  campaign_id: string
+  tag: string
+  type: string | null
+  name: string
+  created_at: Date
+  updated_at: Date
+}
+
+const toCreative = (row: CreativeRow): CreativeRecord => ({
+  id: row.id,
+  campaignId: row.campaign_id,
+  tag: row.tag,
+  type: row.type,
+  name: row.name,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+})
+
+export async function listCreatives(q: Queryable, campaignId: string): Promise<CreativeRecord[]> {
+  return (await q.query<CreativeRow>(sql.list_creatives, [campaignId])).map(toCreative)
+}
+
+/** A new creative. `tag` null = its own id, the rule for every creative created from now on. */
+export async function insertCreative(
+  q: Queryable,
+  creative: { campaignId: string; tag: string | null; type: string | null; name: string },
+): Promise<CreativeRecord> {
+  const rows = await q.query<CreativeRow>(sql.insert_creative, [
+    creative.campaignId,
+    creative.tag,
+    creative.type,
+    creative.name,
+  ])
+  return toCreative(required(rows[0], 'insert_creative'))
+}
+
+/** After a relabel: a creative's name follows its own entity's label. Returns how many changed. */
+export async function updateCreativeNames(q: Queryable, linkId: string): Promise<number> {
+  return (await q.query(sql.update_creative_names, [linkId])).length
 }
 
 // --- sources, links and what hangs off them -------------------------------------------------
@@ -428,13 +500,20 @@ export async function findEntityOwners(
   }))
 }
 
+/** An entity as it is stored: its tag settled, pointing at the creative whose tag it is. */
+export interface StoredEntity extends Omit<EntitySetup, 'campaignTag' | 'creativeType'> {
+  campaignTag: string
+  creativeId: string | null
+}
+
 /** Inserts the entities the link does not have yet and returns how many that was. */
 export async function insertEntities(
   q: Queryable,
   linkId: string,
   sourceId: string,
-  entities: readonly EntitySetup[],
+  entities: readonly StoredEntity[],
 ): Promise<number> {
+  if (entities.length === 0) return 0
   const rows = await q.query(sql.insert_entities, [
     linkId,
     sourceId,
@@ -443,6 +522,7 @@ export async function insertEntities(
     entities.map((entity) => entity.role ?? null),
     entities.map((entity) => entity.label ?? null),
     entities.map((entity) => entity.campaignTag),
+    entities.map((entity) => entity.creativeId),
   ])
   return rows.length
 }
@@ -477,13 +557,14 @@ export async function insertEventMap(
 }
 
 /** A link's platform ids as they are stored, in the shape a setup states them. */
-export async function listLinkEntities(q: Queryable, linkId: string): Promise<EntitySetup[]> {
+export async function listLinkEntities(q: Queryable, linkId: string): Promise<StoredEntity[]> {
   const rows = await q.query<{
     level: EntitySetup['level']
     external_id: string
     role: string | null
     label: string | null
     campaign_tag: string
+    creative_id: string | null
   }>(sql.list_link_entities, [linkId])
   return rows.map((row) => ({
     level: row.level,
@@ -491,6 +572,7 @@ export async function listLinkEntities(q: Queryable, linkId: string): Promise<En
     ...(row.role === null ? {} : { role: row.role }),
     ...(row.label === null ? {} : { label: row.label }),
     campaignTag: row.campaign_tag,
+    creativeId: row.creative_id,
   }))
 }
 

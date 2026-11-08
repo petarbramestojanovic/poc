@@ -193,6 +193,103 @@ describe('campaign setup', () => {
     })
   })
 
+  describe('creatives (migration 0011): one record of ours, pointed at by every platform id', () => {
+    const creativesOf = (campaignId: string) =>
+      db.query<{ id: string; tag: string; type: string | null; name: string }>(
+        `SELECT id, tag, type, name FROM app.creative WHERE campaign_id = $1 ORDER BY created_at, id`,
+        [campaignId],
+      )
+    const pointersOf = (campaignId: string) =>
+      db.query<{
+        source_id: string
+        level: string
+        external_id: string
+        campaign_tag: string
+        creative_id: string | null
+      }>(
+        `SELECT e.source_id, e.level, e.external_id, e.campaign_tag, e.creative_id
+           FROM external.link_entity e JOIN external.campaign_link l ON l.id = e.link_id
+          WHERE l.campaign_id = $1 ORDER BY e.source_id, e.level, e.external_id`,
+        [campaignId],
+      )
+
+    it('makes a new creative id a creative of ours, tagged with its own id, named by its label', async () => {
+      const result = await setUpCampaign(
+        deps,
+        setup(
+          {},
+          { nexd: { creatives: [{ liveId: 'it-setup-nx-1', label: 'V1', type: 'Reveal Ad' }] } },
+        ),
+      )
+
+      expect(at(result.links)).toMatchObject({ entitiesAdded: 1, creativesAdded: 1 })
+      const [creative] = await creativesOf(result.campaign.id)
+      expect(creative).toMatchObject({ tag: creative?.id, type: 'Reveal Ad', name: 'V1' })
+      expect(await pointersOf(result.campaign.id)).toEqual([
+        {
+          source_id: 'nexd',
+          level: 'creative',
+          external_id: 'it-setup-nx-1',
+          campaign_tag: creative?.id,
+          creative_id: creative?.id,
+        },
+      ])
+    })
+
+    it('names one creative on a second platform by its tag, and never makes a second one', async () => {
+      const first = await setUpCampaign(deps, setup({ externalRef: REF }, nexd))
+      const [creative] = await creativesOf(first.campaign.id)
+
+      // The same creative, as Zeus knows it; and the pixel whose fires count for it.
+      const second = await setUpCampaign(
+        deps,
+        setup(
+          { externalRef: REF },
+          {
+            ...zeus({
+              creatives: [{ id: 'it-setup-zc-1', tag: creative?.tag }],
+              pixels: [{ code: 'it-setup-eng', role: 'engagement', tag: creative?.tag }],
+            }),
+            ...nexd, // pushed again: the live id it already has gets no new creative
+          },
+        ),
+      )
+
+      expect(second.links.map((l) => [l.source, l.entitiesAdded, l.creativesAdded])).toEqual([
+        ['zeus', 3, 0],
+        ['nexd', 0, 0],
+      ])
+      expect(await creativesOf(first.campaign.id)).toHaveLength(1)
+      expect(
+        (await pointersOf(first.campaign.id)).map((e) => [e.source_id, e.level, e.creative_id]),
+      ).toEqual([
+        ['nexd', 'creative', creative?.id],
+        ['zeus', 'campaign', null],
+        ['zeus', 'creative', creative?.id],
+        ['zeus', 'pixel', creative?.id],
+      ])
+    })
+
+    it('refuses a pixel for a creative the campaign does not have, writing nothing', async () => {
+      await expect(
+        setUpCampaign(
+          deps,
+          setup({}, zeus({ pixels: [{ code: 'it-setup-eng', role: 'engagement', tag: 'nope' }] })),
+        ),
+      ).rejects.toMatchObject({ code: 'invalid_setup' })
+      expect(await db.query(`SELECT 1 FROM app.company WHERE name = 'IT Setup Rauch'`)).toEqual([])
+    })
+
+    it('leaves the campaign row alone: an entity with no tag names no creative', async () => {
+      const result = await setUpCampaign(
+        deps,
+        setup({}, zeus({ pixels: [{ code: 'it-setup-eng', role: 'engagement' }] })),
+      )
+      expect(await creativesOf(result.campaign.id)).toEqual([])
+      expect((await pointersOf(result.campaign.id)).map((e) => e.campaign_tag)).toEqual(['', ''])
+    })
+  })
+
   describe('what it refuses, writing nothing', () => {
     const campaigns = async () =>
       at(
