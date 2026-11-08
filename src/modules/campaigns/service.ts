@@ -415,6 +415,70 @@ export async function describeExternalIds(
   )
 }
 
+// --- what provisioning asks of the setup --------------------------------------------------------
+
+/** One campaign with its creatives and links, or a 404. */
+export async function findCampaignDetail(
+  deps: CampaignDeps,
+  campaignId: string,
+): Promise<repo.CampaignDetail> {
+  const campaign = await repo.getCampaign(deps.db, campaignId)
+  if (!campaign) throw new CampaignNotFoundError(`campaign ${campaignId} does not exist`)
+  return campaign
+}
+
+/**
+ * One creative per creative type the CRM named, for a campaign that has none yet for that type:
+ * what provisioning creates on the platforms. Idempotent: a type that already has a creative is
+ * skipped, a type that went away changes nothing (a creative is never deleted). Returns every
+ * creative of the campaign, in setup order.
+ */
+export async function ensureCreativesForTypes(
+  deps: CampaignDeps,
+  campaignId: string,
+): Promise<repo.CreativeRecord[]> {
+  return deps.db.withTransaction(async (tx) => {
+    const campaign = await repo.findCampaignForUpdate(tx, campaignId)
+    if (!campaign) throw new CampaignNotFoundError(`campaign ${campaignId} does not exist`)
+    const existing = await repo.listCreatives(tx, campaignId)
+    const typesCovered = new Set(existing.map((c) => c.type).filter((t) => t !== null))
+    for (const type of campaign.creativeTypes) {
+      if (typesCovered.has(type)) continue
+      await repo.insertCreative(tx, { campaignId, tag: null, type, name: type })
+      typesCovered.add(type)
+    }
+    return repo.listCreatives(tx, campaignId)
+  })
+}
+
+/**
+ * Adds platform ids to a campaign the way a push does: the link is created if missing, ids it
+ * does not have are added, nothing is changed or removed. For provisioning, which obtains ids one
+ * creative at a time and must never rebuild a link.
+ */
+export async function addPlatformIds(
+  deps: CampaignDeps,
+  campaignId: string,
+  setup: SourceSetup,
+): Promise<LinkResult> {
+  const [source] = checkSources(deps.registry, [setup])
+  if (!source) throw new Error('checkSources returned nothing for one source')
+  const result = await translatingConflicts(() =>
+    deps.db.withTransaction(async (tx) => {
+      const campaign = await repo.findCampaignForUpdate(tx, campaignId)
+      if (!campaign) throw new CampaignNotFoundError(`campaign ${campaignId} does not exist`)
+      const link = await applySource(tx, campaignId, source)
+      await settleHeadline(tx, campaign)
+      return link
+    }),
+  )
+  deps.log.info(
+    { campaignId, source: source.source, entitiesAdded: result.entitiesAdded },
+    'platform ids added',
+  )
+  return result
+}
+
 // --- platform ids, set by a person ------------------------------------------------------------
 
 export interface PlatformChange {

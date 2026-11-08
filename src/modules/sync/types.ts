@@ -258,6 +258,78 @@ export function derivesExternalIds(
   return typeof (connector as Partial<ExternalIdDeriver>).deriveExternalIds === 'function'
 }
 
+/** What a provisioning step may use: the credential, two clients, a sink for raw responses. */
+export interface ProvisionContext {
+  credential: Credential
+  /** Retries transient failures, like every other outbound call. */
+  http: HttpClient
+  /** No retries: for polling an endpoint whose "not yet" answer is a retryable status (NEXD's 408). */
+  httpNoRetry: HttpClient
+  log: Logger
+  signal?: AbortSignal
+  /** Persists a (redacted) request/response pair as it happens, so a failed run keeps them. */
+  capture?: (raw: RawCapture) => Promise<void>
+  /** Injectable for tests. */
+  sleep: (ms: number) => Promise<void>
+  now?: () => Date
+}
+
+/** A thing the platform created, as the connector names it; stored as a provisioned resource. */
+export interface NewResource {
+  kind: string
+  externalId: string
+}
+
+export interface ProvisionCampaignInput {
+  campaign: ExternalIdInput['campaign']
+  /** This platform's campaign-level resources so far: a step already done is not done twice. */
+  existing: readonly ProvisionedResourceRecord[]
+}
+
+export interface ProvisionCreativeInput {
+  campaign: ExternalIdInput['campaign']
+  /** This platform's campaign-level resources (its campaign id among them). */
+  campaignResources: readonly ProvisionedResourceRecord[]
+  creative: CreativeHandle
+  /** This platform's resources for this creative so far. */
+  existing: readonly ProvisionedResourceRecord[]
+}
+
+export interface ProvisionedStep {
+  /** New resources this step created; the caller stores them before anything else happens. */
+  resources: NewResource[]
+  warnings: string[]
+}
+
+export interface ProvisionedCreative extends ProvisionedStep {
+  /**
+   * The id the sync will ask the platform for (the creative-level link entity), once the
+   * platform has it; null while it does not yet.
+   */
+  entity: { externalId: string; label: string } | null
+}
+
+/**
+ * Creates a campaign and its creatives on the connector's platform. Every step is resumable: it
+ * reads what already exists (`existing`) and does only what is missing, so a run that failed
+ * halfway can be run again without creating a second campaign.
+ */
+export interface Provisioner {
+  provisionCampaign(ctx: ProvisionContext, input: ProvisionCampaignInput): Promise<ProvisionedStep>
+  provisionCreative(
+    ctx: ProvisionContext,
+    input: ProvisionCreativeInput,
+  ): Promise<ProvisionedCreative>
+}
+
+export function provisions(connector: SourceConnector): connector is SourceConnector & Provisioner {
+  const candidate = connector as Partial<Provisioner>
+  return (
+    typeof candidate.provisionCampaign === 'function' &&
+    typeof candidate.provisionCreative === 'function'
+  )
+}
+
 /** Pure: payload in, canonical rows out, no I/O. */
 export type Mapper<TInput> = (input: TInput) => CanonicalDailyRow[]
 

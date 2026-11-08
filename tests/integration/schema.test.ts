@@ -7,7 +7,7 @@ const FK_VIOLATION = '23503'
 const CHECK_VIOLATION = '23514'
 const NOT_NULL_VIOLATION = '23502'
 
-// Every table from RFC-004 with its primary key, in creation order, plus those of 0011 and 0012.
+// Every table from RFC-004 with its primary key, in creation order, plus those of 0011, 0012 and 0014.
 const EXPECTED_TABLES: Record<string, string[]> = {
   'external.source': ['id'],
   'external.credential': ['id'],
@@ -55,6 +55,7 @@ const EXPECTED_TABLES: Record<string, string[]> = {
   // Not RFC-004: the creative record, migration 0012.
   'app.creative': ['id'],
   'external.provisioned_resource': ['id'],
+  'external.provisioning_run': ['id'],
 }
 
 describe('migration 0001_foundation', () => {

@@ -133,15 +133,58 @@ export function nexdSetup(input: NexdPreset): SourceSetup {
   })
 }
 
+/** An id provisioning obtained for a creative (or the campaign), to be written as a link entity. */
+export interface ProvisionedEntity {
+  level: 'campaign' | 'creative'
+  externalId: string
+  /** The creative it names; null for the campaign's own id. */
+  creative: { tag: string; name: string } | null
+}
+
+const provisionedEntitySetups = (entities: readonly ProvisionedEntity[]) =>
+  entities.map((entity) =>
+    defined({
+      level: entity.level,
+      externalId: entity.externalId,
+      label: entity.creative?.name,
+      campaignTag: entity.creative?.tag ?? '',
+    }),
+  )
+
+/** The Zeus link provisioning writes: the derived strings, asked for by external id. */
+export function zeusProvisionedSetup(entities: readonly ProvisionedEntity[]): SourceSetup {
+  return sourceSetupSchema.parse({
+    source: 'zeus',
+    config: { clickthrough_cta_id: CLICKTHROUGH_CTA.ctaId, campaign_id_param: 'external_id' },
+    entities: provisionedEntitySetups(entities),
+    ctas: [CLICKTHROUGH_CTA],
+  })
+}
+
+/** The NEXD link provisioning writes: the live ids it obtained, one per creative. */
+export function nexdProvisionedSetup(entities: readonly ProvisionedEntity[]): SourceSetup {
+  return sourceSetupSchema.parse({
+    source: 'nexd',
+    entities: provisionedEntitySetups(entities.filter((entity) => entity.level === 'creative')),
+    eventMap: [...NEXD_STANDARD_EVENTS],
+  })
+}
+
 /**
  * The platforms a person can give ids for, each with its preset: PUT /campaigns/:id/platforms/:key
- * takes `schema` and hands `toSetup`'s result to the setup service.
+ * takes `schema` and hands `toSetup`'s result to the setup service. `fromProvisioned` is the same
+ * convention applied to ids provisioning obtained, so a provisioned link and a hand-set one look
+ * alike.
  */
 export const PLATFORM_PRESETS = {
-  zeus: { schema: zeusPresetSchema, toSetup: zeusSetup },
-  nexd: { schema: nexdPresetSchema, toSetup: nexdSetup },
+  zeus: { schema: zeusPresetSchema, toSetup: zeusSetup, fromProvisioned: zeusProvisionedSetup },
+  nexd: { schema: nexdPresetSchema, toSetup: nexdSetup, fromProvisioned: nexdProvisionedSetup },
 } as const
 export type PresetPlatform = keyof typeof PLATFORM_PRESETS
+
+export function isPresetPlatform(source: string): source is PresetPlatform {
+  return Object.hasOwn(PLATFORM_PRESETS, source)
+}
 
 /**
  * Whose numbers are a campaign's headline when nobody chose: the first of these it has ids for,

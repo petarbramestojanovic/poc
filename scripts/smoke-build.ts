@@ -13,6 +13,7 @@ const modules = [
   'modules/webhooks/scheduler.js',
   'modules/webhooks/routes.js',
   'modules/campaigns/routes.js',
+  'modules/provisioning/routes.js',
   'modules/companies/routes.js',
   'modules/salesforce/routes.js',
   'modules/webhooks/admin.js',

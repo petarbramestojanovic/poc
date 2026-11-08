@@ -19,6 +19,11 @@ const runtimeFields = {
   /** PEM of the CA that signs the database certificate (Supabase: dashboard → Database → SSL). */
   DATABASE_SSL_CA: z.string().optional(),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  /**
+   * The NEXD folder that provisioning creates campaigns in (CLAUDE.md, Provisioning). Unset: the
+   * account root. On staging a test folder, until the flow is proven.
+   */
+  NEXD_PROVISION_FOLDER_ID: z.string().trim().min(1).max(64).optional(),
   TZ: z.literal('UTC', { error: 'must be UTC; sources and schedules carry their own timezones' }),
 }
 
@@ -201,6 +206,8 @@ export interface RuntimeConfig {
   readonly databaseSsl: 'disable' | 'verify-full'
   readonly databaseSslCa: string | undefined
   readonly logLevel: LogLevel
+  /** Where provisioning creates NEXD campaigns; unset = the account root. */
+  readonly nexdProvisionFolderId?: string
 }
 
 export interface Config extends RuntimeConfig {
@@ -249,12 +256,17 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     databaseSsl: data.DATABASE_SSL,
     databaseSslCa: data.DATABASE_SSL_CA,
     logLevel: data.LOG_LEVEL,
+    ...withNexdFolder(data.NEXD_PROVISION_FOLDER_ID),
   }
 }
 
 /** The mail settings alone, for `npm run mail`; undefined when MAIL_PROVIDER is not set. */
 export function loadMailConfig(env: NodeJS.ProcessEnv = process.env): MailConfig | undefined {
   return toMailConfig(parse(mailSchema, env))
+}
+
+function withNexdFolder(value: string | undefined): { nexdProvisionFolderId?: string } {
+  return value === undefined ? {} : { nexdProvisionFolderId: value }
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -270,6 +282,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       : { inboundCampaignsToken: data.INBOUND_CAMPAIGNS_TOKEN }),
     port: data.PORT,
     logLevel: data.LOG_LEVEL,
+    ...withNexdFolder(data.NEXD_PROVISION_FOLDER_ID),
     trustProxyHops: data.TRUST_PROXY_HOPS,
     syncSchedulerEnabled: data.SYNC_SCHEDULER_ENABLED,
     webhookSchedulerEnabled: data.WEBHOOK_SCHEDULER_ENABLED,
