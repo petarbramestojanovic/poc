@@ -8,11 +8,22 @@ import { toCampaignSetup } from './opportunity.ts'
 // the same records again is harmless — a push that changes nothing writes nothing — which is what
 // makes a sender's retry safe without any record of deliveries already seen.
 
+/** What the ingest needs, and what it may do once a campaign is created. */
+export interface IngestDeps extends CampaignDeps {
+  /**
+   * Called for every campaign a delivery creates (never for one it updates): provisioning starts
+   * from here, in the background, when it is enabled. The push is answered without waiting for it.
+   */
+  afterCreated?: (campaign: { id: string; name: string }) => void
+}
+
 export const ingestSummarySchema = z.object({
   received: z.number(),
   created: z.number(),
   updated: z.number(),
   unchanged: z.number(),
+  /** Campaigns of this delivery handed to provisioning (every created one, when it is enabled). */
+  provisioning: z.number(),
   /** Records left alone on purpose (a campaign starting before INGEST_FROM): not errors. */
   skipped: z.array(
     z.object({
@@ -46,7 +57,7 @@ export type IngestSummary = z.infer<typeof ingestSummarySchema>
  * sender retries it whole; the records already done are unchanged by the retry.
  */
 export async function ingestOpportunities(
-  deps: CampaignDeps,
+  deps: IngestDeps,
   records: readonly unknown[],
 ): Promise<IngestSummary> {
   const summary: IngestSummary = {
@@ -54,6 +65,7 @@ export async function ingestOpportunities(
     created: 0,
     updated: 0,
     unchanged: 0,
+    provisioning: 0,
     skipped: [],
     rejected: [],
     warnings: [],
@@ -79,8 +91,15 @@ export async function ingestOpportunities(
     }
     try {
       const result = await setUpCampaign(deps, mapped.setup)
-      if (result.created) summary.created += 1
-      else if (result.updated) summary.updated += 1
+      if (result.created) {
+        summary.created += 1
+        // The push that creates a campaign is the one that provisions it: never a later one, so
+        // the campaigns that existed before provisioning did are left alone.
+        if (deps.afterCreated) {
+          deps.afterCreated({ id: result.campaign.id, name: result.campaign.name })
+          summary.provisioning += 1
+        }
+      } else if (result.updated) summary.updated += 1
       else summary.unchanged += 1
     } catch (error) {
       if (!(error instanceof AppError) || error.status >= 500) throw error
@@ -100,6 +119,7 @@ export async function ingestOpportunities(
       created: summary.created,
       updated: summary.updated,
       unchanged: summary.unchanged,
+      provisioning: summary.provisioning,
       skipped: summary.skipped.length,
       rejected: summary.rejected.map(({ record, opportunityId, error }) => ({
         record,
