@@ -41,7 +41,9 @@ export async function createSyncRuntime(
     ssl: config.databaseSsl,
     sslCa: config.databaseSslCa,
   })
-  const registry = createDefaultRegistry()
+  const registry = createDefaultRegistry({
+    nexd: { provisionFolderId: config.nexdProvisionFolderId ?? null },
+  })
   try {
     // Fail at startup, not in the 04:00 run, if connectors and external.source disagree.
     await verifyRegistryAgainstSources(db, registry)

@@ -62,6 +62,7 @@ describe('RLS and the reader grants', () => {
       'external.unmapped_event',
       'app.campaign',
       'app.creative',
+      'external.provisioning_run',
     ])('reads %s', async (table) => {
       await asAuthenticated()
       expect(await sqlstateOf(() => sql(`SELECT count(*) FROM ${table}`))).toBeUndefined()
