@@ -103,7 +103,7 @@ export async function provisionCampaign(
     if (steps.length < MAX_STEPS) {
       const safe = redact(raw)
       // JSON.stringify(undefined) is undefined at run time, whatever its type says.
-      const text = String(JSON.stringify(safe.response))
+      const text = (JSON.stringify(safe.response) as string | undefined) ?? 'null'
       steps.push(
         text.length > MAX_STEP_CHARS
           ? { ...safe, response: { truncated: text.slice(0, MAX_STEP_CHARS) } }
