@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { at } from '../helpers.ts'
 import { SEED, sqlstateOf, useTransactionalClient } from './db.ts'
 
 const UNIQUE_VIOLATION = '23505'
@@ -6,7 +7,7 @@ const FK_VIOLATION = '23503'
 const CHECK_VIOLATION = '23514'
 const NOT_NULL_VIOLATION = '23502'
 
-// Every table from RFC-004 with its primary key, in creation order.
+// Every table from RFC-004 with its primary key, in creation order, plus the two of 0011.
 const EXPECTED_TABLES: Record<string, string[]> = {
   'external.source': ['id'],
   'external.credential': ['id'],
@@ -48,6 +49,8 @@ const EXPECTED_TABLES: Record<string, string[]> = {
   'external.sync_state': ['link_id'],
   'external.sync_run': ['id'],
   'external.raw_payload': ['id'],
+  'app.creative': ['id'],
+  'external.provisioned_resource': ['id'],
 }
 
 describe('migration 0001_foundation', () => {
@@ -236,5 +239,158 @@ describe('external.event_map target validation trigger', () => {
 
   it('rejects a target_id on an ignore mapping', async () => {
     expect(await sqlstateOf(() => insert('e', 'ignore', 'main'))).toBe(CHECK_VIOLATION)
+  })
+})
+
+describe('migration 0011_creative', () => {
+  const { sql } = useTransactionalClient()
+
+  // The seed's creatives, keyed by hand like every creative that existed before 0011.
+  const MPU_V1 = '00000000-0000-4000-8000-000000000033'
+
+  const entity = (over: {
+    link?: string
+    level?: string
+    externalId: string
+    tag: string
+    creative: string | null
+  }) =>
+    sqlstateOf(() =>
+      sql(
+        `INSERT INTO external.link_entity (link_id, source_id, level, external_id, campaign_tag, creative_id)
+         VALUES ($1, 'zeus', $2, $3, $4, $5)`,
+        [
+          over.link ?? SEED.zeusLinkId,
+          over.level ?? 'pixel',
+          over.externalId,
+          over.tag,
+          over.creative,
+        ],
+      ),
+    )
+
+  it('backfilled a creative for every tag the seed stamps, pointed at by its ids and its pixel', async () => {
+    const creatives = await sql<{ tag: string; name: string; entities: number }>(
+      `SELECT c.tag, c.name, (SELECT count(*)::int FROM external.link_entity e WHERE e.creative_id = c.id) AS entities
+         FROM app.creative c WHERE c.campaign_id = $1 ORDER BY c.tag`,
+      [SEED.campaignId],
+    )
+    expect(creatives).toEqual([
+      { tag: 'mpu_v1', name: 'Dev MPU V1', entities: 2 }, // the Zeus creative and its pixel
+      { tag: 'nx_dev_v1', name: 'Dev creative V1', entities: 1 },
+      { tag: 'nx_dev_v2', name: 'Dev creative V2', entities: 1 },
+    ])
+  })
+
+  it('a creative created from now on is tagged with its own id', async () => {
+    const [row] = await sql<{ tag_is_id: boolean }>(
+      `WITH minted AS (SELECT gen_random_uuid() AS id)
+       INSERT INTO app.creative (id, campaign_id, tag, name)
+       SELECT id, $1, id::text, 'New' FROM minted RETURNING tag = id::text AS tag_is_id`,
+      [SEED.campaignId],
+    )
+    expect(row?.tag_is_id).toBe(true)
+  })
+
+  it('never lets a tag change: every analytics row of the creative carries it', async () => {
+    expect(
+      await sqlstateOf(() =>
+        sql(`UPDATE app.creative SET tag = 'renamed' WHERE id = $1`, [MPU_V1]),
+      ),
+    ).toBe(CHECK_VIOLATION)
+    // The name may change at any time.
+    expect(
+      await sqlstateOf(() =>
+        sql(`UPDATE app.creative SET name = 'Dev MPU' WHERE id = $1`, [MPU_V1]),
+      ),
+    ).toBeUndefined()
+  })
+
+  it('wants a tag, a name and a type that are not blank, and one creative per tag', async () => {
+    const insert = (columns: string) =>
+      sqlstateOf(() =>
+        sql(`INSERT INTO app.creative (campaign_id, tag, name, type) VALUES ($1, ${columns})`, [
+          SEED.campaignId,
+        ]),
+      )
+    expect(await insert(`'', 'x', NULL`)).toBe(CHECK_VIOLATION)
+    expect(await insert(`'t', '', NULL`)).toBe(CHECK_VIOLATION)
+    expect(await insert(`'t', 'x', ''`)).toBe(CHECK_VIOLATION)
+    expect(await insert(`'mpu_v1', 'again', NULL`)).toBe(UNIQUE_VIOLATION)
+  })
+
+  describe('an entity with a tag names a creative of its campaign', () => {
+    it('accepts a pixel that counts for a creative, and one on the campaign row', async () => {
+      expect(
+        await entity({ externalId: 'pix-ok', tag: 'mpu_v1', creative: MPU_V1 }),
+      ).toBeUndefined()
+      expect(await entity({ externalId: 'pix-row', tag: '', creative: null })).toBeUndefined()
+    })
+
+    it('rejects a tag without a creative', async () => {
+      expect(await entity({ externalId: 'pix-1', tag: 'mpu_v1', creative: null })).toBe(
+        CHECK_VIOLATION,
+      )
+    })
+
+    it("rejects a creative whose tag is not the entity's", async () => {
+      expect(await entity({ externalId: 'pix-2', tag: 'nx_dev_v1', creative: MPU_V1 })).toBe(
+        CHECK_VIOLATION,
+      )
+    })
+
+    it('rejects a creative on the campaign row', async () => {
+      expect(await entity({ externalId: 'pix-3', tag: '', creative: MPU_V1 })).toBe(CHECK_VIOLATION)
+    })
+
+    it("rejects another campaign's creative", async () => {
+      const other = at(
+        await sql<{ id: string; link: string }>(
+          `WITH co AS (INSERT INTO app.company (name) VALUES ('Schema Other Co') RETURNING id),
+              ca AS (INSERT INTO app.campaign (company_id, name, primary_source)
+                     SELECT id, 'Schema Other', 'zeus' FROM co RETURNING id),
+              cr AS (INSERT INTO app.creative (campaign_id, tag, name)
+                     SELECT id, 'other_tag', 'Other' FROM ca RETURNING id),
+              li AS (INSERT INTO external.campaign_link (campaign_id, source_id, credential_id, language)
+                     SELECT id, 'zeus', '00000000-0000-4000-8000-000000000012', '' FROM ca RETURNING id)
+         SELECT cr.id, li.id AS link FROM cr, li`,
+        ),
+      )
+      // The seed's link, the other campaign's creative, under its own tag: still refused.
+      expect(await entity({ externalId: 'pix-4', tag: 'other_tag', creative: other.id })).toBe(
+        CHECK_VIOLATION,
+      )
+      // On its own campaign's link it is fine.
+      expect(
+        await entity({
+          link: other.link,
+          externalId: 'pix-5',
+          tag: 'other_tag',
+          creative: other.id,
+        }),
+      ).toBeUndefined()
+    })
+  })
+
+  it('a creative with entities cannot be deleted; its campaign going takes it along', async () => {
+    expect(await sqlstateOf(() => sql(`DELETE FROM app.creative WHERE id = $1`, [MPU_V1]))).toBe(
+      FK_VIOLATION,
+    )
+  })
+
+  it('provisioned_resource keys a platform thing once and needs a source it knows', async () => {
+    const insert = (source: string, kind: string, externalId: string) =>
+      sqlstateOf(() =>
+        sql(
+          `INSERT INTO external.provisioned_resource (source_id, campaign_id, kind, external_id)
+           VALUES ($1, $2, $3, $4)`,
+          [source, SEED.campaignId, kind, externalId],
+        ),
+      )
+    expect(await insert('nexd', 'campaign', 'coYV5VGFPODsDnKi')).toBeUndefined()
+    expect(await insert('nexd', 'campaign', 'coYV5VGFPODsDnKi')).toBe(UNIQUE_VIOLATION)
+    expect(await insert('nexd', 'creative', 'coYV5VGFPODsDnKi')).toBeUndefined() // another kind
+    expect(await insert('nope', 'campaign', 'x')).toBe(FK_VIOLATION)
+    expect(await insert('nexd', '', 'x')).toBe(CHECK_VIOLATION)
   })
 })

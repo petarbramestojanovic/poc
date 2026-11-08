@@ -49,6 +49,8 @@ export interface LinkResult {
   /** False when the link already existed and was only added to. */
   created: boolean
   entitiesAdded: number
+  /** Creatives this source's new ids brought into being (app.creative). */
+  creativesAdded: number
 }
 
 export interface CampaignSetupResult {
@@ -105,6 +107,7 @@ export async function setUpCampaign(
         source: link.source,
         created: link.created,
         entitiesAdded: link.entitiesAdded,
+        creativesAdded: link.creativesAdded,
       })),
     },
     result.created ? 'campaign set up' : 'campaign setup applied to an existing campaign',
@@ -205,7 +208,21 @@ async function assertSourceExists(tx: Tx, sourceId: string): Promise<void> {
 
 // --- one source: link, definitions, entities, event map --------------------------------------
 
-async function applySource(tx: Tx, campaignId: string, source: SourceSetup): Promise<LinkResult> {
+/**
+ * The creatives a rebuilt link's ids pointed at before it was deleted, by `level/externalId`: the
+ * same platform id gets the same creative back, so a creative survives its link.
+ */
+type CreativeReuse = ReadonlyMap<string, string>
+
+const entityKey = (entity: { level: string; externalId: string }): string =>
+  `${entity.level}/${entity.externalId}`
+
+async function applySource(
+  tx: Tx,
+  campaignId: string,
+  source: SourceSetup,
+  reuse: CreativeReuse = new Map(),
+): Promise<LinkResult> {
   const row = await repo.findSource(tx, source.source)
   if (row?.kind !== 'platform' || !row.enabled) {
     throw new UnsupportedSourceError(`source '${source.source}' is not an enabled platform source`)
@@ -244,7 +261,19 @@ async function applySource(tx: Tx, campaignId: string, source: SourceSetup): Pro
       `${source.source} ${owner.level} ${owner.externalId} already belongs to campaign '${owner.campaignName}' (${owner.campaignId})`,
     )
   }
-  const entitiesAdded = await repo.insertEntities(tx, linkId, source.source, source.entities)
+
+  // Only the ids the link does not have yet get a creative settled: one it has keeps the creative
+  // it points at, whatever the request says about its tag (a push never rewrites an entity).
+  const current = new Set((await repo.listLinkEntities(tx, linkId)).map(entityKey))
+  const missing = source.entities.filter((entity) => !current.has(entityKey(entity)))
+  const { entities, creativesAdded } = await settleCreatives(
+    tx,
+    campaignId,
+    source.source,
+    missing,
+    reuse,
+  )
+  const entitiesAdded = await repo.insertEntities(tx, linkId, source.source, entities)
   await repo.insertEventMap(tx, linkId, source.eventMap)
 
   return {
@@ -253,7 +282,86 @@ async function applySource(tx: Tx, campaignId: string, source: SourceSetup): Pro
     language: source.language,
     created: !existing,
     entitiesAdded,
+    creativesAdded,
   }
+}
+
+/**
+ * Gives every new entity its creative (app.creative, migration 0011) and the tag it stamps.
+ *
+ *   creative entity, no tag   a creative of ours, tagged with its own id — or the one the same
+ *                             platform id pointed at before its link was rebuilt
+ *   creative entity, a tag    the campaign's creative with that tag, created with it if new: how
+ *                             one creative is named on a second platform, or keyed by hand
+ *   any entity, tag ''        the campaign's own row; no creative
+ *   other entity, a tag       a pixel's fires count for a creative the campaign has — never one
+ *                             the request would have to invent
+ *
+ * Creative entities go first, so a pixel may name a creative the same request sets up.
+ */
+async function settleCreatives(
+  tx: Tx,
+  campaignId: string,
+  sourceId: string,
+  wanted: readonly EntitySetup[],
+  reuse: CreativeReuse,
+): Promise<{ entities: repo.StoredEntity[]; creativesAdded: number }> {
+  const byTag = new Map((await repo.listCreatives(tx, campaignId)).map((c) => [c.tag, c]))
+  const byId = new Map([...byTag.values()].map((c) => [c.id, c]))
+  let creativesAdded = 0
+
+  const create = async (tag: string | null, entity: EntitySetup): Promise<repo.CreativeRecord> => {
+    const creative = await repo.insertCreative(tx, {
+      campaignId,
+      tag,
+      type: entity.creativeType ?? null,
+      name: entity.label ?? entity.externalId,
+    })
+    byTag.set(creative.tag, creative)
+    byId.set(creative.id, creative)
+    creativesAdded += 1
+    return creative
+  }
+
+  const stored = (entity: EntitySetup, creative: repo.CreativeRecord | null): repo.StoredEntity => {
+    const { campaignTag: _tag, creativeType: _type, ...rest } = entity
+    return { ...rest, campaignTag: creative?.tag ?? '', creativeId: creative?.id ?? null }
+  }
+
+  const creatives = wanted.filter((entity) => entity.level === 'creative')
+  const others = wanted.filter((entity) => entity.level !== 'creative')
+  const entities: repo.StoredEntity[] = []
+
+  for (const entity of creatives) {
+    const tag = entity.campaignTag
+    if (tag === '') {
+      entities.push(stored(entity, null))
+    } else if (tag === undefined) {
+      const kept = reuse.get(entityKey(entity))
+      const creative =
+        (kept === undefined ? undefined : byId.get(kept)) ?? (await create(null, entity))
+      entities.push(stored(entity, creative))
+    } else {
+      entities.push(stored(entity, byTag.get(tag) ?? (await create(tag, entity))))
+    }
+  }
+
+  for (const entity of others) {
+    const tag = entity.campaignTag
+    if (tag === undefined || tag === '') {
+      entities.push(stored(entity, null))
+      continue
+    }
+    const creative = byTag.get(tag)
+    if (!creative) {
+      throw new InvalidSetupError(
+        `${sourceId} ${entity.level} ${entity.externalId} names creative tag '${tag}', which the campaign has no creative for`,
+      )
+    }
+    entities.push(stored(entity, creative))
+  }
+
+  return { entities, creativesAdded }
 }
 
 // --- platform ids, set by a person ------------------------------------------------------------
@@ -311,6 +419,8 @@ export async function setPlatformIds(
         if (onlyAdds) {
           const applied = await applySource(tx, campaignId, source)
           const relabelled = await repo.updateEntityLabels(tx, link.id, source.entities)
+          // The name a report prints is the creative's: it follows its own entity's label.
+          if (relabelled > 0) await repo.updateCreativeNames(tx, link.id)
           outcome = applied.entitiesAdded > 0 ? 'added' : relabelled > 0 ? 'updated' : 'unchanged'
         } else {
           await assertIdsChangeable(tx, {
@@ -319,8 +429,14 @@ export async function setPlatformIds(
             sourceId: source.source,
             language: source.language,
           })
+          // The ids that come back keep their creatives: a creative outlives its link.
+          const reuse = new Map(
+            current.flatMap((have) =>
+              have.creativeId === null ? [] : [[entityKey(have), have.creativeId] as const],
+            ),
+          )
           await repo.deleteLink(tx, link.id)
-          await applySource(tx, campaignId, source)
+          await applySource(tx, campaignId, source, reuse)
           outcome = 'replaced'
         }
       }
@@ -364,16 +480,23 @@ export async function removePlatform(
 
 /**
  * Every id the link has is still in the request, unchanged in role and tag. The label is not
- * identity: a request may rename an entity without rebuilding the link.
+ * identity: a request may rename an entity without rebuilding the link. A request that says
+ * nothing about a creative's tag keeps the one it has: the tag of a creative we created is ours,
+ * not something the caller repeats.
  */
-function keepsEvery(current: readonly EntitySetup[], wanted: readonly EntitySetup[]): boolean {
+function keepsEvery(
+  current: readonly repo.StoredEntity[],
+  wanted: readonly EntitySetup[],
+): boolean {
   return current.every((have) =>
     wanted.some(
       (want) =>
         want.level === have.level &&
         want.externalId === have.externalId &&
         (want.role ?? null) === (have.role ?? null) &&
-        want.campaignTag === have.campaignTag,
+        (want.campaignTag === undefined
+          ? have.level === 'creative' || have.campaignTag === ''
+          : want.campaignTag === have.campaignTag),
     ),
   )
 }
@@ -481,7 +604,10 @@ async function translatingConflicts<T>(work: () => Promise<T>): Promise<T> {
         cause: error,
       })
     }
-    if (typeof pg.message === 'string' && pg.message.startsWith('event_map:')) {
+    if (
+      typeof pg.message === 'string' &&
+      (pg.message.startsWith('event_map:') || pg.message.startsWith('link_entity:'))
+    ) {
       throw new InvalidSetupError(pg.message, { cause: error })
     }
     throw error

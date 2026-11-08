@@ -47,6 +47,7 @@ interface Detail {
   id: string
   name: string
   primarySource: string
+  creatives: { id: string; tag: string; type: string | null; name: string; createdAt: string }[]
   links: {
     id: string
     source: string
@@ -57,6 +58,7 @@ interface Detail {
       role: string | null
       label: string | null
       campaignTag: string
+      creativeId: string | null
     }[]
   }[]
 }
@@ -301,6 +303,39 @@ describe('campaign admin API', () => {
     ).toEqual([])
   })
 
+  it('gives the ids of a rebuilt link their creatives back: a creative outlives its link', async () => {
+    const campaign = await seed()
+    const wrong = await put(
+      campaign.id,
+      'zeus',
+      zeusIds({
+        campaignId: 'it-routes-81',
+        idType: 'external_id',
+        creatives: [{ id: 'it-routes-cr-1', label: 'MPU' }],
+      }),
+    )
+    const before = at(wrong.json<Change>().campaign.creatives)
+
+    // The campaign id was wrong; the creative id was not, and comes back in the fix.
+    const fixed = await put(
+      campaign.id,
+      'zeus',
+      zeusIds({ creatives: [{ id: 'it-routes-cr-1', label: 'MPU' }] }),
+    )
+
+    expect(fixed.json<Change>().outcome).toBe('replaced')
+    const detail = fixed.json<Change>().campaign
+    expect(detail.creatives).toEqual([before]) // the same creative, not a second one
+    expect(at(detail.links).entities).toContainEqual({
+      level: 'creative',
+      externalId: 'it-routes-cr-1',
+      role: null,
+      label: 'MPU',
+      campaignTag: before.tag,
+      creativeId: before.id,
+    })
+  })
+
   it('keeps the ids a platform has written analytics with: they can only be added to', async () => {
     const campaign = await seed()
     const created = await put(campaign.id, 'zeus', zeusIds())
@@ -338,14 +373,18 @@ describe('campaign admin API', () => {
   it('renames a creative at any time: a label is a name, not an id', async () => {
     const campaign = await seed()
     const created = await put(campaign.id, 'nexd', {
-      creatives: [{ liveId: 'it-routes-nx-1', label: 'KW43 Kids' }],
+      creatives: [{ liveId: 'it-routes-nx-1', label: 'KW43 Kids', type: 'Reveal Ad' }],
     })
+    // The live id became a creative of ours, tagged with its own id (migration 0011); the
+    // report's name for it is the label.
+    const creative = at(created.json<Change>().campaign.creatives)
+    expect(creative).toMatchObject({ tag: creative.id, type: 'Reveal Ad', name: 'KW43 Kids' })
     // NEXD has written a day for this campaign, so its ids are frozen.
     await db.query(
       `INSERT INTO analytics.advanced_analytics
          (campaign_id, source, language, campaign_tag, events_date, impressions, data_source)
-       VALUES ($1, 'nexd', '', 'it-routes-nx-1', '2026-09-01', 10, 'sync')`,
-      [campaign.id],
+       VALUES ($1, 'nexd', '', $2, '2026-09-01', 10, 'sync')`,
+      [campaign.id, creative.tag],
     )
 
     const renamed = await put(campaign.id, 'nexd', {
@@ -376,9 +415,15 @@ describe('campaign admin API', () => {
         externalId: 'it-routes-nx-1',
         role: null,
         label: 'KW43 Kids (DE)',
-        campaignTag: 'it-routes-nx-1',
+        campaignTag: creative.tag,
+        creativeId: creative.id,
       },
     ])
+    // The creative's name follows its own entity's label: that is what a report prints.
+    expect(at(renamed.json<Change>().campaign.creatives)).toMatchObject({
+      id: creative.id,
+      name: 'KW43 Kids (DE)',
+    })
     expect(same.json<Change>().outcome).toBe('unchanged')
     expect(renamedAndAdded.json<Change>().outcome).toBe('added')
     expect(at(renamedAndAdded.json<Change>().campaign.links).entities.map((e) => e.label)).toEqual([

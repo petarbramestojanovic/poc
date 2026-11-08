@@ -26,11 +26,18 @@ INSERT INTO external.campaign_link (id, campaign_id, source_id, credential_id, l
   ('00000000-0000-4000-8000-000000000022', '00000000-0000-4000-8000-000000000002', 'zeus',
    '00000000-0000-4000-8000-000000000012', 'de', '{"clickthrough_cta_id": "clickthrough"}');
 
-INSERT INTO external.link_entity (link_id, source_id, level, external_id, role, label, campaign_tag) VALUES
-  ('00000000-0000-4000-8000-000000000021', 'nexd', 'creative', 'nx_dev_v1', NULL,         'Dev creative V1',      'nx_dev_v1'),
-  ('00000000-0000-4000-8000-000000000021', 'nexd', 'creative', 'nx_dev_v2', NULL,         'Dev creative V2',      'nx_dev_v2'),
-  ('00000000-0000-4000-8000-000000000022', 'zeus', 'creative', '12345',     NULL,         'Dev MPU V1',           'mpu_v1'),
-  ('00000000-0000-4000-8000-000000000022', 'zeus', 'pixel',    'dev1eng',   'engagement', 'Dev engagement pixel', 'mpu_v1');
+-- The creatives the platform ids below point at (migration 0011). Keyed by hand here, like the
+-- creatives that existed before 0011; one created by the service is tagged with its own id.
+INSERT INTO app.creative (id, campaign_id, tag, type, name) VALUES
+  ('00000000-0000-4000-8000-000000000031', '00000000-0000-4000-8000-000000000002', 'nx_dev_v1', 'Reveal Ad', 'Dev creative V1'),
+  ('00000000-0000-4000-8000-000000000032', '00000000-0000-4000-8000-000000000002', 'nx_dev_v2', NULL,        'Dev creative V2'),
+  ('00000000-0000-4000-8000-000000000033', '00000000-0000-4000-8000-000000000002', 'mpu_v1',    NULL,        'Dev MPU V1');
+
+INSERT INTO external.link_entity (link_id, source_id, level, external_id, role, label, campaign_tag, creative_id) VALUES
+  ('00000000-0000-4000-8000-000000000021', 'nexd', 'creative', 'nx_dev_v1', NULL,         'Dev creative V1',      'nx_dev_v1', '00000000-0000-4000-8000-000000000031'),
+  ('00000000-0000-4000-8000-000000000021', 'nexd', 'creative', 'nx_dev_v2', NULL,         'Dev creative V2',      'nx_dev_v2', '00000000-0000-4000-8000-000000000032'),
+  ('00000000-0000-4000-8000-000000000022', 'zeus', 'creative', '12345',     NULL,         'Dev MPU V1',           'mpu_v1',    '00000000-0000-4000-8000-000000000033'),
+  ('00000000-0000-4000-8000-000000000022', 'zeus', 'pixel',    'dev1eng',   'engagement', 'Dev engagement pixel', 'mpu_v1',    '00000000-0000-4000-8000-000000000033');
 
 INSERT INTO external.event_map (link_id, event_name, target_kind, target_id) VALUES
   ('00000000-0000-4000-8000-000000000021', 'Unique [Touch]',   'metric',    'interactions'),
