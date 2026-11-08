@@ -16,12 +16,14 @@ import type {
   ConnectionContext,
   FetchResult,
   LinkEntity,
+  Provisioner,
   RawCapture,
   SourceConnector,
   SyncContext,
 } from '../../types.ts'
 import { NexdContractError, NexdVerificationError } from './errors.ts'
 import { mapNexdRows, performanceDate, type NexdDay } from './mapper.ts'
+import { createNexdProvisioner, type NexdProvisionOptions } from './provision.ts'
 import {
   nexdLinkConfig,
   nexdResponse,
@@ -44,7 +46,11 @@ const PROBE_DEADLINE_MS = 20_000
 export interface NexdConnectorOptions {
   baseUrl?: string
   now?: () => Date
+  /** Where provisioning creates campaigns and creatives (provision.ts). */
+  provisioning?: Omit<NexdProvisionOptions, 'baseUrl'>
 }
+
+export type NexdConnector = SourceConnector<NexdLinkConfig> & Provisioner
 
 /** What a request needs: the connection plus, during a run, the capture sink. */
 type RequestContext = ConnectionContext & { capture?: (raw: RawCapture) => Promise<void> }
@@ -66,11 +72,14 @@ interface ChunkFetch {
   warnings: string[]
 }
 
-export function createNexdConnector(
-  options: NexdConnectorOptions = {},
-): SourceConnector<NexdLinkConfig> {
+export function createNexdConnector(options: NexdConnectorOptions = {}): NexdConnector {
   const baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '')
   const now = options.now ?? (() => new Date())
+  const provisioner = createNexdProvisioner({
+    baseUrl,
+    folderId: null,
+    ...options.provisioning,
+  })
 
   function analyticsUrl(liveId: string): string {
     return `${baseUrl}/analytics/creatives/${encodeURIComponent(liveId)}`
@@ -251,6 +260,10 @@ export function createNexdConnector(
     identity: { levels: ['creative'], multiple: true },
 
     describe: () => ({ configSchema: nexdLinkConfig }),
+
+    // Creating a campaign and its placeholder creatives on NEXD (provision.ts).
+    provisionCampaign: (ctx, input) => provisioner.provisionCampaign(ctx, input),
+    provisionCreative: (ctx, input) => provisioner.provisionCreative(ctx, input),
 
     // NEXD documents no ping endpoint: probe the analytics endpoint with a placeholder id.
     //   2xx, or a 4xx other than 401/403/429  → the key was accepted (the id simply does not exist)

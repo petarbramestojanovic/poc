@@ -15,6 +15,8 @@ import { AppError } from './core/errors.ts'
 import type { Logger } from './core/log.ts'
 import { requireAdminToken, requireBearerToken } from './core/plugins/admin-auth.ts'
 import { campaignRoutes } from './modules/campaigns/routes.ts'
+import { provisioningRoutes } from './modules/provisioning/routes.ts'
+import type { ProvisioningDeps } from './modules/provisioning/service.ts'
 import { companyRoutes } from './modules/companies/routes.ts'
 import { healthRoutes } from './modules/health/routes.ts'
 import { inboundRoutes } from './modules/salesforce/routes.ts'
@@ -41,6 +43,8 @@ export interface AppDeps {
    * /inbound/salesforce/opportunities. Without it they answer 404.
    */
   campaigns?: CampaignDeps
+  /** Provisioning behind POST /campaigns/:id/provision. Without it the route answers 404. */
+  provisioning?: ProvisioningDeps
 }
 
 /** Admin prefixes: every method and path under these requires the operator token. */
@@ -58,6 +62,7 @@ export function buildApp({
   sync,
   webhooks,
   campaigns,
+  provisioning,
 }: AppDeps): FastifyInstance {
   // Widen to Fastify's logger interface so its logger type parameter is not inferred as the
   // concrete pino type, which conflicts with Fastify's own child-logger factory typing.
@@ -124,6 +129,7 @@ export function buildApp({
         }
         if (prefix === '/campaigns' && campaigns) {
           await admin.register(campaignRoutes, { deps: campaigns })
+          if (provisioning) await admin.register(provisioningRoutes, { deps: provisioning })
         }
       },
       { prefix },

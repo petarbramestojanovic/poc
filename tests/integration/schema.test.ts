@@ -51,6 +51,7 @@ const EXPECTED_TABLES: Record<string, string[]> = {
   'external.raw_payload': ['id'],
   'app.creative': ['id'],
   'external.provisioned_resource': ['id'],
+  'external.provisioning_run': ['id'],
 }
 
 describe('migration 0001_foundation', () => {
