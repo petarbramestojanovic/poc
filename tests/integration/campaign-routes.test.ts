@@ -511,6 +511,76 @@ describe('campaign admin API', () => {
     ).toEqual([{ label: 'KW43 Kids' }])
   })
 
+  it("changes a creative's platform id once it has data, when the new id names the same creative", async () => {
+    const campaign = await seed()
+    const created = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1', label: 'KW43 Kids' }],
+    })
+    const creative = at(created.json<Change>().campaign.creatives)
+    await db.query(
+      `INSERT INTO analytics.advanced_analytics
+         (campaign_id, source, language, campaign_tag, events_date, impressions, data_source)
+       VALUES ($1, 'nexd', '', $2, '2026-09-01', 10, 'sync')`,
+      [campaign.id, creative.tag],
+    )
+
+    // Republished on NEXD under a new live id: the same creative, named by its tag.
+    const moved = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1b', label: 'KW43 Kids', tag: creative.tag }],
+    })
+
+    expect(moved.statusCode).toBe(200)
+    expect(moved.json<Change>().outcome).toBe('reidentified')
+    const detail = moved.json<Change>().campaign
+    expect(detail.creatives).toEqual([creative]) // the same creative, nothing new
+    expect(at(detail.links).entities).toEqual([
+      {
+        level: 'creative',
+        externalId: 'it-routes-nx-1b',
+        role: null,
+        label: 'KW43 Kids',
+        campaignTag: creative.tag,
+        creativeId: creative.id,
+      },
+    ])
+    // The rows written under the old id keep their creative: the tag is ours, not the id's.
+    expect(
+      await db.query(
+        `SELECT campaign_tag FROM analytics.advanced_analytics WHERE campaign_id = $1`,
+        [campaign.id],
+      ),
+    ).toEqual([{ campaign_tag: creative.tag }])
+
+    // The same request again changes nothing. Without the tag it would be a new creative replacing
+    // this one, which the data forbids, as before.
+    const same = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1b', label: 'KW43 Kids', tag: creative.tag }],
+    })
+    expect(same.json<Change>().outcome).toBe('unchanged')
+    const untagged = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1c', label: 'KW43 Kids' }],
+    })
+    expect(untagged.statusCode).toBe(409)
+    expect(untagged.json()).toMatchObject({ error: 'platform_has_data' })
+
+    // Not while a sync is fetching with the id it has.
+    await db.query(
+      `INSERT INTO external.sync_run (link_id, trigger, window_from, window_to)
+       VALUES ($1, 'manual', '2026-09-01', '2026-09-01')`,
+      [at(detail.links).id],
+    )
+    const busy = await put(campaign.id, 'nexd', {
+      creatives: [{ liveId: 'it-routes-nx-1d', label: 'KW43 Kids', tag: creative.tag }],
+    })
+    expect(busy.statusCode).toBe(409)
+    expect(busy.json()).toMatchObject({ error: 'sync_in_progress' })
+    expect(
+      await db.query(`SELECT external_id FROM external.link_entity WHERE link_id = $1`, [
+        at(detail.links).id,
+      ]),
+    ).toEqual([{ external_id: 'it-routes-nx-1b' }])
+  })
+
   it('changes no id while a sync is fetching with them', async () => {
     const campaign = await seed()
     const created = await put(campaign.id, 'zeus', zeusIds())
