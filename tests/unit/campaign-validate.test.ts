@@ -54,13 +54,14 @@ describe('checkSources', () => {
   })
 
   it('refuses an entity level the connector does not read', () => {
-    // NEXD reads creatives only; a campaign-level id would simply never be synced.
+    // NEXD reads creatives (and takes the campaign id for provisioning); it has no pixels, so a
+    // pixel id would simply never be synced.
     const nexd = source({
       source: 'nexd',
       config: {},
-      entities: [{ level: 'campaign', externalId: 'x' }],
+      entities: [{ level: 'pixel', externalId: 'x', role: 'engagement' }],
     })
-    expect(() => checkSources(registry, [nexd])).toThrow(/does not accept 'campaign'/)
+    expect(() => checkSources(registry, [nexd])).toThrow(/does not accept 'pixel'/)
   })
 
   it('refuses a pixel without one of the roles the connector knows', () => {
