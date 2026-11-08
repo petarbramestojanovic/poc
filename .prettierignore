@@ -10,3 +10,7 @@ docs/PHASE1-PLAN-PROMPT.md
 
 # temporary local tools (dev/sync-console)
 dev/
+
+# vendored agent skills, not ours to format
+.agents/
+.claude/

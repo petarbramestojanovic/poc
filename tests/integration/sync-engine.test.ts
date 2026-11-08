@@ -20,6 +20,8 @@ import {
   verifyRegistryAgainstSources,
   type SyncDeps,
 } from '../../src/modules/sync/engine.ts'
+import { createZeusConnector } from '../../src/modules/sync/connectors/zeus/connector.ts'
+import { ZeusInvariantError } from '../../src/modules/sync/connectors/zeus/mapper.ts'
 import { createRegistry } from '../../src/modules/sync/registry.ts'
 import {
   METRIC_AGGREGATION,
@@ -31,6 +33,7 @@ import {
   type SourceConnector,
   type SyncContext,
 } from '../../src/modules/sync/types.ts'
+import { fakeHttp, type Seen } from '../unit/zeus/helpers.ts'
 import { SEED } from './db.ts'
 
 // A scripted connector standing in for Zeus on the seeded link: the engine is exercised
@@ -425,6 +428,107 @@ describe('sync engine', () => {
       ['2026-09-02', '2000'],
     ])
     expect((await state())?.data_complete_through).toBe('2026-09-02')
+  })
+
+  describe('the real Zeus connector, on a link that gained creatives', () => {
+    const LONG_WINDOW = { from: '2026-09-01', to: '2026-09-03' }
+    const delivery = { campaign_id: 91, external_id: 'it-91', impressions: 700, clicks: 7 }
+    const report = (seen: Seen, rows: Record<string, unknown>[]) => ({
+      from: seen.window.from,
+      to: seen.window.to,
+      rows,
+    })
+    /** Zeus answers: the campaign delivered every day, its creative rows are on `dividedDays`. */
+    const zeus = (dividedDays: string[]): Script => {
+      const answer = (seen: Seen) => {
+        if (seen.report === 'tracker') return report(seen, [])
+        if (seen.report === 'campaigns') {
+          return report(
+            seen,
+            ['2026-09-01', '2026-09-02', '2026-09-03'].map((date) => ({
+              date,
+              ...delivery,
+              visible_impressions: 500,
+            })),
+          )
+        }
+        return report(
+          seen,
+          dividedDays.map((date) => ({
+            date,
+            ...delivery,
+            creative_id: 'KW45 V1',
+            visible_impressions: 500,
+            unique_impressions: 600,
+            unique_clicks: 6,
+          })),
+        )
+      }
+      const connector = createZeusConnector({
+        baseUrl: 'https://zeus.test',
+        now: () => new Date('2026-09-10T10:00:00Z'),
+      })
+      return (ctx) =>
+        connector.fetchWindow({
+          ...ctx,
+          http: fakeHttp(answer),
+          config: { clickthrough_cta_id: 'clickthrough', campaign_id_param: 'external_id' },
+          entities: [
+            { level: 'campaign', externalId: 'it-91', role: null, label: null, campaignTag: '' },
+            {
+              level: 'creative',
+              externalId: 'KW45 V1',
+              role: null,
+              label: null,
+              campaignTag: 'kw45_v1',
+            },
+          ],
+        })
+    }
+    /** What the link stored while it was campaign-level: one untagged row per day. */
+    const storedBeforeTheCreatives = async () => {
+      script = () => ({
+        rows: [row('2026-09-01', ''), row('2026-09-02', '')],
+        warnings: [],
+        covered: WINDOW,
+      })
+      return sync()
+    }
+
+    it('keeps the days before Zeus divided the campaign, and writes the divided ones', async () => {
+      const stored = await storedBeforeTheCreatives()
+      script = zeus(['2026-09-03'])
+
+      const summary = await sync({ window: LONG_WINDOW, deep: true })
+
+      expect(summary.daysWritten).toBe(1)
+      expect(
+        (await advanced()).map((r) => [
+          r.events_date,
+          r.campaign_tag,
+          r.impressions,
+          r.sync_run_id,
+        ]),
+      ).toEqual([
+        ['2026-09-01', '', '1000', stored.syncRunId],
+        ['2026-09-02', '', '1000', stored.syncRunId],
+        ['2026-09-03', 'kw45_v1', '700', summary.syncRunId],
+      ])
+      expect((await run(summary.syncRunId))?.warnings).toContain(
+        'creatives: 2 day(s) through 2026-09-02 have numbers in the campaigns report and none on a linked creative; left as stored',
+      )
+    })
+
+    it('fails the run and clears nothing when the creatives report goes empty', async () => {
+      const stored = await storedBeforeTheCreatives()
+      const before = await advanced()
+      script = zeus([])
+
+      await expect(sync({ window: LONG_WINDOW, deep: true })).rejects.toThrow(ZeusInvariantError)
+
+      expect(await advanced()).toEqual(before)
+      expect(before.every((r) => r.sync_run_id === stored.syncRunId)).toBe(true)
+    })
   })
 
   it('aborts on a failing fetch: prior rows intact, sync_state not advanced, payloads kept, run failed', async () => {

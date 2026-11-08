@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { eachDay } from '../../../src/core/dates.ts'
 import {
   createZeusConnector,
   matchPixel,
@@ -18,25 +19,41 @@ import {
   fixtureHttp,
   httpStatus,
   NOW,
+  type Seen,
 } from './helpers.ts'
 
 const connector = createZeusConnector({ baseUrl: 'https://zeus.test', now: NOW })
 const UNMATCHED = 'pixel 9999 "Other campaign pixel"'
 
+/** The fixture for a report, with only the rows `keep` accepts. */
+const fixtureWhere = (keep: (row: Record<string, unknown>) => boolean) => (seen: Seen) => {
+  const fixture = fixtureFor(seen)
+  return { ...fixture, rows: fixture.rows.filter(keep) }
+}
+const fromDay = (first: string) => fixtureWhere((row) => (row.date as string) >= first)
+
 describe('Zeus connector', () => {
-  it('fetches creatives filtered by the campaign id and tracker unfiltered, once per window', async () => {
+  it('fetches creatives and campaigns filtered by the campaign id and tracker unfiltered, once per window', async () => {
     const http = fixtureHttp()
     const ctx = context(http)
     const result = await connector.fetchWindow(ctx)
     expect(http.requests).toEqual([
       { report: 'creatives', window: FIXTURE_WINDOW, filter: { external_id: 'camp-ext-1' } },
+      { report: 'campaigns', window: FIXTURE_WINDOW, filter: { external_id: 'camp-ext-1' } },
       { report: 'tracker', window: FIXTURE_WINDOW, filter: {} },
     ])
-    expect(http.authHeaders).toEqual(['Bearer zeus-token', 'Bearer zeus-token'])
+    expect(http.authHeaders).toEqual([
+      'Bearer zeus-token',
+      'Bearer zeus-token',
+      'Bearer zeus-token',
+    ])
     expect(http.signals.every((s) => s === ctx.signal)).toBe(true)
-    expect(result.warnings).toEqual(['creatives: rows matched with external_id=camp-ext-1'])
+    expect(result.warnings).toEqual([
+      'creatives: rows matched with external_id=camp-ext-1',
+      'campaigns: rows matched with external_id=camp-ext-1',
+    ])
     expect(result.covered).toEqual(FIXTURE_WINDOW)
-    expect(ctx.captures).toHaveLength(2)
+    expect(ctx.captures).toHaveLength(3)
     expect(JSON.stringify(ctx.captures)).not.toContain('zeus-token')
     expect(ctx.captures[0]?.request).toEqual({
       method: 'GET',
@@ -176,7 +193,7 @@ describe('Zeus connector', () => {
   })
 
   it('chunks to ≤31 days and clamps the window end to yesterday', async () => {
-    const http = fixtureHttp({ creatives: empty, tracker: empty })
+    const http = fixtureHttp({ creatives: empty, campaigns: empty, tracker: empty })
     const result = await connector.fetchWindow(
       context(http, { from: '2026-07-01', to: '2026-09-10' }),
     )
@@ -192,7 +209,7 @@ describe('Zeus connector', () => {
   })
 
   it('computes "yesterday" in the source day zone', async () => {
-    const http = fixtureHttp({ creatives: empty, tracker: empty })
+    const http = fixtureHttp({ creatives: empty, campaigns: empty, tracker: empty })
     // 10:00 UTC on 5 Sept is already 6 Sept on Kiritimati (UTC+14), so yesterday there is 5 Sept.
     const result = await connector.fetchWindow(
       context(http, { from: '2026-09-01', to: '2026-09-10' }, ALL_ENTITIES, DEFAULT_CONFIG, {
@@ -271,9 +288,173 @@ describe('Zeus connector', () => {
 
     const viaCreatives = fixtureHttp({ creatives: stranger })
     await expect(connector.fetchWindow(context(viaCreatives))).rejects.toThrow(ZeusContractError)
+
+    const beside = fixtureHttp({ campaigns: stranger })
+    await expect(connector.fetchWindow(context(beside))).rejects.toThrow(ZeusContractError)
   })
 
-  it('uses the campaigns report only when the link has no creative entity', async () => {
+  it('writes campaign rows only when the link has no creative entity', async () => {
+    const result = await connector.fetchWindow(context(fixtureHttp()))
+    const impressions = result.rows
+      .filter((r) => r.date === '2026-09-01')
+      .map((r) => [r.campaignTag, r.metrics.impressions])
+    expect(impressions).toEqual(
+      expect.arrayContaining([
+        ['mpu_v1', 20_000],
+        ['mpu_v2', 10_000],
+      ]),
+    )
+    expect(
+      result.rows.filter((r) => r.campaignTag === '' && r.metrics.impressions !== undefined),
+    ).toEqual([])
+  })
+
+  it('cannot compare without a campaign entity: creatives only, as before', async () => {
+    const http = fixtureHttp({
+      creatives: (seen) =>
+        fixtureWhere((row) => String(row.creative_id) === seen.filter.external_id)(seen),
+    })
+    const result = await connector.fetchWindow(
+      context(http, FIXTURE_WINDOW, [ENTITIES.mpuV1, ENTITIES.mpuV2]),
+    )
+    expect(http.requests.map((r) => r.report)).not.toContain('campaigns')
+    expect(result.covered).toEqual(FIXTURE_WINDOW)
+  })
+
+  it('leaves the days before Zeus began dividing the campaign as stored, pixel fires included', async () => {
+    const http = fixtureHttp({ creatives: fromDay('2026-09-02') })
+    const result = await connector.fetchWindow(context(http))
+    expect(result.covered).toEqual({ from: '2026-09-02', to: '2026-09-03' })
+    expect(result.rows.map((r) => r.date).sort()[0]).toBe('2026-09-02')
+    expect(result.warnings).toContain(
+      'creatives: 1 day(s) through 2026-09-01 have numbers in the campaigns report and none on a linked creative; left as stored',
+    )
+  })
+
+  it('claims only the divided days of a Sunday deep pull, across chunks', async () => {
+    // Campaign 91: delivering all along, divided into creatives from 2026-10-27.
+    const delivery = { impressions: 100, clicks: 5, visible_impressions: 80 }
+    const answer = (seen: Seen, first: string, row: Record<string, unknown>) => ({
+      from: seen.window.from,
+      to: seen.window.to,
+      rows: eachDay(seen.window.from, seen.window.to)
+        .filter((date) => date >= first)
+        .map((date) => ({ date, campaign_id: 91, external_id: 'camp-ext-1', ...delivery, ...row })),
+    })
+    const http = fixtureHttp({
+      campaigns: (seen) => answer(seen, '2026-01-01', {}),
+      creatives: (seen) =>
+        answer(seen, '2026-10-27', {
+          creative_id: '12345',
+          unique_impressions: 90,
+          unique_clicks: 4,
+        }),
+      tracker: empty,
+    })
+    const sunday = createZeusConnector({
+      baseUrl: 'https://zeus.test',
+      now: () => new Date('2026-11-08T03:00:00Z'),
+    })
+
+    const result = await sunday.fetchWindow(
+      context(http, { from: '2026-10-04', to: '2026-11-07' }, [ENTITIES.campaign, ENTITIES.mpuV1]),
+    )
+
+    expect(http.requests.filter((r) => r.report === 'campaigns').map((r) => r.window)).toEqual([
+      { from: '2026-10-04', to: '2026-11-03' },
+      { from: '2026-11-04', to: '2026-11-07' },
+    ])
+    expect(result.covered).toEqual({ from: '2026-10-27', to: '2026-11-07' })
+    expect(result.rows.map((r) => r.date)).toEqual(eachDay('2026-10-27', '2026-11-07'))
+    expect(result.warnings).toContain(
+      'creatives: 23 day(s) through 2026-10-26 have numbers in the campaigns report and none on a linked creative; left as stored',
+    )
+  })
+
+  it('still claims, and so clears, a quiet day after the undivided ones', async () => {
+    const http = fixtureHttp({
+      creatives: fromDay('2026-09-03'),
+      campaigns: fixtureWhere((row) => row.date !== '2026-09-02'),
+      tracker: empty,
+    })
+    const result = await connector.fetchWindow(context(http))
+    expect(result.covered).toEqual({ from: '2026-09-02', to: '2026-09-03' })
+    expect(result.rows.filter((r) => r.date === '2026-09-02')).toEqual([])
+  })
+
+  it('does not count a campaign row of zeros as a day with numbers', async () => {
+    const zeros = (seen: Seen) => {
+      const fixture = fixtureFor(seen)
+      return {
+        ...fixture,
+        rows: fixture.rows.map((r) => ({
+          ...r,
+          impressions: 0,
+          clicks: 0,
+          visible_impressions: 0,
+          unique_impressions: 0,
+          unique_clicks: 0,
+        })),
+      }
+    }
+    const http = fixtureHttp({ creatives: empty, campaigns: zeros, tracker: empty })
+    const result = await connector.fetchWindow(context(http))
+    expect(result.covered).toEqual(FIXTURE_WINDOW)
+    expect(result.rows).toEqual([])
+  })
+
+  it('fails the run, keeping its payloads, when a divided campaign has a day without creative rows', async () => {
+    const http = fixtureHttp({ creatives: fixtureWhere((row) => row.date !== '2026-09-02') })
+    const ctx = context(http)
+    const failure = connector.fetchWindow(ctx)
+    await expect(failure).rejects.toThrow(ZeusInvariantError)
+    await expect(failure).rejects.toThrow(/for 2026-09-02 although the campaigns report/)
+    expect(ctx.captures.map((c) => c.request.url)).toEqual([
+      expect.stringContaining('/reports/creatives'),
+      expect.stringContaining('/reports/campaigns'),
+      expect.stringContaining('/reports/tracker'),
+    ])
+  })
+
+  it('fails the run when the creatives report has nothing for a campaign that delivered', async () => {
+    const http = fixtureHttp({ creatives: empty })
+    await expect(connector.fetchWindow(context(http))).rejects.toThrow(
+      /for 2026-09-01, 2026-09-02, 2026-09-03 although the campaigns report/,
+    )
+  })
+
+  it('fails the run when every creative that reports is unlinked', async () => {
+    const unlinked = (seen: Seen) => {
+      const fixture = fixtureFor(seen)
+      return {
+        ...fixture,
+        rows: fixture.rows.map((r) => ({ ...r, creative_id: 'not-on-the-link' })),
+      }
+    }
+    const http = fixtureHttp({ creatives: unlinked })
+    await expect(connector.fetchWindow(context(http))).rejects.toThrow(ZeusInvariantError)
+  })
+
+  it('checks invariants on the campaigns report it only reads', async () => {
+    const twice = (seen: Seen) => {
+      const fixture = fixtureFor(seen)
+      return { ...fixture, rows: [...fixture.rows, ...fixture.rows] }
+    }
+    await expect(connector.fetchWindow(context(fixtureHttp({ campaigns: twice })))).rejects.toThrow(
+      /appears twice/,
+    )
+  })
+
+  it('claims only what the campaigns report served too', async () => {
+    const http = fixtureHttp({
+      campaigns: (seen) =>
+        fixtureFor({ ...seen, window: { from: seen.window.from, to: '2026-09-02' } }),
+    })
+    const result = await connector.fetchWindow(context(http))
+    expect(result.covered).toEqual({ from: '2026-09-01', to: '2026-09-02' })
+  })
+
+  it('reads the campaigns report and tracker, not creatives, for a link with no creative entity', async () => {
     const http = fixtureHttp()
     const result = await connector.fetchWindow(
       context(http, FIXTURE_WINDOW, [ENTITIES.campaign, ENTITIES.engagement]),
