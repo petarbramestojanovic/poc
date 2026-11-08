@@ -516,11 +516,18 @@ export interface PlatformChange {
    * updated: only labels changed. replaced: the link had no analytics yet and was rebuilt from
    * the request. unchanged: nothing to do.
    */
-  outcome: 'created' | 'added' | 'updated' | 'replaced' | 'unchanged'
+  outcome: 'created' | 'added' | 'updated' | 'replaced' | 'reidentified' | 'unchanged'
   campaign: repo.CampaignRecord
 }
 
-export const PLATFORM_OUTCOMES = ['created', 'added', 'updated', 'replaced', 'unchanged'] as const
+export const PLATFORM_OUTCOMES = [
+  'created',
+  'added',
+  'updated',
+  'replaced',
+  'reidentified',
+  'unchanged',
+] as const
 
 /**
  * Sets one platform's ids on a campaign: PUT /campaigns/:id/platforms/:source. The request is the
@@ -560,12 +567,51 @@ export async function setPlatformIds(
           keepsEvery(current, source.entities) &&
           sameJson(link.config, source.config) &&
           credentialId === link.credentialId
+        const sameCreatives = onlyAdds ? null : reidentifications(current, source.entities)
         if (onlyAdds) {
           const applied = await applySource(tx, campaignId, source)
           const relabelled = await repo.updateEntityLabels(tx, link.id, source.entities)
           // The name a report prints is the creative's: it follows its own entity's label.
           if (relabelled > 0) await repo.updateCreativeNames(tx, link.id)
           outcome = applied.entitiesAdded > 0 ? 'added' : relabelled > 0 ? 'updated' : 'unchanged'
+        } else if (
+          sameCreatives !== null &&
+          sameJson(link.config, source.config) &&
+          credentialId === link.credentialId
+        ) {
+          // The same creatives under new platform ids (the request names each by its tag): the
+          // ids change in place, the tags and the rows written with them stay. Not while a run is
+          // fetching with the old ids; the data already stored is no bar, it stays attributed.
+          await assertNoRunningSync(tx, {
+            id: link.id,
+            campaignId,
+            sourceId: source.source,
+            language: source.language,
+          })
+          const owners = await repo.findEntityOwners(
+            tx,
+            source.source,
+            link.id,
+            sameCreatives.map((change) => change.to),
+          )
+          const [owner] = owners
+          if (owner) {
+            throw new EntityInUseError(
+              `${source.source} ${owner.level} ${owner.externalId} already belongs to campaign '${owner.campaignName}' (${owner.campaignId})`,
+            )
+          }
+          for (const change of sameCreatives) {
+            await repo.reidentifyEntity(tx, link.id, {
+              level: change.from.level,
+              from: change.from.externalId,
+              to: change.to.externalId,
+            })
+          }
+          await applySource(tx, campaignId, source)
+          if ((await repo.updateEntityLabels(tx, link.id, source.entities)) > 0) {
+            await repo.updateCreativeNames(tx, link.id)
+          }
+          outcome = 'reidentified'
         } else {
           await assertIdsChangeable(tx, {
             id: link.id,
@@ -661,13 +707,50 @@ function sameJson(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * The current entities that the request gives a new platform id while naming the same creative:
+ * a creative-bound entity (a non-empty tag) of the same level, role and tag, under an id the link
+ * does not have. Every other current entity must be kept as it is. Null when the request is not
+ * that kind of change (a dropped id, a changed tag or role, a new campaign id): that is a rebuild.
+ */
+function reidentifications(
+  current: readonly repo.StoredEntity[],
+  wanted: readonly EntitySetup[],
+): { from: repo.StoredEntity; to: EntitySetup }[] | null {
+  const wantedKeys = new Set(wanted.map(entityKey))
+  const currentKeys = new Set(current.map(entityKey))
+  const changes: { from: repo.StoredEntity; to: EntitySetup }[] = []
+  const claimed = new Set<string>()
+
+  for (const have of current) {
+    if (wantedKeys.has(entityKey(have))) continue
+    if (have.campaignTag === '') return null
+    const candidates = wanted.filter(
+      (want) =>
+        want.level === have.level &&
+        (want.role ?? null) === (have.role ?? null) &&
+        want.campaignTag === have.campaignTag &&
+        !currentKeys.has(entityKey(want)) &&
+        !claimed.has(entityKey(want)),
+    )
+    const [to, ...more] = candidates
+    if (!to || more.length > 0) return null
+    claimed.add(entityKey(to))
+    changes.push({ from: have, to })
+  }
+  if (changes.length === 0) return null
+  // Whatever the request did not re-identify it must keep as it is.
+  const kept = current.filter((have) => !changes.some((change) => change.from === have))
+  return keepsEvery(kept, wanted) ? changes : null
+}
+
+/**
  * Under the link's sync-run gate lock — the lock a run opens under — so no run can start between
  * this check and the change, and none is fetching with the old ids.
  */
-async function assertIdsChangeable(
+async function assertNoRunningSync(
   tx: Tx,
   link: { id: string; campaignId: string; sourceId: string; language: string },
-): Promise<void> {
+): Promise<repo.LinkActivity> {
   await tx.xactLock(`sync-run-gate:${link.id}`)
   const activity = await repo.linkActivity(tx, link)
   if (activity.running) {
@@ -675,6 +758,15 @@ async function assertIdsChangeable(
       `a ${link.sourceId} sync is running for campaign ${link.campaignId}; try again when it has finished`,
     )
   }
+  return activity
+}
+
+/** A rebuild: no run fetching with the ids, and nothing written with them yet. */
+async function assertIdsChangeable(
+  tx: Tx,
+  link: { id: string; campaignId: string; sourceId: string; language: string },
+): Promise<void> {
+  const activity = await assertNoRunningSync(tx, link)
   if (activity.hasData) {
     throw new PlatformHasDataError(
       `campaign ${link.campaignId} already has ${link.sourceId} analytics; its ids can only be added to`,
