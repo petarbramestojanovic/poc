@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { ConfigError, loadConfig, loadRuntimeConfig } from '../../src/core/config.ts'
+import {
+  ConfigError,
+  loadConfig,
+  loadMailConfig,
+  loadRuntimeConfig,
+} from '../../src/core/config.ts'
 
 const TOKEN = 'a-long-enough-operator-token-0123456789'
 
@@ -146,6 +151,89 @@ describe('loadConfig', () => {
   ])('rejects %s', (_name, env, message) => {
     expect(() => loadConfig(env as NodeJS.ProcessEnv)).toThrow(ConfigError)
     expect(() => loadConfig(env as NodeJS.ProcessEnv)).toThrow(message)
+  })
+})
+
+describe('mail settings', () => {
+  const RESEND_KEY = 're_test_0123456789abcdef'
+  const resend = {
+    MAIL_PROVIDER: 'resend',
+    RESEND_API_KEY: RESEND_KEY,
+    MAIL_FROM: 'Klea Analytics <analytics@reports.example.com>',
+  }
+
+  it('leaves email off when MAIL_PROVIDER is not set, whatever else is', () => {
+    expect(loadConfig(valid)).not.toHaveProperty('mail')
+    expect(
+      loadConfig({ ...valid, MAIL_FROM: 'r@example.com', RESEND_API_KEY: RESEND_KEY }),
+    ).not.toHaveProperty('mail')
+    expect(loadConfig({ ...valid, MAIL_PROVIDER: '' })).not.toHaveProperty('mail')
+    expect(loadMailConfig({})).toBeUndefined()
+  })
+
+  it('reads Resend with its key, the sender and an optional reply-to', () => {
+    expect(loadConfig({ ...valid, ...resend }).mail).toEqual({
+      provider: { name: 'resend', apiKey: RESEND_KEY },
+      from: 'Klea Analytics <analytics@reports.example.com>',
+    })
+    expect(loadMailConfig({ ...resend, MAIL_REPLY_TO: 'team@example.com' })).toEqual({
+      provider: { name: 'resend', apiKey: RESEND_KEY },
+      from: 'Klea Analytics <analytics@reports.example.com>',
+      replyTo: 'team@example.com',
+    })
+  })
+
+  it('normalises the sender and needs no key for the memory provider', () => {
+    expect(
+      loadMailConfig({ MAIL_PROVIDER: 'memory', MAIL_FROM: '  Klea  <r@example.com> ' }),
+    ).toEqual({
+      provider: { name: 'memory' },
+      from: 'Klea <r@example.com>',
+    })
+  })
+
+  it.each([
+    ['an unknown provider', { MAIL_PROVIDER: 'sendgrid' }, 'MAIL_PROVIDER'],
+    ['no sender', { MAIL_PROVIDER: 'resend', RESEND_API_KEY: RESEND_KEY }, 'MAIL_FROM'],
+    [
+      'Resend without its key',
+      { MAIL_PROVIDER: 'resend', MAIL_FROM: 'r@example.com' },
+      'RESEND_API_KEY',
+    ],
+    [
+      'a key that is not a Resend key',
+      { ...resend, RESEND_API_KEY: 'sk_live_abc' },
+      'starts with re_',
+    ],
+    [
+      'a Gmail-style display name with a comma',
+      { ...resend, MAIL_FROM: 'Klea, Analytics <r@example.com>' },
+      'MAIL_FROM',
+    ],
+    ['a sender that is not an address', { ...resend, MAIL_FROM: 'Klea Analytics' }, 'MAIL_FROM'],
+    [
+      'two reply-to addresses',
+      { ...resend, MAIL_REPLY_TO: 'a@example.com, b@example.com' },
+      'MAIL_REPLY_TO',
+    ],
+  ])('refuses to boot with %s', (_name, mail, message) => {
+    expect(() => loadConfig({ ...valid, ...mail })).toThrow(ConfigError)
+    expect(() => loadConfig({ ...valid, ...mail })).toThrow(message)
+    expect(() => loadMailConfig(mail)).toThrow(message)
+  })
+
+  it('never puts the key in a refusal', () => {
+    const secret = 'not-a-resend-key-but-secret'
+    const error = (() => {
+      try {
+        loadConfig({ ...valid, ...resend, RESEND_API_KEY: secret })
+      } catch (e) {
+        return e as Error
+      }
+      return undefined
+    })()
+    expect(error?.message).toContain('RESEND_API_KEY')
+    expect(error?.message).not.toContain(secret)
   })
 })
 

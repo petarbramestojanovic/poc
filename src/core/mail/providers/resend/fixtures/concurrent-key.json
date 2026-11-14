@@ -1,0 +1,5 @@
+{
+  "statusCode": 409,
+  "name": "concurrent_idempotent_requests",
+  "message": "Same idempotency key used while original request is still in progress."
+}

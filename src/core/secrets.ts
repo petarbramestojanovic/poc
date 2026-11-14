@@ -15,6 +15,9 @@ const RESERVED_POINTERS = new Set([
   'DATABASE_SSL_CA',
   'SERVICE_ADMIN_TOKEN',
   'INBOUND_CAMPAIGNS_TOKEN',
+  // The mail provider's key (src/core/mail): shaped like a platform credential, so only this list
+  // stops a credential row from sending it to a platform's host.
+  'RESEND_API_KEY',
   'TZ',
   'PORT',
   'LOG_LEVEL',

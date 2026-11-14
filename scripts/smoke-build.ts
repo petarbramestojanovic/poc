@@ -18,6 +18,8 @@ const modules = [
   'modules/webhooks/admin.js',
   'modules/webhooks/build.js',
   'modules/webhooks/fields.js',
+  'core/mail/mailer.js',
+  'cli/mail-commands.js',
 ]
 for (const module of modules) {
   await import(new URL(`../dist/${module}`, import.meta.url).href)

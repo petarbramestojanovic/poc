@@ -18,6 +18,7 @@ npm run test:integration   # needs `npx supabase start` and DATABASE_URL (see .e
 npm run build && npm run build:smoke   # compile, copy sql/, import the built modules
 npx supabase migration up  # apply new migrations locally; `npm run db:reset` recreates + seeds
 npm run check:migrations -- origin/main   # the CI migration guard: append-only against a base
+npm run mail -- test --to <address>       # one test email through MAIL_PROVIDER, no database
 ```
 
 A change is done when `typecheck`, `lint`, `test` and `test:integration` are all green. Run `build:smoke` whenever you add, rename or move a `.sql` file or touch the build.
@@ -27,7 +28,7 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 ## Layout
 
 - `src/app.ts` builds the Fastify app and its auth scopes, `src/index.ts` runs the process, `src/runtime.ts` holds what the service and the CLI share; `src/cli/` is the operator CLI.
-- `src/core/` is infrastructure with no business rules: config, db, log, errors, dates, secrets, sql-file, limiter, schemas, external-ref, `http/` (the outbound client), `plugins/` (token checks). Core never imports a module.
+- `src/core/` is infrastructure with no business rules: config, db, log, errors, dates, secrets, sql-file, limiter, schemas, external-ref, `http/` (the outbound client), `mail/` (sending email), `plugins/` (token checks). Core never imports a module.
 - `src/modules/<name>/` is one domain each — `companies`, `campaigns`, `salesforce`, `sync`, `webhooks`, `health` — owning its `routes.ts`, service, repo, `sql/` and errors. Dependencies point one way: `salesforce → campaigns → companies`, `campaigns → sync` (connectors decide what a link accepts), `webhooks → sync`. Never import back up that chain; a new module (email reports, a second CRM) goes beside them.
 - Tests stay in `tests/unit` and `tests/integration` (the split is by directory).
 
@@ -121,9 +122,19 @@ CI (`.github/workflows/ci.yml`) runs all of that, plus the migration guard and `
 - Retry only what can succeed on retry: 408, 429, 5xx except 501/505, and network errors with a transient cause code. Everything else fails on the first attempt.
 - Use `res.json()` (throws a typed body error), not `JSON.parse(res.text)`.
 
+## Mail (`src/core/mail/`)
+
+- A module imports `Mailer` (`mailer.ts`) and nothing else from `mail/`: it never names a provider, reads a key or sets the sender (`MAIL_FROM`, and `MAIL_REPLY_TO`). Unset `MAIL_PROVIDER` = email is off; set, config refuses to boot without the sender and the provider's key.
+- The mailer holds the rules every provider shares (`checkMessage`): 1–50 recipients, each an address by `isEmailAddress` (`address.ts`, the one rule for addresses), none twice; no control characters in the subject; at most 10 MB as the message travels (attachments counted as base64), the lowest cap of the providers compared. A refusal is `InvalidMailError` and never quotes an address.
+- A provider (`providers/<name>/`: `provider.ts`, pure `mapper.ts`, zod `schema.ts`, `fixtures/`) only translates: accepted → `MailResult`; refused for good → `MailRejectedError`; anything that may have gone out or could work later (no answer, 408, 429, 5xx, Resend's 409 `concurrent_idempotent_requests`) → `MailUnavailableError`. An abort passes through as itself. A new provider is a folder, a case in `providers/index.ts`, a name in `MAIL_PROVIDER_NAMES`, its key in `config.ts` and `RESERVED_POINTERS`.
+- Every message carries an `idempotencyKey`. Retry a message with the same key; a changed message gets a new key (Resend refuses a known key with a different body). The mail HTTP client (`createMailHttpClient`) makes one attempt: a caller with a delivery record retries on its own ladder, and that key is what makes it safe.
+- Through `HttpClient` with `returnErrorResponses`, never an SDK. Resend needs a `User-Agent`; ours is generic and names nobody.
+- No address in a log line, an error message or a stored excerpt: log a count, and pass provider text through `scrubAddresses`. The `mail/errors.ts` constructors already do.
+- `memory` keeps the last 100 messages in the process and behaves like Resend for a repeated key; tests use it, and a process with `MAIL_PROVIDER=memory` warns at boot that it sends nothing.
+
 ## Secrets, logging, errors
 
-- Secrets exist only in environment variables, but for the two a webhook carries in `app.webhook` (its signing secret and the client's key; RFC-002 §15.5, migration 0008). `external.credential.secret_env_var` is a pointer and must match the credential shape enforced by `assertSecretPointer`; it can never name a variable the service itself reads.
+- Secrets exist only in environment variables, but for the two a webhook carries in `app.webhook` (its signing secret and the client's key; RFC-002 §15.5, migration 0008). `external.credential.secret_env_var` is a pointer and must match the credential shape enforced by `assertSecretPointer`; it can never name a variable the service itself reads (`RESERVED_POINTERS`, which includes `RESEND_API_KEY`).
 - The logger redacts **explicit paths** (`src/core/log.ts`). When you log a new object that can carry a secret, add its path and a case to `tests/unit/log.test.ts`. Pass unknown shapes through `redact()` first. Never log a presented token — log why it was refused.
 - Anything persisted or put in an error message (`sync_run.error`, `HttpError.message`, raw payloads) is redacted, including URL query parameters and body excerpts.
 - Throw typed errors with a stable `code`, `retryable` and `status`: they all extend `AppError` (`src/core/errors.ts`), per module in `src/modules/sync/errors.ts` and `src/modules/webhooks/errors.ts`. Wrap foreign errors with `{ cause }`. The route layer maps through `classifySyncError`.

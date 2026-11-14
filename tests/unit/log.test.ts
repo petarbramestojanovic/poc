@@ -60,4 +60,15 @@ describe('logger redaction', () => {
     expect(entry.config.port).toBe(1)
     expect(entry.webhook.id).toBe('w1')
   })
+
+  it("masks the mail provider's key wherever a mail config is logged", () => {
+    const { logger, last } = capture()
+    const mail = { provider: { name: 'resend', apiKey: 're_m1' }, from: 'r@example.com' }
+    logger.info({ config: { port: 1, mail }, mail, provider: mail.provider }, 'probe')
+    const serialised = JSON.stringify(last())
+    expect(serialised).not.toContain('re_m1')
+    const entry = last() as { mail: { provider: { name: string }; from: string } }
+    expect(entry.mail.provider.name).toBe('resend')
+    expect(entry.mail.from).toBe('r@example.com')
+  })
 })

@@ -24,7 +24,8 @@ Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (plat
 │    companies/     found or created inside a campaign setup; GET /companies  │
 │    health/        GET /healthz · GET /readyz                                │
 │  core/            config · db · log · errors · dates · http client · auth   │
-│  cli/             npm run sync -- …                                         │
+│                   mail (one Mailer, providers: resend · memory)             │
+│  cli/             npm run sync -- … · npm run mail -- …                     │
 └───────────────────────────────┬─────────────────────────────────────────────┘
                                 │ pg pool (10 per instance; sync ≤ 3, webhooks ≤ 2)
                                 ▼
@@ -131,6 +132,18 @@ curl http://127.0.0.1:3000/sync/runs/<sync run id> -H 'authorization: Bearer <to
 
 The trigger answers `202` with the run id as soon as the run is open, `429` inside the five-minute cooldown and `409` while the link already has a run in progress. A body of `{}` syncs the source's lookback ending yesterday. `"dryRun": true` records a dry run; only the CLI prints its diff. Windows longer than 366 days belong to the CLI.
 
+## Email
+
+`src/core/mail/` sends email for any module through one `Mailer`. A module passes recipients, a subject, plain text, attachments and an idempotency key; the sender comes from `MAIL_FROM`, and the provider (`MAIL_PROVIDER`) is the only code that knows a vendor. Resend is the provider today, called through our own HTTP client (no SDK). Changing provider is a new folder in `src/core/mail/providers/` plus its key in config; nothing that sends email changes.
+
+Check the settings without anything else in the service:
+
+```sh
+npm run mail -- test --to <your address> [--to <another address>]
+```
+
+It sends one short email with a small UTF-8 CSV attached and prints the provider's message id. Without a verified domain, Resend only accepts its test sender `onboarding@resend.dev` and delivers only to the account's own address; any other recipient is refused (`mail_rejected`).
+
 ## Scripts
 
 | Script                     | What it does                                                        |
@@ -141,6 +154,7 @@ The trigger answers `202` with the run id as soon as the run is open, `429` insi
 | `npm run check:migrations` | `-- <base-ref>`: fail if a migration on the base was edited/removed |
 | `npm start`                | Run the compiled service with source maps (`dist/index.js`)         |
 | `npm run sync -- …`        | Operator sync CLI: one link, the nightly pass, key checks, pixels   |
+| `npm run mail -- test …`   | Send one test email with a CSV attached through `MAIL_PROVIDER`     |
 | `npm run typecheck`        | `tsc --noEmit` over `src/`, `tests/` and config files               |
 | `npm run lint`             | ESLint (type-aware) + Prettier check                                |
 | `npm run lint:fix`         | Same, applying fixes                                                |
@@ -168,6 +182,10 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 | `SYNC_SCHEDULER_ENABLED`    | Run the 00:30 UTC nightly pass in this process (default `true`)                                                 |
 | `WEBHOOK_SCHEDULER_ENABLED` | Run the minutely webhook tick in this process (default `true`)                                                  |
 | `RENDER_GIT_COMMIT`         | Set by Render; `/healthz` reports it so a deploy can wait for its own commit                                    |
+| `MAIL_PROVIDER`             | `resend` or `memory` (keeps mail in the process, sends nothing); unset = email off                              |
+| `RESEND_API_KEY`            | Resend key with sending access, limited to the sender's domain; required when the provider is `resend`          |
+| `MAIL_FROM`                 | Sender, `Name <address>` or `address`, on a domain verified in Resend; required when email is on                |
+| `MAIL_REPLY_TO`             | Optional reply-to address                                                                                       |
 | `TZ`                        | Always `UTC`; sources and schedules carry explicit timezones                                                    |
 
 ## Campaigns
