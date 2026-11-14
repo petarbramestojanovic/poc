@@ -460,6 +460,40 @@ describe('webhook rows (migration 0008)', () => {
     )
   })
 
+  it('cuts the creative names into Campaign and Creative when the row set says so', async () => {
+    // BMS-1569: the split is stored with the webhook and read back from it on every send.
+    const { webhook: created } = await createWebhook(
+      deps(),
+      webhook({
+        format: 'csv',
+        auth: { token: 'fnl_it_token' },
+        campaignIds: [PRICED],
+        fields: payloadFieldsSchema.parse({
+          columns: ['Impressions', 'Cost'],
+          rows: [
+            {
+              source: 'nexd',
+              level: 'creative',
+              name: 'creative',
+              split: [' - ', ' '],
+              values: {
+                Impressions: { formula: 'impressions', decimals: 0 },
+                Cost: { formula: 'impressions / 1000 * price' },
+              },
+            },
+          ],
+        }),
+      }),
+    )
+
+    await sendNow(deps(), { webhookId: created.id, period: PERIOD, deliverNow: false })
+
+    // n1, labelled "KW37 Kids", has no dash: the cut falls back to the space.
+    expect((await stored(created.id)).payload).toBe(
+      'Date,Campaign,Creative,Impressions,Cost\r\n' + '2026-09-07,KW37,Kids,1200,18.71\r\n',
+    )
+  })
+
   it('refuses to send a period in which every creative reported zeros', async () => {
     const { webhook: created } = await createWebhook(
       deps(),

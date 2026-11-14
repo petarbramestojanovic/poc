@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { renderCsv } from '../../src/modules/webhooks/csv.ts'
 import { compileFields, payloadFieldsSchema } from '../../src/modules/webhooks/fields.ts'
 import type { PayloadFieldsInput } from '../../src/modules/webhooks/fields.ts'
 import {
   assembleRows,
   labelKey,
+  splitName,
   type ClicksRecord,
   type MetricsRecord,
   type SourceData,
@@ -463,5 +465,133 @@ describe('assembleRows', () => {
         ['2026-10-09', 'DE2610 Tchibo Caffè Crema', 'KW43 Kids'],
       ])
     })
+  })
+
+  // BMS-1569: Tchibo's own campaigns (the weekly flights) exist only inside ATK's creative names,
+  // in front of the creative, mostly before a dash. The names below are real.
+  describe('creative names cut into Campaign and Creative', () => {
+    const RUNCLUB = 'DE_DP_PER_DFT_NF_ACT_KW42_RUNCLUB - Swipe Card 300x250 V2 (bis 21.12.)'
+    const KIDSRAIN = 'DE_DP_PER_PRO_NF_KID_KW37_KidsRain V1 300x250 (bis 16.11)'
+    const LEDDEKO =
+      'DE_DP_PER_DFT_NF_FUR_KW46_LEDDEKOBACKEN  - Swipe2Reveal V1 - 300x250 (bis 20.12.)'
+
+    const SPLIT = fields({
+      columns: ['Ad Type', 'Impressions', 'Clicks', 'Cost'],
+      rows: [
+        {
+          source: 'zeus',
+          level: 'creative',
+          name: 'creative',
+          split: [' - ', ' '],
+          values: {
+            'Ad Type': { value: 'Dynamic Ad' },
+            Impressions: { formula: 'impressions', decimals: 0 },
+            Clicks: { formula: 'clicks', decimals: 0 },
+            Cost: { formula: 'impressions / 1000 * price' },
+          },
+        },
+      ],
+    })
+
+    // As on staging: the Zeus creative's tag is its name, and nobody labelled it.
+    const creative = (tag: string, impressions: number, clickCount: string) => ({
+      metrics: metrics({ campaignTag: tag, metrics: { impressions } }),
+      clicks: clicks({ campaignTag: tag, clicks: clickCount }),
+    })
+
+    it('prints the flight in Campaign and the creative in Creative, numbers untouched', () => {
+      const rows = [creative(RUNCLUB, 32878, '1172'), creative(KIDSRAIN, 5000, '100')]
+      const report = assembleRows(SPLIT, [
+        zeus(
+          rows.map((row) => row.metrics),
+          rows.map((row) => row.clicks),
+        ),
+      ])
+      expect(renderCsv(SPLIT.names, report)).toBe(
+        'Date,Campaign,Creative,Ad Type,Impressions,Clicks,Cost\r\n' +
+          '2026-10-08,DE_DP_PER_DFT_NF_ACT_KW42_RUNCLUB,Swipe Card 300x250 V2 (bis 21.12.),Dynamic Ad,32878,1172,512.49\r\n' +
+          // No dash in KW37's names: the cut falls back to the first space.
+          '2026-10-08,DE_DP_PER_PRO_NF_KID_KW37_KidsRain,V1 300x250 (bis 16.11),Dynamic Ad,5000,100,77.94\r\n',
+      )
+    })
+
+    it('cuts at the first dash only, and trims the double space ATK typed before it', () => {
+      const { metrics: row } = creative(LEDDEKO, 1000, '10')
+      expect(assembleRows(SPLIT, [zeus([row])])).toEqual([
+        [
+          '2026-10-08',
+          'DE_DP_PER_DFT_NF_FUR_KW46_LEDDEKOBACKEN',
+          'Swipe2Reveal V1 - 300x250 (bis 20.12.)',
+          'Dynamic Ad',
+          1000,
+          null,
+          15.59,
+        ],
+      ])
+    })
+
+    it("never cuts the campaign's own name, and leaves Creative empty on a campaign row", () => {
+      const both = fields({
+        columns: ['Impressions'],
+        rows: [
+          { source: 'nexd', values: { Impressions: { formula: 'impressions' } } },
+          {
+            source: 'zeus',
+            level: 'creative',
+            name: 'creative',
+            split: [' '],
+            values: { Impressions: { formula: 'impressions' } },
+          },
+        ],
+      })
+      const rows = assembleRows(both, [
+        nexd([metrics({ campaignTag: '' })]),
+        // A Zeus link with only a campaign entity stamps rows with the empty tag: no creative name
+        // to cut, so the row keeps 'DE2610 Tchibo Caffè Crema' whole.
+        zeus([
+          metrics({ campaignTag: '', metrics: { impressions: 7 } }),
+          creative(KIDSRAIN, 5, '1').metrics,
+        ]),
+      ])
+      expect(rows).toEqual([
+        ['2026-10-08', 'DE2610 Tchibo Caffè Crema', null, 1001],
+        ['2026-10-08', 'DE2610 Tchibo Caffè Crema', null, 7],
+        ['2026-10-08', 'DE_DP_PER_PRO_NF_KID_KW37_KidsRain', 'V1 300x250 (bis 16.11)', 5],
+      ])
+    })
+  })
+})
+
+describe('splitName', () => {
+  it.each<[string, string, string[], [string, string | null]]>([
+    [
+      'at the first separator found, in the order given',
+      'DE_DP_PER_DFT_NF_ACT_KW42_RUNCLUB - Swipe2Reveal V1 - 300x250 - Mobile (bis 08.11.)',
+      [' - ', ' '],
+      ['DE_DP_PER_DFT_NF_ACT_KW42_RUNCLUB', 'Swipe2Reveal V1 - 300x250 - Mobile (bis 08.11.)'],
+    ],
+    [
+      'at a later separator when the first is not in the name',
+      'DE_DP_PER_PRO_NF_LAD_KW38_Ladies V3 300x600 (bis 23.11)',
+      [' - ', ' '],
+      ['DE_DP_PER_PRO_NF_LAD_KW38_Ladies', 'V3 300x600 (bis 23.11)'],
+    ],
+    [
+      'by the order given, not by position in the name',
+      'KW42_RUNCLUB - Swipe Card',
+      [' ', ' - '],
+      ['KW42_RUNCLUB', '- Swipe Card'],
+    ],
+    ['nowhere when no separator is in it', 'KW37_KidsRain', [' - '], ['KW37_KidsRain', null]],
+    [
+      'never at the first character, so Campaign is never empty',
+      '-KW37-Kids',
+      ['-'],
+      ['-KW37', 'Kids'],
+    ],
+    ['with no Creative when nothing follows the cut', 'KW42 -', ['-'], ['KW42', null]],
+    ['trimming the name and both parts', '  KW42 -  Swipe  ', ['-'], ['KW42', 'Swipe']],
+  ])('cuts %s', (_case, name, separators, expected) => {
+    expect(splitName(name, separators)).toEqual(expected)
   })
 })

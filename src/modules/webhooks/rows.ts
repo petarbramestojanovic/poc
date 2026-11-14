@@ -16,7 +16,9 @@ import { evaluate, fromNumber, parseDecimal, toRoundedNumber, type Fraction } fr
 // and day, languages merged the same way. A day without a single stored row has no report row: it
 // is skipped, never filled with zeros. Nor has a row whose numbers are all 0 or empty (hasData): a
 // source that reports a stopped creative as a day of zeros has nothing to say about that day. Rows
-// of different row sets are never combined: two sources are two series in one table.
+// of different row sets are never combined: two sources are two series in one table. A row set
+// may cut its creatives' names into Campaign and Creative (splitName); the cut changes only those
+// two cells, never which rows there are or their numbers.
 
 /** What one cell holds: the date and the names, a fixed text, or a formula's number (null = none). */
 export type CellValue = string | number | null
@@ -188,6 +190,17 @@ function buildRowSet(
 
     if (!hasData(exact)) return []
 
+    // The Campaign cell and the Creative cell (printed only when the report has that column). A
+    // creative-level row is named after its creative unless it has no name at all.
+    const [campaignCell, creativeCell] =
+      set.name === 'campaign'
+        ? [group.campaign, perCreative ? creative : null]
+        : creative === ''
+          ? [group.campaign, null]
+          : set.split === null
+            ? [creative, null]
+            : splitName(creative, set.split)
+
     const built: Built = {
       date: group.date,
       campaign: group.campaign,
@@ -195,18 +208,31 @@ function buildRowSet(
       setIndex,
       creative,
       campaignTag: group.campaignTag,
-      row: [
-        group.date,
-        // A creative-level row named after its creative; the campaign when it has no name at all.
-        set.name === 'creative' && creative !== '' ? creative : group.campaign,
-        ...(fields.creativeColumn
-          ? [set.name === 'campaign' && perCreative ? creative : null]
-          : []),
-        ...cells,
-      ],
+      row: [group.date, campaignCell, ...(fields.creativeColumn ? [creativeCell] : []), ...cells],
     }
     return [built]
   })
+}
+
+/**
+ * A creative's name cut in two at the first of `separators` it contains, tried in the order given:
+ * the text before it is the Campaign cell, the rest the Creative cell, both trimmed. The cut is
+ * looked for from the name's second character, so Campaign is never empty; a name it is not found
+ * in stays whole in Campaign, with no Creative. The client's naming convention lives in the
+ * webhook's config (fields.ts), never here.
+ *
+ *   splitName('KW42_RUNCLUB - Swipe Card V2', [' - ', ' '])  → ['KW42_RUNCLUB', 'Swipe Card V2']
+ *   splitName('KW37_KidsRain V1 300x250', [' - ', ' '])      → ['KW37_KidsRain', 'V1 300x250']
+ */
+export function splitName(name: string, separators: readonly string[]): [string, string | null] {
+  const text = name.trim()
+  for (const separator of separators) {
+    const at = text.indexOf(separator, 1)
+    if (at === -1) continue
+    const creative = text.slice(at + separator.length).trim()
+    return [text.slice(0, at).trim(), creative === '' ? null : creative]
+  }
+  return [text, null]
 }
 
 /**

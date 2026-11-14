@@ -30,8 +30,12 @@ import { MAX_FORMULA_LENGTH, parseFormula, variablesOf, type Expr } from './form
 // Every row starts with `Date` and `Campaign` (the campaign's name). When a creative-level row set
 // keeps the campaign there, a third fixed column `Creative` carries the creative's label (empty on
 // campaign-level rows); a row set may instead put the label in the `Campaign` cell
-// (`"name": "creative"`). The one-source form `{ "source", "columns": [{ name, formula | value }] }`
-// is still accepted and means one campaign-level row set.
+// (`"name": "creative"`), and may cut it in two with `"split": [" - ", " "]`: the part before the
+// first separator found goes in `Campaign`, the rest in `Creative` (rows.ts, splitName). That is
+// for a client whose own campaign lives inside the platform's creative names (Tchibo's flights in
+// ATK's names); the convention is the webhook's config, never code. The one-source form
+// `{ "source", "columns": [{ name, formula | value }] }` is still accepted and means one
+// campaign-level row set.
 //
 // A formula (formula.ts) reads that row's own numbers: a stored metric, `clicks` (non-internal CTA
 // clicks) or `price` (the campaign's CPM). It is computed for each row from that row, never by
@@ -74,6 +78,8 @@ export const MAX_COLUMNS = 30
 export const MAX_ROW_SETS = 6
 export const MAX_COLUMN_NAME_LENGTH = 64
 export const MAX_TEXT_VALUE_LENGTH = 200
+export const MAX_SEPARATORS = 4
+export const MAX_SEPARATOR_LENGTH = 16
 
 const METRICS: ReadonlySet<string> = new Set(METRIC_IDS)
 const VARIABLES: ReadonlySet<string> = new Set(FORMULA_VARIABLES)
@@ -96,6 +102,12 @@ const text = z
   .max(MAX_TEXT_VALUE_LENGTH)
   .regex(PRINTABLE, 'no control characters or line breaks')
 const sourceId = z.string().regex(/^[a-z][a-z0-9_]{0,31}$/, 'a source id such as "zeus"')
+/** Taken exactly as given, never trimmed: " " is a separator. */
+const separator = z
+  .string()
+  .min(1)
+  .max(MAX_SEPARATOR_LENGTH)
+  .regex(PRINTABLE, 'no control characters or line breaks')
 
 /** One cell of a row set: exactly one of a formula, a fixed text or a row variable. */
 const cellInput = z
@@ -137,6 +149,8 @@ const rowSetInput = z
     level: z.enum(LEVELS).default('campaign'),
     /** `creative`: the label goes in the Campaign cell instead of its own Creative column. */
     name: z.enum(NAMES).default('campaign'),
+    /** Cuts the creative's label into Campaign and Creative at the first of these it contains. */
+    split: z.array(separator).min(1).max(MAX_SEPARATORS).optional(),
     /** By column name; a column left out is empty on these rows. */
     values: z.record(z.string(), cellInput),
   })
@@ -148,12 +162,22 @@ const rowSetInput = z
         message: '"creative" names a row after its creative, so it needs "level": "creative"',
       })
     }
+    if (set.split !== undefined && set.name !== 'creative') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['split'],
+        message:
+          '"split" cuts the creative\'s name into Campaign and Creative, so it needs "name": "creative"',
+      })
+    }
   })
 
 export interface RowSet {
   source: string
   level: Level
   name: Name
+  /** Absent: the label is printed whole. */
+  split?: string[]
   values: Record<string, Cell>
 }
 
@@ -211,6 +235,8 @@ const rowSetsInput = z
       source: set.source,
       level: set.level,
       name: set.name,
+      // Stored only when given, so the webhooks without it keep the object they had.
+      ...(set.split === undefined ? {} : { split: set.split }),
       // In column order, so the stored object reads like the table it makes.
       values: Object.fromEntries(
         fields.columns.flatMap((name) => {
@@ -309,6 +335,8 @@ export interface CompiledRowSet {
   source: string
   level: Level
   name: Name
+  /** The separators that cut a creative's label into Campaign and Creative; null = never cut. */
+  split: readonly string[] | null
   /** One per admin column, in column order. */
   cells: readonly CompiledCell[]
   /** Every variable its formulas read. */
@@ -367,6 +395,7 @@ export function compileFields(fields: PayloadFields): CompiledFields {
       source: set.source,
       level: set.level,
       name: set.name,
+      split: set.split ?? null,
       cells,
       variables,
       usesPrice: variables.includes(PRICE_VARIABLE),
@@ -374,7 +403,10 @@ export function compileFields(fields: PayloadFields): CompiledFields {
     }
   })
 
-  const creativeColumn = rowSets.some((set) => set.level === 'creative' && set.name === 'campaign')
+  // A label kept beside the campaign, or the part of a label a split cuts off, needs the column.
+  const creativeColumn = rowSets.some(
+    (set) => set.level === 'creative' && (set.name === 'campaign' || set.split !== null),
+  )
   const sources = [...new Set(rowSets.map((set) => set.source))]
   const [waitSource] = sources
   if (waitSource === undefined) throw new InvalidWebhookError('a column list needs a row set')
