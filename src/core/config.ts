@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { formatSender, isEmailAddress, parseSender } from './mail/address.ts'
+import { MAIL_PROVIDER_NAMES, type MailConfig } from './mail/types.ts'
 
 // Everything the service reads from the environment, validated once at boot. The operator CLI
 // reads only the runtime subset (database and logging), so running a sync never needs the admin
@@ -44,6 +46,78 @@ function checkDatabase(
 
 const runtimeSchema = z.object(runtimeFields).superRefine(checkDatabase)
 
+/**
+ * Email (src/core/mail). Unset MAIL_PROVIDER = email is off and the other three are not read. Set,
+ * it needs a sender and the provider's key, so a half-configured service fails at boot rather than
+ * at 03:00.
+ */
+const mailFields = {
+  MAIL_PROVIDER: z.enum(MAIL_PROVIDER_NAMES).optional(),
+  /** Resend → API Keys, permission "Sending access", limited to the sender's domain. */
+  RESEND_API_KEY: z
+    .string()
+    .regex(/^re_[A-Za-z0-9_-]+$/, 'must be a Resend API key (starts with re_)')
+    .optional(),
+  /** "Klea Analytics <reports@example.com>" or "reports@example.com", on a domain Resend verified. */
+  MAIL_FROM: z
+    .string()
+    .refine((value) => parseSender(value) !== undefined, {
+      error:
+        'must be "address" or "Name <address>", with no quotes, commas or angle brackets in the name',
+    })
+    .transform((value) => formatSender(parseSender(value) ?? { address: value }))
+    .optional(),
+  /** Where a reply goes when the sender is not a mailbox. Optional. */
+  MAIL_REPLY_TO: z
+    .string()
+    .refine(isEmailAddress, { error: 'must be one email address' })
+    .optional(),
+}
+
+function checkMail(
+  env: {
+    MAIL_PROVIDER?: string | undefined
+    MAIL_FROM?: string | undefined
+    RESEND_API_KEY?: string | undefined
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (env.MAIL_PROVIDER === undefined) return
+  if (env.MAIL_FROM === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MAIL_FROM'],
+      message: 'is required when MAIL_PROVIDER is set',
+    })
+  }
+  if (env.MAIL_PROVIDER === 'resend' && env.RESEND_API_KEY === undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['RESEND_API_KEY'],
+      message: 'is required when MAIL_PROVIDER is resend',
+    })
+  }
+}
+
+const mailSchema = z.object(mailFields).superRefine(checkMail)
+
+type MailEnv = z.infer<typeof mailSchema>
+
+function toMailConfig(env: MailEnv): MailConfig | undefined {
+  if (env.MAIL_PROVIDER === undefined || env.MAIL_FROM === undefined) return undefined
+  const sender = {
+    from: env.MAIL_FROM,
+    ...(env.MAIL_REPLY_TO === undefined ? {} : { replyTo: env.MAIL_REPLY_TO }),
+  }
+  switch (env.MAIL_PROVIDER) {
+    case 'resend':
+      if (env.RESEND_API_KEY === undefined) return undefined
+      return { provider: { name: 'resend', apiKey: env.RESEND_API_KEY }, ...sender }
+    case 'memory':
+      return { provider: { name: 'memory' }, ...sender }
+  }
+}
+
 /** An origin the internet can reach: https, or http on a loopback host for local runs. */
 const publicBaseUrl = z
   .url({ protocol: /^https?$/ })
@@ -66,6 +140,7 @@ const publicBaseUrl = z
 const serviceSchema = z
   .object({
     ...runtimeFields,
+    ...mailFields,
     SERVICE_ADMIN_TOKEN: z
       .string()
       .min(32, 'must be at least 32 characters (generate with: openssl rand -base64 32)'),
@@ -102,6 +177,7 @@ const serviceSchema = z
       .optional(),
   })
   .superRefine(checkDatabase)
+  .superRefine(checkMail)
   .superRefine((env, ctx) => {
     if (env.INBOUND_CAMPAIGNS_TOKEN === env.SERVICE_ADMIN_TOKEN) {
       ctx.addIssue({
@@ -134,6 +210,8 @@ export interface Config extends RuntimeConfig {
   readonly publicBaseUrl?: string
   /** The deployed commit, when the host tells us (Render does). */
   readonly commit?: string
+  /** Unset: email is off (MAIL_PROVIDER is not set). */
+  readonly mail?: MailConfig
 }
 
 export class ConfigError extends Error {
@@ -167,8 +245,14 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
   }
 }
 
+/** The mail settings alone, for `npm run mail`; undefined when MAIL_PROVIDER is not set. */
+export function loadMailConfig(env: NodeJS.ProcessEnv = process.env): MailConfig | undefined {
+  return toMailConfig(parse(mailSchema, env))
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const data = parse(serviceSchema, env)
+  const mail = toMailConfig(data)
   return {
     databaseUrl: data.DATABASE_URL,
     databaseSsl: data.DATABASE_SSL,
@@ -184,6 +268,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webhookSchedulerEnabled: data.WEBHOOK_SCHEDULER_ENABLED,
     ...withPublicBaseUrl(data.PUBLIC_BASE_URL ?? data.RENDER_EXTERNAL_URL),
     ...(data.RENDER_GIT_COMMIT === undefined ? {} : { commit: data.RENDER_GIT_COMMIT }),
+    ...(mail === undefined ? {} : { mail }),
   }
 }
 

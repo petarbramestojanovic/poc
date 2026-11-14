@@ -101,6 +101,12 @@ if (config.publicBaseUrl === undefined) {
   logger.info('csv webhooks unavailable (neither PUBLIC_BASE_URL nor RENDER_EXTERNAL_URL is set)')
 }
 
+if (config.mail === undefined) {
+  logger.info('email off (MAIL_PROVIDER is not set)')
+} else if (config.mail.provider.name === 'memory') {
+  logger.warn('MAIL_PROVIDER=memory: emails are kept in this process and never sent')
+}
+
 if (!config.syncSchedulerEnabled) {
   logger.info('nightly sync scheduler disabled (SYNC_SCHEDULER_ENABLED=false)')
 } else if (!shutdown.signal.aborted) {

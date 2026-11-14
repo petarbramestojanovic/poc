@@ -1,0 +1,5 @@
+{
+  "statusCode": 409,
+  "name": "invalid_idempotent_request",
+  "message": "Same idempotency key used with a different request payload."
+}

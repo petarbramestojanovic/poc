@@ -21,6 +21,10 @@ const REDACTED_PATHS = [
   'config.databaseUrl',
   'config.databaseSslCa',
   'config.adminToken',
+  // The mail provider's key (src/core/mail/types.ts MailConfig), wherever a config is logged.
+  'config.mail.provider.apiKey',
+  'mail.provider.apiKey',
+  'provider.apiKey',
   'webhook.secret',
   'webhook.authToken',
   'webhook.auth_token',

@@ -23,6 +23,17 @@ export function createWebhookHttpClient(logger: Logger): HttpClient {
 /** RFC-002 §15.4: 10 s per attempt. */
 export const WEBHOOK_TIMEOUT_MS = 10_000
 
+/**
+ * The client the mail provider sends through: one attempt, no retry inside the request, for the
+ * same reason as webhooks. A caller retries on its own ladder with the same idempotency key.
+ * 30 s, since a message can carry up to 10 MB of attachments.
+ */
+export function createMailHttpClient(logger: Logger): HttpClient {
+  return createHttpClient({ log: logger, maxRetries: 0, timeoutMs: MAIL_TIMEOUT_MS })
+}
+
+export const MAIL_TIMEOUT_MS = 30_000
+
 export interface SyncRuntime {
   logger: Logger
   db: Db

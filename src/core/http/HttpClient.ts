@@ -26,6 +26,12 @@ export interface HttpRequest {
   log?: Logger
   /** Wall-clock budget for the request including every retry and sleep. */
   deadlineMs?: number
+  /**
+   * Returns a final 4xx or 5xx response instead of throwing HttpError, for a caller that reads the
+   * error body itself (a mail provider's error code). Retries are unchanged: a retryable status is
+   * still retried, and only the last answer is returned.
+   */
+  returnErrorResponses?: boolean
 }
 
 export interface HttpResponse {
@@ -349,7 +355,9 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
       try {
         response = await attemptOnce(req, attempt)
         if (!isRetryableStatus(response.status)) {
-          if (response.status >= 400) throw new HttpError(response.status, req.url, response.text)
+          if (response.status >= 400 && req.returnErrorResponses !== true) {
+            throw new HttpError(response.status, req.url, response.text)
+          }
           log.debug(
             { ...safeReq, status: response.status, attempt, durationMs: now() - attemptStarted },
             'http request',
@@ -362,6 +370,7 @@ export function createHttpClient(options: HttpClientOptions): HttpClient {
       }
 
       if (attempt >= maxRetries) {
+        if (response && req.returnErrorResponses === true) return response
         if (response) throw new HttpError(response.status, req.url, response.text)
         throw failure ?? new Error('retry loop ended without a result')
       }
