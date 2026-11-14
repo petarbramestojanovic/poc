@@ -28,6 +28,7 @@ const config: Config = {
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
   webhookSchedulerEnabled: false,
+  emailReportSchedulerEnabled: false,
 }
 
 const AGENCY = '001ITINBOUNDAGENCY'

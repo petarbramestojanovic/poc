@@ -48,6 +48,9 @@ const EXPECTED_TABLES: Record<string, string[]> = {
   'external.sync_state': ['link_id'],
   'external.sync_run': ['id'],
   'external.raw_payload': ['id'],
+  // Not RFC-004: email reports, migration 0011.
+  'app.email_report': ['id'],
+  'app.email_report_delivery': ['id'],
 }
 
 describe('migration 0001_foundation', () => {

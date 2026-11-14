@@ -21,6 +21,7 @@ const config: Config = {
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
   webhookSchedulerEnabled: false,
+  emailReportSchedulerEnabled: false,
 }
 
 function fakeDb(query: Db['query'] = () => Promise.resolve([])): Db {

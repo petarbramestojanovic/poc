@@ -39,6 +39,7 @@ const config: Config = {
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
   webhookSchedulerEnabled: false,
+  emailReportSchedulerEnabled: false,
 }
 
 type Script = (ctx: SyncContext) => Promise<FetchResult>

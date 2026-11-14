@@ -34,6 +34,7 @@ const config: Config = {
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
   webhookSchedulerEnabled: false,
+  emailReportSchedulerEnabled: false,
 }
 
 const zeusIds = (over: Record<string, unknown> = {}) => ({

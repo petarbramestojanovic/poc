@@ -26,6 +26,7 @@ describe('loadConfig', () => {
       trustProxyHops: 0,
       syncSchedulerEnabled: true,
       webhookSchedulerEnabled: true,
+      emailReportSchedulerEnabled: true,
     })
   })
 
@@ -43,6 +44,16 @@ describe('loadConfig', () => {
     )
     expect(() => loadConfig({ ...valid, SYNC_SCHEDULER_ENABLED: 'maybe' })).toThrow(
       'SYNC_SCHEDULER_ENABLED',
+    )
+  })
+
+  it('reads EMAIL_REPORT_SCHEDULER_ENABLED as a boolean, on by default', () => {
+    expect(loadConfig(valid).emailReportSchedulerEnabled).toBe(true)
+    expect(
+      loadConfig({ ...valid, EMAIL_REPORT_SCHEDULER_ENABLED: 'false' }).emailReportSchedulerEnabled,
+    ).toBe(false)
+    expect(() => loadConfig({ ...valid, EMAIL_REPORT_SCHEDULER_ENABLED: 'sometimes' })).toThrow(
+      'EMAIL_REPORT_SCHEDULER_ENABLED',
     )
   })
 

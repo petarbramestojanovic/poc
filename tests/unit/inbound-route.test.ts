@@ -23,6 +23,7 @@ const withoutInbound: Config = {
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
   webhookSchedulerEnabled: false,
+  emailReportSchedulerEnabled: false,
 }
 const config: Config = { ...withoutInbound, inboundCampaignsToken: INBOUND }
 
