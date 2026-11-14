@@ -190,6 +190,28 @@ describe('HttpClient', () => {
     expect(calls).toHaveLength(6)
   })
 
+  it('returns the final error response instead of throwing when asked, still retrying first', async () => {
+    const refused = client([{ status: 403, body: { name: 'validation_error' } }])
+    const answer = await refused.http.request({ ...GET, returnErrorResponses: true })
+    expect(answer.status).toBe(403)
+    expect(answer.json()).toEqual({ name: 'validation_error' })
+    expect(refused.calls).toHaveLength(1)
+
+    const flaky = client(
+      [{ status: 503 }, { status: 429, body: { name: 'rate_limit_exceeded' } }],
+      {
+        maxRetries: 1,
+      },
+    )
+    const last = await flaky.http.request({ ...GET, returnErrorResponses: true })
+    expect(last.status).toBe(429)
+    expect(flaky.calls).toHaveLength(2)
+
+    // Without the flag nothing changes.
+    const plain = client([{ status: 403 }])
+    await expect(plain.http.request(GET)).rejects.toThrow(HttpError)
+  })
+
   it('redacts URLs and body excerpts in HttpError', async () => {
     const { http } = client([{ status: 404, raw: 'denied for Authorization: Bearer abc123def' }])
     const error = (await http
