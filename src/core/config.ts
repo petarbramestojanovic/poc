@@ -81,7 +81,7 @@ const serviceSchema = z
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
     /** Number of reverse proxies in front of the service (Render = 1, Cloudflare + Render = 2). */
     TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
-    /** Schedules the 04:00 nightly pass in this process. Every replica may; the leader lock picks one. */
+    /** Schedules the 00:30 UTC nightly pass in this process. Every replica may; the leader lock picks one. */
     SYNC_SCHEDULER_ENABLED: z.stringbool().default(true),
     /** Runs the minutely webhook tick in this process. Same leader-lock rule as the nightly pass. */
     WEBHOOK_SCHEDULER_ENABLED: z.stringbool().default(true),

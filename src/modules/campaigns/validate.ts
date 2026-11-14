@@ -7,7 +7,7 @@ import type { SourceSetup } from './input.ts'
 // Pure checks of a setup against what each source's connector says it accepts. Nothing here
 // touches the database, and nothing here knows a platform by name: the connector declares its
 // entity levels, its roles and its config schema (RFC-003 §3), and a setup either fits or it is
-// refused before a single row is written — not at 04:00, when the first sync would trip over it.
+// refused before a single row is written — not at night, when the first sync would trip over it.
 
 /**
  * Returns each source with its config as the connector parsed it (defaults applied), or throws.

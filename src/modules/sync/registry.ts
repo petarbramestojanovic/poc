@@ -28,7 +28,7 @@ export function createRegistry(connectors: readonly SourceConnector[]): Connecto
 
 /**
  * Boot check: every enabled platform source in external.source has a connector, and every
- * connector has a source row. Fails the boot rather than a run at 04:00.
+ * connector has a source row. Fails the boot rather than the nightly run.
  */
 export function assertRegistryMatchesSources(
   registry: ConnectorRegistry,

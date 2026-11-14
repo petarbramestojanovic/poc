@@ -11,12 +11,13 @@ import { lookbackWindow } from './windows.ts'
 // yesterday, or over the deep lookback on Sundays. Links on different credentials run in
 // parallel; links sharing a credential run one at a time, so a third-party token never sees
 // concurrent requests from us. One failing link never stops the others.
-// `npm run sync -- --all` runs exactly this; the 04:00 scheduler calls runNightlyTick.
+// `npm run sync -- --all` runs exactly this; the 00:30 UTC scheduler (scheduler.ts) calls
+// runNightlyTick.
 
 /** Second key of the nightly leader lock; the first is LEADER_LOCK_NAMESPACE in db.ts. */
 export const NIGHTLY_LEADER_LOCK_KEY = 1
 
-/** The zone the 04:00 schedule, and "is tonight Sunday", are evaluated in. */
+/** The zone "is tonight Sunday" (the deep pull) is asked in; the schedule itself is in UTC. */
 export const NIGHTLY_TIMEZONE = 'Europe/Zurich'
 
 const DEEP_PULL_WEEKDAY = 0 // Sunday

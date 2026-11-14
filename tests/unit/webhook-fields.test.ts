@@ -168,6 +168,50 @@ describe('payloadFieldsSchema', () => {
       { columns: ['Cost'], rows: [{ level: 'language', values: {} }] },
       /level/,
     ],
+    [
+      'a split on a row set that keeps the campaign in Campaign',
+      { columns: ['Cost'], rows: [{ level: 'creative', split: [' - '], values: {} }] },
+      /needs \W*name\W*: \W*creative/,
+    ],
+    [
+      'a split without a separator',
+      { columns: ['Cost'], rows: [{ level: 'creative', name: 'creative', split: [], values: {} }] },
+      /split/,
+    ],
+    [
+      'an empty separator',
+      {
+        columns: ['Cost'],
+        rows: [{ level: 'creative', name: 'creative', split: [''], values: {} }],
+      },
+      /split/,
+    ],
+    [
+      'a line break as a separator',
+      {
+        columns: ['Cost'],
+        rows: [{ level: 'creative', name: 'creative', split: ['\n'], values: {} }],
+      },
+      /control/,
+    ],
+    [
+      'more than four separators',
+      {
+        columns: ['Cost'],
+        rows: [
+          { level: 'creative', name: 'creative', split: ['a', 'b', 'c', 'd', 'e'], values: {} },
+        ],
+      },
+      /split/,
+    ],
+    [
+      'a separator longer than sixteen characters',
+      {
+        columns: ['Cost'],
+        rows: [{ level: 'creative', name: 'creative', split: ['-'.repeat(17)], values: {} }],
+      },
+      /split/,
+    ],
   ])('refuses %s', (_name, input, reason) => {
     const result = payloadFieldsSchema.safeParse(input)
     expect(result.success).toBe(false)
@@ -220,6 +264,61 @@ describe('compileFields', () => {
     })
     expect(fields.names).toEqual(['Date', 'Campaign', 'Impressions'])
     expect(fields.creativeColumn).toBe(false)
+  })
+
+  it('adds Creative when a row set cuts its creative names into Campaign and Creative', () => {
+    // Tchibo's file since BMS-1569: ATK's creative names carry Tchibo's own campaign up front.
+    const fields = compiled({
+      columns: ['Ad Type', 'Impressions', 'Clicks', 'Cost'],
+      rows: [
+        {
+          source: 'zeus',
+          level: 'creative',
+          name: 'creative',
+          split: [' - ', ' '],
+          values: {
+            'Ad Type': { value: 'Dynamic Ad' },
+            Impressions: { formula: 'impressions', decimals: 0 },
+            Clicks: { formula: 'clicks', decimals: 0 },
+            Cost: { formula: 'impressions / 1000 * price' },
+          },
+        },
+      ],
+    })
+    expect(fields.names).toEqual([
+      'Date',
+      'Campaign',
+      'Creative',
+      'Ad Type',
+      'Impressions',
+      'Clicks',
+      'Cost',
+    ])
+    expect(fields.creativeColumn).toBe(true)
+    // Exactly as given: a space is a separator, so nothing is trimmed away.
+    expect(at(fields.rowSets).split).toEqual([' - ', ' '])
+  })
+
+  it('stores a split with its row set, and leaves it out of a row set that has none', () => {
+    const parsed = payloadFieldsSchema.parse({
+      columns: ['Impressions'],
+      rows: [
+        { source: 'zeus', values: { Impressions: { formula: 'impressions' } } },
+        {
+          source: 'zeus',
+          level: 'creative',
+          name: 'creative',
+          split: [' '],
+          values: { Impressions: { formula: 'impressions' } },
+        },
+      ],
+    })
+    expect(Object.hasOwn(at(parsed.rows, 0), 'split')).toBe(false)
+    expect(at(parsed.rows, 1).split).toEqual([' '])
+    // What is stored reads back the same.
+    expect(
+      readStoredFields(JSON.parse(JSON.stringify(parsed))).rowSets.map((s) => s.split),
+    ).toEqual([null, [' ']])
   })
 
   it('compiles one cell per column per row set, empty where the row set binds nothing', () => {

@@ -1,13 +1,24 @@
 import { schedule as cronSchedule, type TaskOptions } from 'node-cron'
 import type { Logger } from '../../core/log.ts'
 import type { SyncDeps } from './engine.ts'
-import { NIGHTLY_TIMEZONE, runNightlyTick } from './nightly.ts'
+import { runNightlyTick } from './nightly.ts'
 
-// The 04:00 Europe/Zurich trigger for the nightly pass (RFC-003 §5). Every replica schedules it;
-// the leader lock inside runNightlyTick lets exactly one of them run the pass. A tick never
-// throws: a failed pass is logged, and the next night starts fresh.
+// The 00:30 UTC trigger for the nightly pass (RFC-003 §5). Every replica schedules it; the leader
+// lock inside runNightlyTick lets exactly one of them run the pass. A tick never throws: a failed
+// pass is logged, and the next night starts fresh.
+//
+// Why 00:30 UTC (04:00 Europe/Zurich until 2026-11, moved for Tchibo's 03:00 webhook, BMS-1569):
+//   * the sources count their days in UTC (external.source.day_timezone), so the pass must start
+//     after UTC midnight or yesterday is not complete and the pass stops a day short;
+//   * it must end before an early-morning Zurich webhook: 00:30 UTC is 01:30 in winter and 02:30
+//     in summer. A webhook still waits for its data (report_readiness.sql), so a slow pass only
+//     delays it;
+//   * UTC has no clock changes, so no night is skipped or run twice, as 02:00 Zurich would be.
+// The Sunday deep pull still asks the Zurich weekday (isDeepPullNight), which at 00:30 UTC is
+// always the UTC one.
 
-export const NIGHTLY_CRON = '0 4 * * *'
+export const NIGHTLY_CRON = '30 0 * * *'
+export const NIGHTLY_CRON_TIMEZONE = 'UTC'
 
 export interface NightlyScheduler {
   /** Stops future ticks and waits for a tick that is already running. */
@@ -52,12 +63,12 @@ export function startNightlyScheduler(
     },
     {
       name: 'nightly-sync',
-      timezone: NIGHTLY_TIMEZONE,
+      timezone: NIGHTLY_CRON_TIMEZONE,
       noOverlap: true,
       logger: cronLogger(log),
     },
   )
-  log.info({ cron: NIGHTLY_CRON, timezone: NIGHTLY_TIMEZONE }, 'nightly sync scheduled')
+  log.info({ cron: NIGHTLY_CRON, timezone: NIGHTLY_CRON_TIMEZONE }, 'nightly sync scheduled')
 
   return {
     async stop() {

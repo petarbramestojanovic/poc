@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { isDeepPullNight, planNightlyPass } from '../../src/modules/sync/nightly.ts'
 import type { NightlyCandidate } from '../../src/modules/sync/repo.ts'
 
-const THURSDAY = new Date('2026-09-10T02:00:00Z') // 04:00 in Zurich
-const SUNDAY = new Date('2026-09-13T02:00:00Z') // 04:00 in Zurich
+const THURSDAY = new Date('2026-09-10T00:30:00Z') // the nightly run: 00:30 UTC, 02:30 in Zurich
+const SUNDAY = new Date('2026-09-13T00:30:00Z') // the nightly run: 00:30 UTC, 02:30 in Zurich
 
 const candidate = (over: Partial<NightlyCandidate> = {}): NightlyCandidate => ({
   linkId: 'link-1',
@@ -71,5 +71,11 @@ describe('isDeepPullNight', () => {
     expect(isDeepPullNight(new Date('2026-09-12T22:30:00Z'))).toBe(true)
     // 00:30 on Monday in Zurich.
     expect(isDeepPullNight(new Date('2026-09-13T22:30:00Z'))).toBe(false)
+  })
+
+  it('is Sunday at the 00:30 UTC run in winter and in summer alike', () => {
+    expect(isDeepPullNight(new Date('2026-11-15T00:30:00Z'))).toBe(true) // 01:30 CET
+    expect(isDeepPullNight(SUNDAY)).toBe(true) // 02:30 CEST
+    expect(isDeepPullNight(new Date('2026-11-16T00:30:00Z'))).toBe(false) // Monday 01:30 CET
   })
 })

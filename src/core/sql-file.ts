@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 
 // Queries live in `sql/<name>.sql` next to the module that runs them (plan rule: SQL in files,
 // parameters only). They are read EAGERLY, at module import time, so a missing or un-copied
-// file fails the boot rather than the first nightly run at 04:00. The returned object is typed
+// file fails the boot rather than the first nightly run. The returned object is typed
 // over the names given, so an unknown statement name is a compile error.
 
 export type SqlStatements<N extends readonly string[]> = Readonly<Record<N[number], string>>

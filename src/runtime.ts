@@ -43,7 +43,7 @@ export async function createSyncRuntime(
   })
   const registry = createDefaultRegistry()
   try {
-    // Fail at startup, not in the 04:00 run, if connectors and external.source disagree.
+    // Fail at startup, not in the nightly run, if connectors and external.source disagree.
     await verifyRegistryAgainstSources(db, registry)
   } catch (error) {
     await db.close()
