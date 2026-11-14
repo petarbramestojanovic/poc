@@ -13,7 +13,7 @@ import { InvalidLinkConfigError } from '../../src/modules/sync/errors.ts'
 import { at } from '../helpers.ts'
 
 // A setup is checked against what the REAL connectors declare, so a link the engine would refuse
-// at 04:00 is refused when it is typed in. No database is involved.
+// at night is refused when it is typed in. No database is involved.
 
 const registry = createDefaultRegistry()
 

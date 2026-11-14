@@ -23,8 +23,8 @@ const ID = {
 } as const
 const OUR_LINKS = [ID.nexdLink, ID.zeusLinkDe, ID.zeusLinkFr] as const
 
-const THURSDAY = new Date('2026-09-10T02:00:00Z') // 04:00 in Zurich
-const SUNDAY = new Date('2026-09-13T02:00:00Z') // 04:00 in Zurich
+const THURSDAY = new Date('2026-09-10T00:30:00Z') // the nightly run: 00:30 UTC, 02:30 in Zurich
+const SUNDAY = new Date('2026-09-13T00:30:00Z') // the nightly run: 00:30 UTC, 02:30 in Zurich
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 

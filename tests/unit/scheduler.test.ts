@@ -4,9 +4,14 @@ import type { Db } from '../../src/core/db.ts'
 import { createLimiter } from '../../src/core/limiter.ts'
 import { createLogger } from '../../src/core/log.ts'
 import type { SyncDeps } from '../../src/modules/sync/engine.ts'
-import { NIGHTLY_LEADER_LOCK_KEY } from '../../src/modules/sync/nightly.ts'
+import { todayIn, yesterdayIn } from '../../src/core/dates.ts'
+import { NIGHTLY_LEADER_LOCK_KEY, NIGHTLY_TIMEZONE } from '../../src/modules/sync/nightly.ts'
 import { createRegistry } from '../../src/modules/sync/registry.ts'
-import { NIGHTLY_CRON, startNightlyScheduler } from '../../src/modules/sync/scheduler.ts'
+import {
+  NIGHTLY_CRON,
+  NIGHTLY_CRON_TIMEZONE,
+  startNightlyScheduler,
+} from '../../src/modules/sync/scheduler.ts'
 
 function deps(withAdvisoryLock: Db['withAdvisoryLock']): SyncDeps {
   const db: Db = {
@@ -50,19 +55,41 @@ function fakeCron() {
 }
 
 describe('nightly scheduler', () => {
-  it('schedules 04:00 in Zurich without overlapping ticks', () => {
+  it('schedules 00:30 UTC without overlapping ticks', () => {
     const cron = fakeCron()
     startNightlyScheduler(
       deps(() => Promise.resolve({ acquired: false })),
       { schedule: cron.schedule },
     )
     expect(cron.calls.map((c) => c.expression)).toEqual([NIGHTLY_CRON])
-    expect(NIGHTLY_CRON).toBe('0 4 * * *')
+    expect(NIGHTLY_CRON).toBe('30 0 * * *')
     expect(cron.calls[0]?.options).toMatchObject({
       name: 'nightly-sync',
-      timezone: 'Europe/Zurich',
+      timezone: NIGHTLY_CRON_TIMEZONE,
       noOverlap: true,
     })
+  })
+
+  // Every night of a year with both clock changes: the pass starts after the sources' (UTC) day
+  // is over, so it syncs through yesterday — the very day a daily Zurich webhook reports on — and
+  // before 03:00 in Zurich (Tchibo's send). At 01:59 Zurich, summer nights would stop a day short.
+  it('runs every night after the UTC day ends and before 03:00 in Zurich', () => {
+    expect(NIGHTLY_CRON_TIMEZONE).toBe('UTC')
+    const [minute, hour] = NIGHTLY_CRON.split(' ').map(Number)
+    const zurichHour = new Intl.DateTimeFormat('en-GB', {
+      timeZone: NIGHTLY_TIMEZONE,
+      hour: 'numeric',
+      hourCycle: 'h23',
+    })
+    let nights = 0
+    for (let day = Date.UTC(2027, 0, 1); day < Date.UTC(2028, 0, 1); day += 86_400_000) {
+      const run = new Date(day + ((hour ?? NaN) * 60 + (minute ?? NaN)) * 60_000)
+      expect(yesterdayIn('UTC', run)).toBe(yesterdayIn(NIGHTLY_TIMEZONE, run))
+      expect(todayIn('UTC', run)).toBe(todayIn(NIGHTLY_TIMEZONE, run)) // the deep pull's Sunday
+      expect(Number(zurichHour.format(run))).toBeLessThan(3)
+      nights++
+    }
+    expect(nights).toBe(365)
   })
 
   it('runs every tick behind the nightly leader lock', async () => {

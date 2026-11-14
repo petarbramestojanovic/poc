@@ -17,7 +17,7 @@ Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (plat
 │                                                                             │
 │  modules/                                                                   │
 │    sync/          connectors → mapper → engine → day-replace writer         │
-│                   nightly pass 04:00 Europe/Zurich, leader lock key 1       │
+│                   nightly pass 00:30 UTC, leader lock key 1                 │
 │    webhooks/      minutely tick, leader lock key 2 → build, sign, deliver   │
 │    salesforce/    opportunity webhook → campaigns (POST /inbound/…)         │
 │    campaigns/     one setup service; people set platform ids only           │
@@ -165,7 +165,7 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 | `PORT`                      | HTTP port                                                                                                       |
 | `LOG_LEVEL`                 | pino level                                                                                                      |
 | `TRUST_PROXY_HOPS`          | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                             |
-| `SYNC_SCHEDULER_ENABLED`    | Run the 04:00 Europe/Zurich nightly pass in this process (default `true`)                                       |
+| `SYNC_SCHEDULER_ENABLED`    | Run the 00:30 UTC nightly pass in this process (default `true`)                                                 |
 | `WEBHOOK_SCHEDULER_ENABLED` | Run the minutely webhook tick in this process (default `true`)                                                  |
 | `RENDER_GIT_COMMIT`         | Set by Render; `/healthz` reports it so a deploy can wait for its own commit                                    |
 | `TZ`                        | Always `UTC`; sources and schedules carry explicit timezones                                                    |

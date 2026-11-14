@@ -23,8 +23,9 @@ const WINDOWS: Readonly<Record<Frequency, ReportWindow>> = {
 }
 
 /**
- * When a webhook is sent unless it names its own cron: 05:00, an hour after the 04:00 nightly sync,
- * on Mondays for a week and on the 1st for a month. A report still waits for its data (scheduler.ts).
+ * When a webhook is sent unless it names its own cron: 05:00, hours after the nightly sync
+ * (00:30 UTC), on Mondays for a week and on the 1st for a month. A report still waits for its data
+ * (scheduler.ts).
  */
 export const DEFAULT_CRON: Readonly<Record<Frequency, string>> = {
   daily: '0 5 * * *',
