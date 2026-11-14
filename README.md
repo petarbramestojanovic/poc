@@ -19,6 +19,7 @@ Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (plat
 │    sync/          connectors → mapper → engine → day-replace writer         │
 │                   nightly pass 00:30 UTC, leader lock key 1                 │
 │    webhooks/      minutely tick, leader lock key 2 → build, sign, deliver   │
+│    email-reports/ minutely tick, leader lock key 3 → build, email the file  │
 │    salesforce/    opportunity webhook → campaigns (POST /inbound/…)         │
 │    campaigns/     one setup service; people set platform ids only           │
 │    companies/     found or created inside a campaign setup; GET /companies  │
@@ -32,6 +33,7 @@ Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (plat
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ Supabase Postgres                                                           │
 │  app.*        company · campaign · webhook · webhook_delivery               │
+│               email_report · email_report_delivery                          │
 │  analytics.*  metric catalog · advanced_analytics · page_views · cta_clicks │
 │               + the RFC-004 §7 read functions and build_webhook_payload     │
 │  external.*   source · credential (pointers) · campaign_link · link_entity  │
@@ -167,26 +169,27 @@ It sends one short email with a small UTF-8 CSV attached and prints the provider
 
 See [.env.example](.env.example). Secrets live only in environment variables (locally in `.env`, on Render in the dashboard). `external.credential` rows store the _name_ of the variable, never the value.
 
-| Variable                    | Purpose                                                                                                         |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`              | Postgres URL: local direct; on Render the session pooler (5432) or direct, never the transaction pooler (6543)  |
-| `DATABASE_SSL`              | `verify-full` (default) or `disable` (loopback hosts only)                                                      |
-| `DATABASE_SSL_CA`           | PEM of the database CA; empty uses the system CAs                                                               |
-| `NEXD_API_KEY`              | NEXD bearer key                                                                                                 |
-| `ZEUS_API_TOKEN`            | Zeus bearer token                                                                                               |
-| `SERVICE_ADMIN_TOKEN`       | Bearer token for `/sync/*` and `/webhooks/*` routes, at least 32 characters                                     |
-| `INBOUND_CAMPAIGNS_TOKEN`   | Bearer token of `POST /inbound/salesforce/opportunities`, different from the admin token; unset = no such route |
-| `PORT`                      | HTTP port                                                                                                       |
-| `LOG_LEVEL`                 | pino level                                                                                                      |
-| `TRUST_PROXY_HOPS`          | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                             |
-| `SYNC_SCHEDULER_ENABLED`    | Run the 00:30 UTC nightly pass in this process (default `true`)                                                 |
-| `WEBHOOK_SCHEDULER_ENABLED` | Run the minutely webhook tick in this process (default `true`)                                                  |
-| `RENDER_GIT_COMMIT`         | Set by Render; `/healthz` reports it so a deploy can wait for its own commit                                    |
-| `MAIL_PROVIDER`             | `resend` or `memory` (keeps mail in the process, sends nothing); unset = email off                              |
-| `RESEND_API_KEY`            | Resend key with sending access, limited to the sender's domain; required when the provider is `resend`          |
-| `MAIL_FROM`                 | Sender, `Name <address>` or `address`, on a domain verified in Resend; required when email is on                |
-| `MAIL_REPLY_TO`             | Optional reply-to address                                                                                       |
-| `TZ`                        | Always `UTC`; sources and schedules carry explicit timezones                                                    |
+| Variable                         | Purpose                                                                                                         |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                   | Postgres URL: local direct; on Render the session pooler (5432) or direct, never the transaction pooler (6543)  |
+| `DATABASE_SSL`                   | `verify-full` (default) or `disable` (loopback hosts only)                                                      |
+| `DATABASE_SSL_CA`                | PEM of the database CA; empty uses the system CAs                                                               |
+| `NEXD_API_KEY`                   | NEXD bearer key                                                                                                 |
+| `ZEUS_API_TOKEN`                 | Zeus bearer token                                                                                               |
+| `SERVICE_ADMIN_TOKEN`            | Bearer token for `/sync/*` and `/webhooks/*` routes, at least 32 characters                                     |
+| `INBOUND_CAMPAIGNS_TOKEN`        | Bearer token of `POST /inbound/salesforce/opportunities`, different from the admin token; unset = no such route |
+| `PORT`                           | HTTP port                                                                                                       |
+| `LOG_LEVEL`                      | pino level                                                                                                      |
+| `TRUST_PROXY_HOPS`               | Reverse proxies in front: 0 locally, 1 on Render, 2 with Cloudflare                                             |
+| `SYNC_SCHEDULER_ENABLED`         | Run the 00:30 UTC nightly pass in this process (default `true`)                                                 |
+| `WEBHOOK_SCHEDULER_ENABLED`      | Run the minutely webhook tick in this process (default `true`)                                                  |
+| `EMAIL_REPORT_SCHEDULER_ENABLED` | Run the minutely email report tick in this process while email is on (default `true`)                           |
+| `RENDER_GIT_COMMIT`              | Set by Render; `/healthz` reports it so a deploy can wait for its own commit                                    |
+| `MAIL_PROVIDER`                  | `resend` or `memory` (keeps mail in the process, sends nothing); unset = email off                              |
+| `RESEND_API_KEY`                 | Resend key with sending access, limited to the sender's domain; required when the provider is `resend`          |
+| `MAIL_FROM`                      | Sender, `Name <address>` or `address`, on a domain verified in Resend; required when email is on                |
+| `MAIL_REPLY_TO`                  | Optional reply-to address                                                                                       |
+| `TZ`                             | Always `UTC`; sources and schedules carry explicit timezones                                                    |
 
 ## Campaigns
 
@@ -258,6 +261,39 @@ curl -X POST http://127.0.0.1:3000/webhooks/<webhook id>/send-now \
 
 The body a client receives, and the rules for reading its numbers, are documented for them in
 `docs/WEBHOOK-PAYLOAD-v1.md`. Setting one up from scratch is `docs/RUNBOOK.md` §2–3.
+
+## Email reports
+
+An email report sends a report's file as an attachment to a few people on a schedule: one email
+per period, everyone in To. It is a row in `app.email_report` (`src/modules/email-reports/`) with
+its own deliveries in `app.email_report_delivery`, built by the same code as a webhook: with the same
+column list, the CSV is byte for byte the file a Funnel webhook delivers. It waits for the nightly
+sync like a webhook (until 12:00 in its timezone), skips a period without numbers, and retries a
+failed email at 1 min, 5 min, 30 min, 2 h and 12 h with the same idempotency key, so a retry is never
+a second email. It needs email on (`MAIL_PROVIDER`, see [Email](#email)).
+
+```sh
+# create: daily at 03:00 Zurich, the columns of a webhook (copy its "fields")
+curl -X POST http://127.0.0.1:3000/email-reports \
+  -H 'authorization: Bearer <token>' -H 'content-type: application/json' -d '{
+    "companyId": "<company id>", "name": "Tchibo Always-on",
+    "recipients": ["anna@example.com", "ben@example.com"],
+    "campaignIds": ["<campaign id>"], "frequency": "daily", "scheduleCron": "0 3 * * *",
+    "settings": { "format": "csv", "fields": <a webhook column list> } }'
+
+# the email a period would be (subject, file name, the file); stores and sends nothing
+curl -X POST http://127.0.0.1:3000/email-reports/<report id>/preview \
+  -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+  -d '{"period_start": "2026-11-13", "period_end": "2026-11-13"}'
+
+# send a period now; GET /email-reports shows how it went
+curl -X POST http://127.0.0.1:3000/email-reports/<report id>/send-now \
+  -H 'authorization: Bearer <token>' -H 'content-type: application/json' \
+  -d '{"period_start": "2026-11-13", "period_end": "2026-11-13"}'
+```
+
+`PATCH /email-reports/:id` changes anything but the company and the kind (`recipients` is the whole
+list; `enabled: false` stops it). There is no delete.
 
 ## CI/CD
 

@@ -16,6 +16,8 @@ import type { Logger } from './core/log.ts'
 import { requireAdminToken, requireBearerToken } from './core/plugins/admin-auth.ts'
 import { campaignRoutes } from './modules/campaigns/routes.ts'
 import { companyRoutes } from './modules/companies/routes.ts'
+import { emailReportRoutes } from './modules/email-reports/routes.ts'
+import type { EmailReportServiceDeps } from './modules/email-reports/send.ts'
 import { healthRoutes } from './modules/health/routes.ts'
 import { inboundRoutes } from './modules/salesforce/routes.ts'
 import { syncRoutes } from './modules/sync/routes.ts'
@@ -41,10 +43,21 @@ export interface AppDeps {
    * /inbound/salesforce/opportunities. Without it they answer 404.
    */
   campaigns?: CampaignDeps
+  /**
+   * Email reports behind /email-reports. Their `mailer` is unset while email is off: reports can
+   * then be listed, changed and previewed, not created or sent. Without these deps, 404.
+   */
+  emailReports?: EmailReportServiceDeps
 }
 
 /** Admin prefixes: every method and path under these requires the operator token. */
-export const ADMIN_PREFIXES = ['/sync', '/webhooks', '/companies', '/campaigns'] as const
+export const ADMIN_PREFIXES = [
+  '/sync',
+  '/webhooks',
+  '/companies',
+  '/campaigns',
+  '/email-reports',
+] as const
 
 /** Where other systems push to us, behind config.inboundCampaignsToken. Never an admin route. */
 export const INBOUND_PREFIX = '/inbound'
@@ -58,6 +71,7 @@ export function buildApp({
   sync,
   webhooks,
   campaigns,
+  emailReports,
 }: AppDeps): FastifyInstance {
   // Widen to Fastify's logger interface so its logger type parameter is not inferred as the
   // concrete pino type, which conflicts with Fastify's own child-logger factory typing.
@@ -124,6 +138,9 @@ export function buildApp({
         }
         if (prefix === '/campaigns' && campaigns) {
           await admin.register(campaignRoutes, { deps: campaigns })
+        }
+        if (prefix === '/email-reports' && emailReports) {
+          await admin.register(emailReportRoutes, { deps: emailReports })
         }
       },
       { prefix },

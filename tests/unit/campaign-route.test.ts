@@ -21,6 +21,7 @@ const config: Config = {
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
   webhookSchedulerEnabled: false,
+  emailReportSchedulerEnabled: false,
 }
 
 // Every case here is refused before the service runs, so the database must never be reached.

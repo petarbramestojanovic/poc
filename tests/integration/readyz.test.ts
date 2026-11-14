@@ -17,6 +17,7 @@ const config: Config = {
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
   webhookSchedulerEnabled: false,
+  emailReportSchedulerEnabled: false,
 }
 
 const localDb = (options: DbOptions = {}) => createDb(DATABASE_URL, { ssl: 'disable', ...options })

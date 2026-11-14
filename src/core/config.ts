@@ -161,6 +161,11 @@ const serviceSchema = z
     /** Runs the minutely webhook tick in this process. Same leader-lock rule as the nightly pass. */
     WEBHOOK_SCHEDULER_ENABLED: z.stringbool().default(true),
     /**
+     * Runs the minutely email report tick in this process, when email is on (MAIL_PROVIDER). Same
+     * leader-lock rule as the webhook tick.
+     */
+    EMAIL_REPORT_SCHEDULER_ENABLED: z.stringbool().default(true),
+    /**
      * Where this service is reachable from the internet, e.g. https://analytics.example.com: a csv
      * webhook links its file there (/exports/…). Unset, Render's RENDER_EXTERNAL_URL is used.
      */
@@ -206,6 +211,8 @@ export interface Config extends RuntimeConfig {
   readonly trustProxyHops: number
   readonly syncSchedulerEnabled: boolean
   readonly webhookSchedulerEnabled: boolean
+  /** The email report tick; it runs only when `mail` is set too. */
+  readonly emailReportSchedulerEnabled: boolean
   /** The origin a csv webhook's links point at; unset, no csv webhook can be set up. */
   readonly publicBaseUrl?: string
   /** The deployed commit, when the host tells us (Render does). */
@@ -266,6 +273,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     trustProxyHops: data.TRUST_PROXY_HOPS,
     syncSchedulerEnabled: data.SYNC_SCHEDULER_ENABLED,
     webhookSchedulerEnabled: data.WEBHOOK_SCHEDULER_ENABLED,
+    emailReportSchedulerEnabled: data.EMAIL_REPORT_SCHEDULER_ENABLED,
     ...withPublicBaseUrl(data.PUBLIC_BASE_URL ?? data.RENDER_EXTERNAL_URL),
     ...(data.RENDER_GIT_COMMIT === undefined ? {} : { commit: data.RENDER_GIT_COMMIT }),
     ...(mail === undefined ? {} : { mail }),

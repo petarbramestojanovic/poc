@@ -2,7 +2,13 @@ import { buildApp } from './app.ts'
 import type { CampaignDeps } from './modules/campaigns/service.ts'
 import { loadConfig } from './core/config.ts'
 import { createLogger } from './core/log.ts'
-import { createSyncRuntime, createWebhookHttpClient } from './runtime.ts'
+import { createMailer } from './core/mail/mailer.ts'
+import { createMailHttpClient, createSyncRuntime, createWebhookHttpClient } from './runtime.ts'
+import {
+  startEmailReportScheduler,
+  type EmailReportScheduler,
+} from './modules/email-reports/scheduler.ts'
+import type { EmailReportServiceDeps } from './modules/email-reports/send.ts'
 import { createRunTracker, type SyncDeps } from './modules/sync/engine.ts'
 import { startNightlyScheduler, type NightlyScheduler } from './modules/sync/scheduler.ts'
 import { startWebhookScheduler, type WebhookScheduler } from './modules/webhooks/scheduler.ts'
@@ -48,6 +54,20 @@ const webhooks: SendDeps = {
 // Campaign setup validates against the same connectors the sync engine runs.
 const campaigns: CampaignDeps = { db: runtime.db, registry: runtime.registry, log: logger }
 
+// Email reports share the pool and the tracker. The mailer exists only while email is on
+// (MAIL_PROVIDER); without it reports can be listed, changed and previewed, not created or sent.
+const mailer =
+  config.mail === undefined
+    ? undefined
+    : createMailer(config.mail, { http: createMailHttpClient(logger) })
+const emailReports: EmailReportServiceDeps = {
+  db: runtime.db,
+  mailer,
+  log: logger,
+  signal: shutdown.signal,
+  tracker,
+}
+
 const app = buildApp({
   config,
   db: runtime.db,
@@ -56,11 +76,13 @@ const app = buildApp({
   sync,
   webhooks,
   campaigns,
+  emailReports,
   drainTimeoutMs: SHUTDOWN_DEADLINE_MS - 2_000,
 })
 
 let scheduler: NightlyScheduler | undefined
 let webhookScheduler: WebhookScheduler | undefined
+let emailReportScheduler: EmailReportScheduler | undefined
 let shuttingDown = false
 
 async function stop(signal: NodeJS.Signals): Promise<void> {
@@ -76,7 +98,7 @@ async function stop(signal: NodeJS.Signals): Promise<void> {
   shutdown.abort(new Error(`received ${signal}`))
   try {
     // No new ticks. A pass already running stops before its next day and releases the lock.
-    await Promise.all([scheduler?.stop(), webhookScheduler?.stop()])
+    await Promise.all([scheduler?.stop(), webhookScheduler?.stop(), emailReportScheduler?.stop()])
     await app.close() // drains in-flight runs, then closes the pool (onClose hook)
     process.exitCode = 0
   } catch (err) {
@@ -102,7 +124,7 @@ if (config.publicBaseUrl === undefined) {
 }
 
 if (config.mail === undefined) {
-  logger.info('email off (MAIL_PROVIDER is not set)')
+  logger.info('email off (MAIL_PROVIDER is not set): email reports are not sent')
 } else if (config.mail.provider.name === 'memory') {
   logger.warn('MAIL_PROVIDER=memory: emails are kept in this process and never sent')
 }
@@ -118,4 +140,10 @@ if (!config.webhookSchedulerEnabled) {
   logger.info('webhook scheduler disabled (WEBHOOK_SCHEDULER_ENABLED=false)')
 } else if (!shutdown.signal.aborted) {
   webhookScheduler = startWebhookScheduler(webhooks)
+}
+
+if (!config.emailReportSchedulerEnabled) {
+  logger.info('email report scheduler disabled (EMAIL_REPORT_SCHEDULER_ENABLED=false)')
+} else if (mailer !== undefined && !shutdown.signal.aborted) {
+  emailReportScheduler = startEmailReportScheduler({ ...emailReports, mailer })
 }

@@ -22,6 +22,7 @@ const config: Config = {
   trustProxyHops: 0,
   syncSchedulerEnabled: false,
   webhookSchedulerEnabled: false,
+  emailReportSchedulerEnabled: false,
 }
 
 /** Refused before the handler runs: the database must never be reached. */

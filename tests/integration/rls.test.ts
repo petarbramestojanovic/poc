@@ -72,6 +72,8 @@ describe('RLS and the reader grants', () => {
       ['app.company', 'not needed: company names come from the admin API'],
       ['app.webhook', 'holds the signing secret'],
       ['app.webhook_delivery', 'holds every payload we sent'],
+      ['app.email_report', 'holds email addresses'],
+      ['app.email_report_delivery', 'holds email addresses and every file we sent'],
     ])('never reads %s (%s)', async (table) => {
       await asAuthenticated()
       expect(await sqlstateOf(() => sql(`SELECT count(*) FROM ${table}`))).toBe(DENIED)
@@ -151,13 +153,16 @@ describe('RLS and the reader grants', () => {
   })
 
   describe('the browser key before a login', () => {
-    it.each(['analytics.advanced_analytics', 'external.sync_run', 'app.campaign'])(
-      'reads nothing from %s',
-      async (table) => {
-        await asAnon()
-        expect(await sqlstateOf(() => sql(`SELECT count(*) FROM ${table}`))).toBe(DENIED)
-      },
-    )
+    it.each([
+      'analytics.advanced_analytics',
+      'external.sync_run',
+      'app.campaign',
+      'app.email_report',
+      'app.email_report_delivery',
+    ])('reads nothing from %s', async (table) => {
+      await asAnon()
+      expect(await sqlstateOf(() => sql(`SELECT count(*) FROM ${table}`))).toBe(DENIED)
+    })
 
     it('cannot call the read functions either', async () => {
       await asAnon()
