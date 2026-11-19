@@ -2,6 +2,7 @@ import { buildApp } from './app.ts'
 import type { CampaignDeps } from './modules/campaigns/service.ts'
 import { loadConfig } from './core/config.ts'
 import { createLogger } from './core/log.ts'
+import { createHttpClient } from './core/http/HttpClient.ts'
 import { createMailer } from './core/mail/mailer.ts'
 import { createMailHttpClient, createSyncRuntime, createWebhookHttpClient } from './runtime.ts'
 import {
@@ -9,6 +10,7 @@ import {
   type EmailReportScheduler,
 } from './modules/email-reports/scheduler.ts'
 import type { EmailReportServiceDeps } from './modules/email-reports/send.ts'
+import type { ProvisioningDeps } from './modules/provisioning/service.ts'
 import { createRunTracker, type SyncDeps } from './modules/sync/engine.ts'
 import { startNightlyScheduler, type NightlyScheduler } from './modules/sync/scheduler.ts'
 import { startWebhookScheduler, type WebhookScheduler } from './modules/webhooks/scheduler.ts'
@@ -68,6 +70,19 @@ const emailReports: EmailReportServiceDeps = {
   tracker,
 }
 
+// Provisioning creates campaigns and creatives on the platforms through the same connectors, with
+// the sync's retrying client and a second one without retries for polling (NEXD says 408 for
+// "still importing").
+const provisioning: ProvisioningDeps = {
+  db: runtime.db,
+  registry: runtime.registry,
+  http: runtime.http,
+  httpNoRetry: createHttpClient({ log: logger, maxRetries: 0 }),
+  log: logger,
+  campaigns,
+  signal: shutdown.signal,
+}
+
 const app = buildApp({
   config,
   db: runtime.db,
@@ -77,6 +92,7 @@ const app = buildApp({
   webhooks,
   campaigns,
   emailReports,
+  provisioning,
   drainTimeoutMs: SHUTDOWN_DEADLINE_MS - 2_000,
 })
 

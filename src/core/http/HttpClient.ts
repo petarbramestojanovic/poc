@@ -8,7 +8,7 @@ import { redact, redactUrl } from './redact.ts'
 // reaching logs, error messages or stored payloads.
 
 export interface HttpRequest {
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'PUT'
   url: string
   headers?: Record<string, string>
   /** JSON-encoded as the request body. */

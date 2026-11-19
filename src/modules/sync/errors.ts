@@ -18,6 +18,18 @@ export class SyncError extends AppError {
   override readonly code: string = 'sync_error'
 }
 
+/**
+ * A provisioning step on a platform failed: its API answered off-contract, refused, or did not
+ * finish in time. Upstream's doing, so a 502, and worth another run: every step resumes from what
+ * it already created.
+ */
+export class ProvisionError extends SyncError {
+  override readonly name: string = 'ProvisionError'
+  override readonly code: string = 'provision_failed'
+  override readonly status = 502
+  override readonly retryable = true
+}
+
 export class LinkNotFoundError extends SyncError {
   override readonly name = 'LinkNotFoundError'
   override readonly code = 'link_not_found'
