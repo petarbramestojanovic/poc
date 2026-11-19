@@ -26,8 +26,16 @@ export const entitySetupSchema = z.strictObject({
   externalId: z.string().trim().min(1).max(255),
   role: z.string().trim().min(1).max(64).optional(),
   label: name.optional(),
-  /** What the writer stamps on rows from this entity; '' keeps them on the campaign's own row. */
-  campaignTag: z.string().trim().max(200).default(''),
+  /**
+   * The creative this entity's rows belong to, by its tag (app.creative.tag): what the writer
+   * stamps on them. Left out on a creative entity, the service gives a new creative its own id
+   * as tag, and an entity the link already has keeps the creative it points at. '' keeps the rows
+   * on the campaign's own row, which is what every other level means by leaving it out. A pixel
+   * naming a tag must name a creative the campaign has.
+   */
+  campaignTag: z.string().trim().max(200).optional(),
+  /** The creative's type as the CRM names it ('Swipe Card'); creative entities only, optional. */
+  creativeType: name.optional(),
 })
 export type EntitySetup = z.infer<typeof entitySetupSchema>
 

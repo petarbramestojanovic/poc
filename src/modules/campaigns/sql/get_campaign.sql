@@ -7,6 +7,18 @@ SELECT c.id, c.company_id, co.name AS company_name, c.name, c.primary_source, c.
        coalesce(
          (SELECT jsonb_agg(
                    jsonb_build_object(
+                     'id', cr.id,
+                     'tag', cr.tag,
+                     'type', cr.type,
+                     'name', cr.name,
+                     'createdAt', cr.created_at
+                   ) ORDER BY cr.created_at, cr.id)
+            FROM app.creative cr
+           WHERE cr.campaign_id = c.id),
+         '[]'::jsonb) AS creatives,
+       coalesce(
+         (SELECT jsonb_agg(
+                   jsonb_build_object(
                      'id', l.id,
                      'source', l.source_id,
                      'language', l.language,
@@ -19,7 +31,8 @@ SELECT c.id, c.company_id, co.name AS company_name, c.name, c.primary_source, c.
                                    'externalId', e.external_id,
                                    'role', e.role,
                                    'label', e.label,
-                                   'campaignTag', e.campaign_tag
+                                   'campaignTag', e.campaign_tag,
+                                   'creativeId', e.creative_id
                                  ) ORDER BY e.level, e.external_id)
                           FROM external.link_entity e
                          WHERE e.link_id = l.id),
