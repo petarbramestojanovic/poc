@@ -195,6 +195,69 @@ export interface SourceConnector<TConfig = unknown> {
   fetchWindow(ctx: SyncContext<TConfig>): Promise<FetchResult>
 }
 
+// --- provisioning capabilities (phase 2) -------------------------------------------------------
+//
+// A connector may do more than read: it may tell us the ids another platform must be given for a
+// campaign we set up (Zeus: the strings ATK sets as external ids), and later create things on its
+// platform. Both are optional capabilities checked with the type guards below, so the campaigns
+// service knows no platform by name here either.
+
+/** One creative of a campaign as the connectors see it (app.creative). */
+export interface CreativeHandle {
+  id: string
+  /** What its analytics rows carry. */
+  tag: string
+  type: string | null
+  name: string
+}
+
+/**
+ * A thing a platform created for us and handed an id back for (external.provisioned_resource):
+ * the sync never asks for it, the connectors that derive ids may read it.
+ */
+export interface ProvisionedResourceRecord {
+  source: string
+  /** The connector's word: 'campaign', 'creative', 'publish' … */
+  kind: string
+  externalId: string
+  /** The creative it belongs to; null for a campaign-level resource. */
+  creativeId: string | null
+}
+
+export interface ExternalIdInput {
+  campaign: {
+    id: string
+    name: string
+    /** The CRM's reference, e.g. salesforce / 006Rp00000ABCDE. */
+    externalRef: { system: string; id: string } | null
+  }
+  creatives: readonly CreativeHandle[]
+  resources: readonly ProvisionedResourceRecord[]
+}
+
+/** An id another platform must be told, and what it names. */
+export interface DerivedExternalId {
+  level: 'campaign' | 'creative'
+  /** The creative it names; null for the campaign's own id. */
+  creativeId: string | null
+  externalId: string
+}
+
+/**
+ * Derives, from what we know about a campaign, the ids this connector's platform must be given
+ * for it. Pure: it derives what it can and leaves out what it cannot yet (a creative another
+ * platform has not created), so the result grows as the campaign is provisioned.
+ */
+export interface ExternalIdDeriver {
+  deriveExternalIds(input: ExternalIdInput): DerivedExternalId[]
+}
+
+export function derivesExternalIds(
+  connector: SourceConnector,
+): connector is SourceConnector & ExternalIdDeriver {
+  return typeof (connector as Partial<ExternalIdDeriver>).deriveExternalIds === 'function'
+}
+
 /** Pure: payload in, canonical rows out, no I/O. */
 export type Mapper<TInput> = (input: TInput) => CanonicalDailyRow[]
 

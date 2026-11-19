@@ -5,7 +5,14 @@ import { externalRefSchema } from '../../core/external-ref.ts'
 import type { SourceSetup } from './input.ts'
 import { PLATFORM_PRESETS, type PresetPlatform } from './presets.ts'
 import * as repo from './repo.ts'
-import { PLATFORM_OUTCOMES, removePlatform, setPlatformIds, type CampaignDeps } from './service.ts'
+import {
+  PLATFORM_OUTCOMES,
+  describeExternalIds,
+  removePlatform,
+  setPlatformIds,
+  type CampaignDeps,
+  type ExternalIdView,
+} from './service.ts'
 
 // /campaigns, registered inside its own admin scope, so the bearer check runs first. Campaigns
 // and companies are created only by the Salesforce webhook (POST
@@ -78,20 +85,36 @@ const creativeSummary = z.object({
 const campaignParams = z.object({ id: z.guid() })
 const listQuery = z.strictObject({ companyId: z.guid().optional() })
 const platformQuery = z.strictObject({ language: z.string().trim().max(16).default('') })
+/**
+ * An id another platform must be told for this campaign (connector capability
+ * `deriveExternalIds`): what a person hands ATK today. `linked` = the campaign has it already.
+ */
+const externalIdView = z.object({
+  source: z.string(),
+  level: z.enum(['campaign', 'creative']),
+  creativeId: z.guid().nullable(),
+  externalId: z.string(),
+  linked: z.boolean(),
+})
+
 const detailResponse = campaignResponse.extend({
   companyName: z.string(),
   creatives: z.array(creativeSummary),
   links: z.array(linkDetail),
+  externalIds: z.array(externalIdView),
 })
 const changeResponse = z.object({
   outcome: z.enum(PLATFORM_OUTCOMES),
   campaign: detailResponse,
 })
 
-async function detail(deps: CampaignDeps, id: string): Promise<repo.CampaignDetail> {
+async function detail(
+  deps: CampaignDeps,
+  id: string,
+): Promise<repo.CampaignDetail & { externalIds: ExternalIdView[] }> {
   const campaign = await repo.getCampaign(deps.db, id)
   if (!campaign) throw new CampaignNotFoundError(`campaign ${id} does not exist`)
-  return campaign
+  return { ...campaign, externalIds: await describeExternalIds(deps, campaign) }
 }
 
 export const campaignRoutes: FastifyPluginAsync<{ deps: CampaignDeps }> = async (app, { deps }) => {

@@ -12,6 +12,7 @@ import { ConnectorContractError } from '../../errors.ts'
 import type {
   ConnectionCheck,
   ConnectionContext,
+  ExternalIdDeriver,
   FetchResult,
   LinkEntity,
   RawCapture,
@@ -19,6 +20,7 @@ import type {
   SourceConnector,
   SyncContext,
 } from '../../types.ts'
+import { deriveZeusExternalIds } from './handoff.ts'
 import {
   checkZeusInvariants,
   mapZeusRows,
@@ -84,9 +86,10 @@ export interface PixelSummary {
   fires_last_7_days: number
 }
 
-export type ZeusConnector = SourceConnector<ZeusLinkConfig> & {
-  listPixels(ctx: ConnectionContext): Promise<PixelSummary[]>
-}
+export type ZeusConnector = SourceConnector<ZeusLinkConfig> &
+  ExternalIdDeriver & {
+    listPixels(ctx: ConnectionContext): Promise<PixelSummary[]>
+  }
 
 /** Mutable per-fetch state: deduplicated warnings and the newest day Zeus actually served. */
 interface FetchState {
@@ -370,6 +373,9 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     },
 
     describe: () => ({ configSchema: zeusLinkConfig }),
+
+    /** The strings ATK sets as external ids on the Zeus campaign and creatives (handoff.ts). */
+    deriveExternalIds: deriveZeusExternalIds,
 
     async checkConnection(ctx): Promise<ConnectionCheck> {
       const day = yesterdayIn(ctx.dayTimezone, now())
