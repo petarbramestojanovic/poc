@@ -163,6 +163,15 @@ export function createNexdProvisioner(options: NexdProvisionOptions): Provisione
       if (input.existing.some((r) => r.kind === NEXD_RESOURCE.campaign)) {
         return { resources: [], warnings: [] }
       }
+      // A campaign a person already pointed at its NEXD campaign (the link's campaign-level id)
+      // is adopted, not created again: its new creatives go into that campaign.
+      const adopted = input.linked?.find((e) => e.level === 'campaign')
+      if (adopted) {
+        return {
+          resources: [{ kind: NEXD_RESOURCE.campaign, externalId: adopted.externalId }],
+          warnings: [],
+        }
+      }
       const { data } = await call(
         ctx,
         'http',

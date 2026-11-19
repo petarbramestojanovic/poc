@@ -451,6 +451,35 @@ export async function ensureCreativesForTypes(
   })
 }
 
+export interface NewCreative {
+  name: string
+  type?: string | undefined
+}
+
+/**
+ * One more creative of a campaign, ours, tagged with its own id: what a person adds after the
+ * CRM's creative types (POST /campaigns/:id/creatives), before any platform knows it. Provisioning
+ * then creates it where it can. Never deleted.
+ */
+export async function addCreative(
+  deps: CampaignDeps,
+  campaignId: string,
+  input: NewCreative,
+): Promise<repo.CreativeRecord> {
+  const creative = await deps.db.withTransaction(async (tx) => {
+    const campaign = await repo.findCampaignForUpdate(tx, campaignId)
+    if (!campaign) throw new CampaignNotFoundError(`campaign ${campaignId} does not exist`)
+    return repo.insertCreative(tx, {
+      campaignId,
+      tag: null,
+      type: input.type ?? null,
+      name: input.name,
+    })
+  })
+  deps.log.info({ campaignId, creativeId: creative.id }, 'creative added')
+  return creative
+}
+
 /**
  * Adds platform ids to a campaign the way a push does: the link is created if missing, ids it
  * does not have are added, nothing is changed or removed. For provisioning, which obtains ids one

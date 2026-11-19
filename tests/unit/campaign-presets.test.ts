@@ -126,8 +126,17 @@ describe('nexd preset', () => {
     ])
   })
 
-  it('needs at least one creative', () => {
+  it('names the NEXD campaign as a campaign-level id, so provisioning adds creatives to it', () => {
+    const setup = nexdSetup(nexdPresetSchema.parse({ campaignId: 'coYV5VGFPODsDnKi' }))
+    expect(setup.entities).toEqual([
+      { level: 'campaign', externalId: 'coYV5VGFPODsDnKi', campaignTag: '' },
+    ])
+  })
+
+  it('needs the NEXD campaign, a creative, or both', () => {
+    expect(nexdPresetSchema.safeParse({}).success).toBe(false)
     expect(nexdPresetSchema.safeParse({ creatives: [] }).success).toBe(false)
+    expect(nexdPresetSchema.safeParse({ campaignId: 'c1' }).success).toBe(true)
   })
 })
 
