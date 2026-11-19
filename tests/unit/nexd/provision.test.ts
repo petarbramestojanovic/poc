@@ -198,14 +198,15 @@ describe('NEXD provisioning', () => {
     ])
     expect(ctx.slept).toEqual([100, 100, 100])
 
-    // The import body: one zip item for the campaign, in the folder, named after the creative.
+    // The import body: one zip item for the campaign, named after the creative. No folder: the
+    // import's folder_id is a folder inside the campaign, and NEXD answers the account folder
+    // the campaign sits in with 403 "Folder does not belong to the specified campaign".
     const imported = at(fake.seen).body as {
       campaign_id: string
-      folder_id: string
       import: { type: string; data: string; filename: string }[]
     }
     expect(imported.campaign_id).toBe('nxCamp')
-    expect(imported.folder_id).toBe('folder-1')
+    expect(imported).not.toHaveProperty('folder_id')
     expect(imported.import).toHaveLength(1)
     const item = at(imported.import)
     expect(item.type).toBe('zip')

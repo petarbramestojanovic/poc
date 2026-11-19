@@ -16,7 +16,7 @@ import { placeholderFilename, placeholderZip } from './placeholder.ts'
 // Creating a campaign and its creatives on NEXD (apidoc.nexd.com, read 2026-11-08):
 //
 //   POST /v2/campaigns {name, folder_id}                        → Campaign {campaign_id}
-//   POST /v2/import/async {campaign_id, folder_id, import:[…]}  → Creative[] {creative_id, status 71}
+//   POST /v2/import/async {campaign_id, import:[…]}             → Creative[] {creative_id, status 71}
 //   GET  /public/processing/import/{creative_id}/short          → 408 while importing, 200 when done
 //   PUT  /creatives/{creative_id} {name}                        → the creative, renamed
 //   POST /creatives/{creative_id}/publish                       → queues publishing (async)
@@ -26,6 +26,11 @@ import { placeholderFilename, placeholderZip } from './placeholder.ts'
 // re-publish (checked on the account, 2026-11-08). Every step is resumable from the resources it
 // already created: `campaign` (the NEXD campaign id) and `creative` (the import's creative id).
 // NEXD wraps some answers in {result: …} and documents others bare; both are read.
+//
+// The folder (NEXD_PROVISION_FOLDER_ID) is where the campaign is created, and only that: the
+// import's own folder_id means a folder inside the campaign, and NEXD refuses the account folder
+// there (403 "Folder does not belong to the specified campaign", first real run 2026-11-19). The
+// creative goes into the campaign's root.
 
 export const NEXD_RESOURCE = { campaign: 'campaign', creative: 'creative' } as const
 
@@ -215,14 +220,10 @@ export function createNexdProvisioner(options: NexdProvisionOptions): Provisione
           'http',
           'POST',
           '/v2/import/async',
-          { campaign_id: nexdCampaignId, folder_id: options.folderId, import: [item] },
+          { campaign_id: nexdCampaignId, import: [item] },
           unwrap(z.array(creativeSchema).min(1)),
           // The zip is ours and the same every time: its bytes are not worth storing.
-          {
-            campaign_id: nexdCampaignId,
-            folder_id: options.folderId,
-            import: [{ ...item, data: `<zip ${zip.length} bytes>` }],
-          },
+          { campaign_id: nexdCampaignId, import: [{ ...item, data: `<zip ${zip.length} bytes>` }] },
         )
         const [created, ...extra] = data
         if (!created || extra.length > 0) {
