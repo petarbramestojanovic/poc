@@ -514,6 +514,84 @@ describe('campaign setup', () => {
     })
   })
 
+  describe('the industry (migration 0015): the keyword table at create time, never a push', () => {
+    const push = (over: Record<string, unknown> = {}) =>
+      setUpCampaign(
+        deps,
+        setup({
+          externalRef: REF,
+          company: {
+            name: 'IT Setup Nobody',
+            externalRef: { system: 'salesforce', id: 'it-setup-001' },
+          },
+          name: 'IT Setup Launch',
+          ...over,
+        }),
+      )
+
+    /** The stored columns themselves, by name: the insert passes the industry positionally. */
+    const storedIndustry = async (campaignId: string) =>
+      at(
+        await db.query<{ industry: string | null; industry_source: string | null }>(
+          'SELECT industry, industry_source FROM app.campaign WHERE id = $1',
+          [campaignId],
+        ),
+      )
+
+    it('gives a known brand its industry in the transaction that creates the campaign', async () => {
+      // 'IT Setup Rauch' / 'IT Setup Cafemio': both FMCG / CPG brands of the table.
+      const result = await setUpCampaign(deps, setup({ externalRef: REF }))
+
+      expect(result.created).toBe(true)
+      expect(result.campaign).toMatchObject({ industry: 'FMCG / CPG', industrySource: 'map' })
+      expect(await storedIndustry(result.campaign.id)).toEqual({
+        industry: 'FMCG / CPG',
+        industry_source: 'map',
+      })
+    })
+
+    it('leaves an unknown brand empty, both columns', async () => {
+      const result = await push()
+
+      expect(result.campaign).toMatchObject({ industry: null, industrySource: null })
+      expect(await storedIndustry(result.campaign.id)).toEqual({
+        industry: null,
+        industry_source: null,
+      })
+    })
+
+    it('reports a second identical push as unchanged and writes nothing', async () => {
+      const first = await setUpCampaign(deps, setup({ externalRef: REF }))
+      const second = await setUpCampaign(deps, setup({ externalRef: REF }))
+
+      expect(second).toMatchObject({ created: false, updated: false })
+      expect(second.campaign.updatedAt).toEqual(first.campaign.updatedAt)
+      expect(second.campaign).toMatchObject({ industry: 'FMCG / CPG', industrySource: 'map' })
+    })
+
+    it('never changes the industry when a push renames the campaign', async () => {
+      const unknown = await push()
+      // Now named after a brand of the table: still empty, since a push never classifies.
+      const renamed = await push({ name: 'IT Setup Lidl Punkte' })
+      expect(renamed).toMatchObject({ created: false, updated: true })
+      expect(await storedIndustry(unknown.campaign.id)).toEqual({
+        industry: null,
+        industry_source: null,
+      })
+
+      // And a known one keeps what it had when renamed after another brand.
+      await cleanup()
+      const known = await setUpCampaign(deps, setup({ externalRef: REF }))
+      const moved = await setUpCampaign(deps, setup({ externalRef: REF, name: 'IT Setup Lidl' }))
+      expect(moved).toMatchObject({ created: false, updated: true })
+      expect(moved.campaign).toMatchObject({ industry: 'FMCG / CPG', industrySource: 'map' })
+      expect(await storedIndustry(known.campaign.id)).toEqual({
+        industry: 'FMCG / CPG',
+        industry_source: 'map',
+      })
+    })
+  })
+
   describe('migration 0005_campaign_price', () => {
     // One statement, so a refused campaign takes its company with it.
     const insertCampaign = (price: string | null, currency: string | null) =>

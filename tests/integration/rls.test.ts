@@ -7,7 +7,8 @@ import { SEED, sqlstateOf, useTransactionalClient } from './db.ts'
 
 const DENIED = '42501' // insufficient_privilege
 
-// What a logged-in reader may see of app.campaign since 0010: of what the deal says, the manager.
+// What a logged-in reader may see of app.campaign since 0010: of what the deal says, the manager;
+// since 0015, the industry and who set it.
 const READABLE_CAMPAIGN_COLUMNS = [
   'company_id',
   'created_at',
@@ -16,6 +17,8 @@ const READABLE_CAMPAIGN_COLUMNS = [
   'external_id',
   'external_system',
   'id',
+  'industry',
+  'industry_source',
   'languages',
   'legacy_campaign_id',
   'manager_external_id',
@@ -77,6 +80,7 @@ describe('RLS and the reader grants', () => {
       ['app.email_report', 'holds email addresses'],
       ['app.email_report_delivery', 'holds email addresses and every file we sent'],
       ['external.provisioned_resource', 'platform-side ids; nothing a reader shows'],
+      ['app.industry', "the classifier's definitions; a reader sees the name on app.campaign"],
     ])('never reads %s (%s)', async (table) => {
       await asAuthenticated()
       expect(await sqlstateOf(() => sql(`SELECT count(*) FROM ${table}`))).toBe(DENIED)

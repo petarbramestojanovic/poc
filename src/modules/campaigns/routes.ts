@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import { z } from 'zod'
 import { CampaignNotFoundError } from './errors.ts'
 import { externalRefSchema } from '../../core/external-ref.ts'
+import { INDUSTRY_SOURCES } from '../industries/map.ts'
 import type { SourceSetup } from './input.ts'
 import { PLATFORM_PRESETS, type PresetPlatform } from './presets.ts'
 import * as repo from './repo.ts'
@@ -44,6 +45,9 @@ const campaignResponse = z.object({
   ownerName: z.string().nullable(),
   manager: z.object({ id: z.string(), name: z.string().nullable() }).nullable(),
   externalModifiedAt: z.iso.datetime().nullable(),
+  /** One of GET /industries, or null until classified; industrySource says who set it. */
+  industry: z.string().nullable(),
+  industrySource: z.enum(INDUSTRY_SOURCES).nullable(),
   externalRef: externalRefResponse,
   createdAt: z.date(),
   updatedAt: z.date(),

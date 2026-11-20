@@ -2,8 +2,8 @@
 SELECT c.id, c.company_id, co.name AS company_name, c.name, c.primary_source, c.timezone,
        c.languages, c.starts_on, c.ends_on, c.status, c.price, c.currency, c.amount,
        c.amount_currency, c.deal_type, c.country, c.creative_types, c.owner_name,
-       c.manager_external_id, c.manager_name, c.external_modified_at, c.external_system,
-       c.external_id, c.created_at, c.updated_at,
+       c.manager_external_id, c.manager_name, c.external_modified_at, c.industry,
+       c.industry_source, c.external_system, c.external_id, c.created_at, c.updated_at,
        coalesce(
          (SELECT jsonb_agg(
                    jsonb_build_object(
