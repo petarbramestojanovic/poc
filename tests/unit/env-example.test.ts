@@ -22,6 +22,7 @@ const REQUIRED = [
   'RESEND_API_KEY',
   'MAIL_FROM',
   'MAIL_REPLY_TO',
+  'OPENROUTER_API_KEY',
   'TZ',
 ]
 

@@ -66,6 +66,19 @@ describe('loadConfig', () => {
     )
   })
 
+  it('reads OPENROUTER_API_KEY, absent unless set: the industry LLM is then off', () => {
+    const key = 'sk-or-v1-0123456789abcdef0123456789'
+    expect(loadConfig(valid)).not.toHaveProperty('openRouterApiKey')
+    expect(loadConfig({ ...valid, OPENROUTER_API_KEY: '' })).not.toHaveProperty('openRouterApiKey')
+    expect(loadConfig({ ...valid, OPENROUTER_API_KEY: ` ${key}\n` }).openRouterApiKey).toBe(key)
+  })
+
+  it('refuses an OPENROUTER_API_KEY too short to be one, without quoting it', () => {
+    const short = 'sk-or-tiny'
+    expect(() => loadConfig({ ...valid, OPENROUTER_API_KEY: short })).toThrow('OPENROUTER_API_KEY')
+    expect(() => loadConfig({ ...valid, OPENROUTER_API_KEY: short })).not.toThrow(short)
+  })
+
   it('reads INBOUND_CAMPAIGNS_TOKEN, absent unless set', () => {
     const inbound = 'another-long-enough-inbound-token-0123456789'
     expect(loadConfig(valid)).not.toHaveProperty('inboundCampaignsToken')
@@ -256,6 +269,13 @@ describe('loadRuntimeConfig', () => {
       databaseSslCa: undefined,
       logLevel: 'info',
     })
+  })
+
+  it('reads OPENROUTER_API_KEY too, for the industry backfill', () => {
+    const key = 'sk-or-v1-0123456789abcdef0123456789'
+    const base = { DATABASE_URL: valid.DATABASE_URL, TZ: 'UTC' }
+    expect(loadRuntimeConfig(base)).not.toHaveProperty('openRouterApiKey')
+    expect(loadRuntimeConfig({ ...base, OPENROUTER_API_KEY: key }).openRouterApiKey).toBe(key)
   })
 
   it('applies the same database checks as the service', () => {
