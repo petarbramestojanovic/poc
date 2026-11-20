@@ -22,6 +22,7 @@ import { companyRoutes } from './modules/companies/routes.ts'
 import { emailReportRoutes } from './modules/email-reports/routes.ts'
 import type { EmailReportServiceDeps } from './modules/email-reports/send.ts'
 import { healthRoutes } from './modules/health/routes.ts'
+import { campaignIndustryRoutes, industryRoutes } from './modules/industries/routes.ts'
 import type { IndustryDeps } from './modules/industries/service.ts'
 import { classifyInBackground } from './modules/industries/trigger.ts'
 import { inboundRoutes } from './modules/salesforce/routes.ts'
@@ -56,8 +57,9 @@ export interface AppDeps {
   /** Provisioning behind POST /campaigns/:id/provision. Without it the route answers 404. */
   provisioning?: ProvisioningDeps
   /**
-   * Industry classification: every campaign a Salesforce push leaves without an industry is
-   * classified behind the answer. Without it, only the keyword table at create time runs.
+   * Industries: every campaign a Salesforce push leaves without an industry is classified behind
+   * the answer, and PUT /campaigns/:id/industry and GET /industries exist. Without it, only the
+   * keyword table at create time runs and both routes answer 404.
    */
   industries?: IndustryDeps
 }
@@ -69,6 +71,7 @@ export const ADMIN_PREFIXES = [
   '/companies',
   '/campaigns',
   '/email-reports',
+  '/industries',
 ] as const
 
 /** Where other systems push to us, behind config.inboundCampaignsToken. Never an admin route. */
@@ -153,9 +156,13 @@ export function buildApp({
         if (prefix === '/campaigns' && campaigns) {
           await admin.register(campaignRoutes, { deps: campaigns })
           if (provisioning) await admin.register(provisioningRoutes, { deps: provisioning })
+          if (industries) await admin.register(campaignIndustryRoutes, { deps: industries })
         }
         if (prefix === '/email-reports' && emailReports) {
           await admin.register(emailReportRoutes, { deps: emailReports })
+        }
+        if (prefix === '/industries' && industries) {
+          await admin.register(industryRoutes, { deps: industries })
         }
       },
       { prefix },

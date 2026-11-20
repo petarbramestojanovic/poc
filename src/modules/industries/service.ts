@@ -2,7 +2,7 @@ import type { Db, Queryable } from '../../core/db.ts'
 import type { HttpClient } from '../../core/http/HttpClient.ts'
 import type { Logger } from '../../core/log.ts'
 import type { RunTracker } from '../sync/engine.ts'
-import { CampaignNotFoundError, IndustryMapMismatchError } from './errors.ts'
+import { CampaignNotFoundError, IndustryMapMismatchError, UnknownIndustryError } from './errors.ts'
 import { askIndustry, FALLBACK_INDUSTRY } from './llm.ts'
 import { INDUSTRY_MAP, mapIndustry } from './map.ts'
 import * as repo from './repo.ts'
@@ -15,7 +15,15 @@ import * as repo from './repo.ts'
 // while the campaign has none, so a value a person set in the meantime always wins. The LLM call
 // happens before it, outside any transaction, holding no lock and no connection.
 
+/**
+ * The service's share of the pool for classification. A push of 200 opportunities can hand over
+ * 200 campaigns at once, each a few single statements: one connection keeps them from taking the
+ * pool from the sync and the webhook tick. The LLM calls queue on their own (one per credential).
+ */
+export const INDUSTRY_MAX_CONNECTIONS = 1
+
 export interface IndustryDeps {
+  /** In the service, limited to INDUSTRY_MAX_CONNECTIONS (limitDb). */
   db: Db
   /** Its own client: 15 s per attempt, 2 retries. */
   http: HttpClient
@@ -107,4 +115,31 @@ export async function verifyIndustryMap(db: Queryable): Promise<void> {
       `the keyword table names industries app.industry does not have: ${missing.join(', ')}`,
     )
   }
+}
+
+const FK_VIOLATION = '23503'
+
+/**
+ * A person sets the campaign's industry (source 'manual'), or clears it with null. A value set by
+ * hand is never overwritten by the classifier; a cleared one is classified again by the next push
+ * or the backfill. One UPDATE.
+ */
+export async function setIndustryByHand(
+  db: Queryable,
+  campaignId: string,
+  industry: string | null,
+): Promise<repo.IndustryAssignment> {
+  let assigned: repo.IndustryAssignment | undefined
+  try {
+    assigned = await repo.setIndustryManual(db, campaignId, industry)
+  } catch (error) {
+    const pg = error as { code?: unknown; constraint?: unknown }
+    if (pg.code === FK_VIOLATION && pg.constraint === 'campaign_industry_fkey') {
+      // The path, never the value.
+      throw new UnknownIndustryError('industry is not one of GET /industries', { cause: error })
+    }
+    throw error
+  }
+  if (!assigned) throw new CampaignNotFoundError(`campaign ${campaignId} does not exist`)
+  return assigned
 }

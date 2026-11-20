@@ -1,6 +1,8 @@
 import { buildApp } from './app.ts'
 import type { CampaignDeps } from './modules/campaigns/service.ts'
 import { loadConfig } from './core/config.ts'
+import { limitDb } from './core/db.ts'
+import { createLimiter } from './core/limiter.ts'
 import { createLogger } from './core/log.ts'
 import { createHttpClient } from './core/http/HttpClient.ts'
 import { createMailer } from './core/mail/mailer.ts'
@@ -10,7 +12,11 @@ import {
   type EmailReportScheduler,
 } from './modules/email-reports/scheduler.ts'
 import type { EmailReportServiceDeps } from './modules/email-reports/send.ts'
-import { verifyIndustryMap, type IndustryDeps } from './modules/industries/service.ts'
+import {
+  INDUSTRY_MAX_CONNECTIONS,
+  verifyIndustryMap,
+  type IndustryDeps,
+} from './modules/industries/service.ts'
 import type { ProvisioningDeps } from './modules/provisioning/service.ts'
 import { createRunTracker, type SyncDeps } from './modules/sync/engine.ts'
 import { startNightlyScheduler, type NightlyScheduler } from './modules/sync/scheduler.ts'
@@ -92,10 +98,11 @@ const provisioning: ProvisioningDeps = {
   signal: shutdown.signal,
 }
 
-// Industry classification after a Salesforce push shares the pool and the tracker, with its own
-// HTTP client for the LLM: 15 s per attempt, two retries. Without a key, the keyword table only.
+// Industry classification after a Salesforce push shares the pool (its own one-connection share,
+// since a push can hand over a few hundred campaigns at once) and the tracker, with its own HTTP
+// client for the LLM: 15 s per attempt, two retries. Without a key, the keyword table only.
 const industries: IndustryDeps = {
-  db: runtime.db,
+  db: limitDb(runtime.db, createLimiter(INDUSTRY_MAX_CONNECTIONS)),
   http: createHttpClient({ log: logger, timeoutMs: 15_000, maxRetries: 2 }),
   log: logger,
   ...(config.openRouterApiKey === undefined ? {} : { apiKey: config.openRouterApiKey }),

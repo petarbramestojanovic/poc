@@ -276,6 +276,118 @@ describe('campaign industry after a Salesforce push', () => {
       classifyCampaign(withKey.deps, '00000000-0000-4000-8000-0000000000ff'),
     ).rejects.toMatchObject({ code: 'campaign_not_found', status: 404 })
   })
+
+  describe('set by hand (PUT /campaigns/:id/industry)', () => {
+    const setByHand = (id: string, industry: string | null, token = ADMIN) =>
+      withKey.app.inject({
+        method: 'PUT',
+        url: `/campaigns/${id}/industry`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { industry },
+      })
+
+    const created = async (n: number) => {
+      await push(record(n))
+      const campaign = await stored(n)
+      if (!campaign) throw new Error(`campaign ${String(n)} was not created`)
+      return campaign
+    }
+
+    it('wins over everything: no push and no classifier overwrites it', async () => {
+      const campaign = await created(9) // the LLM said Retail
+
+      const res = await setByHand(campaign.id, 'Tech-Telco')
+      expect(res.statusCode).toBe(200)
+      expect(res.json()).toEqual({
+        id: campaign.id,
+        industry: 'Tech-Telco',
+        industrySource: 'manual',
+      })
+      expect(await stored(9)).toMatchObject({ industry: 'Tech-Telco', source: 'manual' })
+
+      const renamed = await push(record(9, { Name: 'AT2611 IT Industry Lidl Punkte' }))
+      expect(renamed).toMatchObject({ updated: 1, classifying: 0 })
+      expect(await classifyCampaign(withKey.deps, campaign.id, { reclassify: true })).toMatchObject(
+        { outcome: 'kept', industry: 'Tech-Telco' },
+      )
+      expect(await stored(9)).toMatchObject({ industry: 'Tech-Telco', source: 'manual' })
+    })
+
+    it('clears both columns with null, leaving the campaign to the classifier again', async () => {
+      const campaign = await created(10)
+
+      const cleared = await setByHand(campaign.id, null)
+      expect(cleared.statusCode).toBe(200)
+      expect(cleared.json()).toEqual({ id: campaign.id, industry: null, industrySource: null })
+      expect(await stored(10)).toMatchObject({ industry: null, source: null })
+
+      answer = () => completion('Travel & Tourism')
+      expect(await push(record(10))).toMatchObject({ unchanged: 1, classifying: 1 })
+      expect(await stored(10)).toMatchObject({ industry: 'Travel & Tourism', source: 'llm' })
+    })
+
+    it('refuses a name that is not an industry, changing nothing', async () => {
+      const campaign = await created(11)
+
+      const res = await setByHand(campaign.id, 'Pharma')
+      expect(res.statusCode).toBe(400)
+      expect(res.json()).toMatchObject({ error: 'unknown_industry' })
+      expect(res.body).not.toContain('Pharma')
+      expect(await stored(11)).toMatchObject({ industry: 'Retail', source: 'llm' })
+    })
+
+    it('answers 404 for a campaign that does not exist', async () => {
+      const res = await setByHand('00000000-0000-4000-8000-0000000000ff', 'Retail')
+      expect(res.statusCode).toBe(404)
+      expect(res.json()).toMatchObject({ error: 'campaign_not_found' })
+    })
+
+    it('needs the operator token; the inbound token opens neither route', async () => {
+      const campaign = await created(12)
+      expect((await setByHand(campaign.id, 'Automotive', INBOUND)).statusCode).toBe(401)
+      const list = await withKey.app.inject({
+        method: 'GET',
+        url: '/industries',
+        headers: { authorization: `Bearer ${INBOUND}` },
+      })
+      expect(list.statusCode).toBe(401)
+      expect(await stored(12)).toMatchObject({ industry: 'Retail', source: 'llm' })
+    })
+
+    it('lists what can be chosen, by name (GET /industries)', async () => {
+      const res = await withKey.app.inject({
+        method: 'GET',
+        url: '/industries',
+        headers: { authorization: `Bearer ${ADMIN}` },
+      })
+      expect(res.statusCode).toBe(200)
+      const industries = res.json<{ name: string; definition: string }[]>()
+      expect(industries.map((industry) => industry.name)).toEqual([
+        'Automotive',
+        'eCommerce',
+        'Entertainment',
+        'Finance & Insurance',
+        'FMCG / CPG',
+        'Food Retail',
+        'Other Industries',
+        'Retail',
+        'Tech-Telco',
+        'Technical Appliances',
+        'Travel & Tourism',
+      ])
+      expect(industries.every((industry) => industry.definition.length > 0)).toBe(true)
+    })
+
+    it('shows on the campaign for an admin', async () => {
+      const campaign = await created(13)
+      const res = await withKey.app.inject({
+        method: 'GET',
+        url: `/campaigns/${campaign.id}`,
+        headers: { authorization: `Bearer ${ADMIN}` },
+      })
+      expect(res.json()).toMatchObject({ industry: 'Retail', industrySource: 'llm' })
+    })
+  })
 })
 
 describe('verifyIndustryMap, at boot', () => {

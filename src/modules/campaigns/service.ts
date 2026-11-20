@@ -31,9 +31,11 @@ import { checkSources } from './validate.ts'
 // a creative — but it never removes anything. A CRM record with an emptied field must not be able
 // to stop a sync that works; removing is a deliberate act, done by a person.
 //
-// That person sets a campaign's platform ids, and nothing else, through setPlatformIds and
-// removePlatform: ids may always be added, and changed or removed only while that platform has
-// written no analytics for the campaign.
+// That person sets a campaign's platform ids through setPlatformIds and removePlatform: ids may
+// always be added, and changed or removed only while that platform has written no analytics for
+// the campaign. The one other thing a person sets is the industry, which the industries module
+// owns (src/modules/industries/): a setup only gives a new campaign of a known brand its industry
+// from the keyword table, and a push never changes it.
 //
 // Everything happens in one transaction: either the campaign is fully set up, or nothing changed.
 

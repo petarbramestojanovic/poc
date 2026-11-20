@@ -10,6 +10,8 @@ const sql = loadSql(import.meta.url, [
   'list_industries',
   'set_industry_if_empty',
   'set_industry_unless_manual',
+  'set_industry_manual',
+  'list_unclassified',
 ] as const)
 
 export interface IndustryDefinition {
@@ -77,4 +79,62 @@ export async function setIndustryUnlessManual(
   return (
     (await q.query(sql.set_industry_unless_manual, [campaignId, industry, source])).length === 1
   )
+}
+
+/** A campaign's industry and who set it, as the manual route answers. */
+export interface IndustryAssignment {
+  id: string
+  industry: string | null
+  industrySource: IndustrySource | null
+}
+
+/** A person's value (source 'manual'), or null to clear both; undefined when no such campaign. */
+export async function setIndustryManual(
+  q: Queryable,
+  campaignId: string,
+  industry: string | null,
+): Promise<IndustryAssignment | undefined> {
+  const rows = await q.query<{
+    id: string
+    industry: string | null
+    industry_source: IndustrySource | null
+  }>(sql.set_industry_manual, [campaignId, industry])
+  const row = rows[0]
+  return row === undefined
+    ? undefined
+    : { id: row.id, industry: row.industry, industrySource: row.industry_source }
+}
+
+/** A campaign the backfill walks over: what the keyword table reads, and what it has now. */
+export interface BackfillCandidate {
+  id: string
+  /** The CRM's id (the Salesforce opportunity), which an operator recognises. */
+  externalId: string | null
+  name: string
+  companyName: string
+  industry: string | null
+  industrySource: IndustrySource | null
+}
+
+/** Those without an industry; with `reclassify`, also those not set by a person. Oldest first. */
+export async function listUnclassified(
+  q: Queryable,
+  reclassify: boolean,
+): Promise<BackfillCandidate[]> {
+  const rows = await q.query<{
+    id: string
+    external_id: string | null
+    name: string
+    company_name: string
+    industry: string | null
+    industry_source: IndustrySource | null
+  }>(sql.list_unclassified, [reclassify])
+  return rows.map((row) => ({
+    id: row.id,
+    externalId: row.external_id,
+    name: row.name,
+    companyName: row.company_name,
+    industry: row.industry,
+    industrySource: row.industry_source,
+  }))
 }
