@@ -16,6 +16,7 @@ import {
 } from './errors.ts'
 import * as companies from '../companies/repo.ts'
 import { lockCompany, resolveCompany } from '../companies/service.ts'
+import { mapIndustry } from '../industries/map.ts'
 import type { CampaignSetup, EntitySetup, SourceSetup } from './input.ts'
 import { headlineSource } from './presets.ts'
 import * as repo from './repo.ts'
@@ -30,9 +31,11 @@ import { checkSources } from './validate.ts'
 // a creative — but it never removes anything. A CRM record with an emptied field must not be able
 // to stop a sync that works; removing is a deliberate act, done by a person.
 //
-// That person sets a campaign's platform ids, and nothing else, through setPlatformIds and
-// removePlatform: ids may always be added, and changed or removed only while that platform has
-// written no analytics for the campaign.
+// That person sets a campaign's platform ids through setPlatformIds and removePlatform: ids may
+// always be added, and changed or removed only while that platform has written no analytics for
+// the campaign. The one other thing a person sets is the industry, which the industries module
+// owns (src/modules/industries/): a setup only gives a new campaign of a known brand its industry
+// from the keyword table, and a push never changes it.
 //
 // Everything happens in one transaction: either the campaign is fully set up, or nothing changed.
 
@@ -91,7 +94,7 @@ export async function setUpCampaign(
       }
 
       const pushed = existing ? await applyPush(tx, existing, setup) : undefined
-      const campaign = pushed?.campaign ?? (await createCampaign(tx, company.id, setup, sources))
+      const campaign = pushed?.campaign ?? (await createCampaign(tx, company, setup, sources))
 
       const links: LinkResult[] = []
       for (const source of sources) links.push(await applySource(tx, campaign.id, source))
@@ -120,7 +123,7 @@ export async function setUpCampaign(
 
 async function createCampaign(
   tx: Tx,
-  companyId: string,
+  company: { id: string; name: string },
   setup: CampaignSetup,
   sources: readonly SourceSetup[],
 ): Promise<repo.CampaignRecord> {
@@ -129,7 +132,7 @@ async function createCampaign(
   await assertSourceExists(tx, primarySource)
 
   return repo.insertCampaign(tx, {
-    companyId,
+    companyId: company.id,
     name: setup.name,
     primarySource,
     timezone: setup.timezone,
@@ -149,6 +152,9 @@ async function createCampaign(
     manager: nextManager(null, setup.manager),
     externalModifiedAt: setup.externalModifiedAt ?? null,
     externalRef: setup.externalRef,
+    // A known brand gets its industry in this transaction. Anything else stays empty for the
+    // industries module to classify after the push is answered; a push never changes it.
+    industry: mapIndustry(company.name, setup.name),
   })
 }
 

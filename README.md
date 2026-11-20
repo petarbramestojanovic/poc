@@ -21,18 +21,19 @@ Design of record: RFC-004 (schema), RFC-003 (connectors and sync), RFC-002 (plat
 │    webhooks/      minutely tick, leader lock key 2 → build, sign, deliver   │
 │    email-reports/ minutely tick, leader lock key 3 → build, email the file  │
 │    salesforce/    opportunity webhook → campaigns (POST /inbound/…)         │
-│    campaigns/     one setup service; people set platform ids only           │
+│    campaigns/     one setup service; people set platform ids and industry   │
+│    industries/    keyword table at create, then LLM (OpenRouter) behind it  │
 │    companies/     found or created inside a campaign setup; GET /companies  │
 │    health/        GET /healthz · GET /readyz                                │
 │  core/            config · db · log · errors · dates · http client · auth   │
 │                   mail (one Mailer, providers: resend · memory)             │
-│  cli/             npm run sync -- … · npm run mail -- …                     │
+│  cli/             npm run sync -- … · mail -- … · industries -- backfill    │
 └───────────────────────────────┬─────────────────────────────────────────────┘
-                                │ pg pool (10 per instance; sync ≤ 3, webhooks ≤ 2)
+                                │ pg pool (10 per instance; sync ≤ 3, webhooks ≤ 2, industries ≤ 1)
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ Supabase Postgres                                                           │
-│  app.*        company · campaign · webhook · webhook_delivery               │
+│  app.*        company · campaign · industry · webhook · webhook_delivery    │
 │               email_report · email_report_delivery                          │
 │  analytics.*  metric catalog · advanced_analytics · page_views · cta_clicks │
 │               + the RFC-004 §7 read functions and build_webhook_payload     │
@@ -157,6 +158,7 @@ It sends one short email with a small UTF-8 CSV attached and prints the provider
 | `npm start`                | Run the compiled service with source maps (`dist/index.js`)         |
 | `npm run sync -- …`        | Operator sync CLI: one link, the nightly pass, key checks, pixels   |
 | `npm run mail -- test …`   | Send one test email with a CSV attached through `MAIL_PROVIDER`     |
+| `npm run industries -- …`  | `backfill [--dry-run] [--reclassify]`: classify campaigns' industry |
 | `npm run typecheck`        | `tsc --noEmit` over `src/`, `tests/` and config files               |
 | `npm run lint`             | ESLint (type-aware) + Prettier check                                |
 | `npm run lint:fix`         | Same, applying fixes                                                |
@@ -189,6 +191,7 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 | `RESEND_API_KEY`                 | Resend key with sending access, limited to the sender's domain; required when the provider is `resend`          |
 | `MAIL_FROM`                      | Sender, `Name <address>` or `address`, on a domain verified in Resend; required when email is on                |
 | `MAIL_REPLY_TO`                  | Optional reply-to address                                                                                       |
+| `OPENROUTER_API_KEY`             | OpenRouter key for the industry LLM (Gemini 2.5 Flash); unset = keyword table only, unknown brands stay empty   |
 | `TZ`                             | Always `UTC`; sources and schedules carry explicit timezones                                                    |
 
 ## Campaigns
@@ -212,7 +215,7 @@ See [.env.example](.env.example). Secrets live only in environment variables (lo
 
 Only campaigns starting on or after 2026-01-01 are taken in: a record starting earlier, or with no start date, is listed under `skipped` and changes nothing. Ids are the 18-character form. The names of the account, the owner and the manager may come inside their relationships (`"Owner": { "Name": … }`) or flat (`"Owner.Name": …`). Everything else in a record (`Description`, `StageName`, …) is ignored and never stored. A push only creates and updates: an opportunity that is not sent again is left alone, a field it leaves out is never cleared, and a campaign never moves to another company. The answer is `200` with what happened to each record (`created`, `updated`, `unchanged`, `skipped`, `rejected` with a reason, `warnings`); the same records sent twice change nothing.
 
-**People set platform ids, and nothing else.** A campaign arrives without NEXD or Zeus ids:
+**People set platform ids and the industry, and nothing else.** A campaign arrives without NEXD or Zeus ids:
 
 | Route (admin token)                                  | What it does                                                                |
 | ---------------------------------------------------- | --------------------------------------------------------------------------- |
@@ -221,6 +224,8 @@ Only campaigns starting on or after 2026-01-01 are taken in: a record starting e
 | `PUT /campaigns/:id/platforms/zeus`                  | The Zeus ids: `{ campaignId, idType, pixels?, creatives? }`                 |
 | `PUT /campaigns/:id/platforms/nexd`                  | The NEXD ids: `{ creatives: [{ liveId }] }`                                 |
 | `DELETE /campaigns/:id/platforms/:platform`          | Takes the platform off the campaign                                         |
+| `PUT /campaigns/:id/industry`                        | `{ industry }`: set it by hand (never overwritten), or `null` to clear it   |
+| `GET /industries`                                    | The industries a campaign can have, with their definitions                  |
 | `GET /webhooks` · `POST /webhooks`                   | List (never a secret); create — the signing secret is in this response only |
 
 A `PUT` is the whole id list for that platform. Adding ids always works. Changing or dropping one, or a `DELETE`, answers `409 platform_has_data` once that platform has written analytics for the campaign (the rows would stay attributed to the wrong ids), and `409 sync_in_progress` while a sync is fetching. Before that, the link is rebuilt from the request and its sync state forgotten. The headline source follows the ids: Zeus if the campaign has Zeus ids, otherwise NEXD, and Zeus while it has none. There is no create, edit or delete of a campaign by hand.
@@ -228,6 +233,8 @@ A `PUT` is the whole id list for that platform. Adding ids always works. Changin
 **Price** is what the client pays for 1000 impressions, up to six decimals, currency as an ISO 4217 code; `NULL` when Salesforce has none, never 0.
 
 **The deal** is what Salesforce says about the deal behind a campaign. It is stored in columns of `app.campaign`. A logged-in reader can select only the manager's, since the rest holds totals and the owner's name: the reader's grant lists its columns, so `SELECT *` is refused. The admin routes return them as `amount`, `dealType`, `country`, `creativeTypes`, `ownerName`, `manager` and `externalModifiedAt`. They describe: no sync, report or rule reads them. A field that cannot be used is left out with a warning, and the campaign is still set up.
+
+**The industry** (`FMCG / CPG`, `Retail`, … one of `GET /industries`) is ours to decide, right after Salesforce pushes the opportunity. A keyword table of known brands (`src/modules/industries/map.ts`, matched against the account name and the campaign name) sets it, source `map`, when the campaign is created. For any other brand an LLM (Gemini 2.5 Flash through OpenRouter, `OPENROUTER_API_KEY`) picks one in the background after the push has been answered, source `llm`; it is sent the campaign name, the account name and the country, nothing else. A failed call leaves it empty, and the next push of that opportunity tries again. Once set, it never changes on its own: a push never touches it, and a value set by hand (source `manual`) is never overwritten. GET `/campaigns` and `/campaigns/:id` return `industry` and `industrySource`, and a logged-in reader may select both columns. The campaigns that already exist are classified with `npm run industries -- backfill` (`--dry-run` first: keyword table only, nothing written; `--reclassify` redoes `map` and `llm` values after the table changed, never `manual` ones).
 
 A new platform needs one preset in `src/modules/campaigns/presets.ts`; another CRM needs one adapter that builds a `CampaignSetup`. Neither touches the service.
 

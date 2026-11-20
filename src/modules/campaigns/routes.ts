@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify'
 import { z } from 'zod'
 import { CampaignNotFoundError } from './errors.ts'
 import { externalRefSchema } from '../../core/external-ref.ts'
+import { INDUSTRY_SOURCES } from '../industries/map.ts'
 import type { SourceSetup } from './input.ts'
 import { PLATFORM_PRESETS, type PresetPlatform } from './presets.ts'
 import * as repo from './repo.ts'
@@ -16,8 +17,9 @@ import {
 
 // /campaigns, registered inside its own admin scope, so the bearer check runs first. Campaigns
 // and companies are created only by the Salesforce webhook (POST
-// /inbound/salesforce/opportunities), and their own fields belong to it: a person reads them here and sets one
-// thing, each platform's ids, through the same presets the setup service has always used.
+// /inbound/salesforce/opportunities), and their own fields belong to it: a person reads them here and sets two
+// things: each platform's ids, here, through the same presets the setup service has always used,
+// and the campaign's industry (PUT /campaigns/:id/industry, src/modules/industries/routes.ts).
 //
 // PUT /campaigns/:id/platforms/:platform is the whole id list for that platform. Adding ids and
 // renaming them (their labels) always works; changing or dropping an id answers 409
@@ -44,6 +46,9 @@ const campaignResponse = z.object({
   ownerName: z.string().nullable(),
   manager: z.object({ id: z.string(), name: z.string().nullable() }).nullable(),
   externalModifiedAt: z.iso.datetime().nullable(),
+  /** One of GET /industries, or null until classified; industrySource says who set it. */
+  industry: z.string().nullable(),
+  industrySource: z.enum(INDUSTRY_SOURCES).nullable(),
   externalRef: externalRefResponse,
   createdAt: z.date(),
   updatedAt: z.date(),
