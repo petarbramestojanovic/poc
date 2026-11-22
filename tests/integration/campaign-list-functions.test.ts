@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { at } from '../helpers.ts'
 import { sqlstateOf, useTransactionalClient } from './db.ts'
 
-// Migration 0017: the two functions the frontend lists campaigns with. They are SECURITY DEFINER,
-// because a reader has no grant on app.company and gets a company's name here and nowhere else.
+// Migrations 0017 and 0018: the two functions the frontend lists campaigns with. They are
+// SECURITY DEFINER, because a reader has no grant on app.company and gets a company's name here and
+// nowhere else. Since 0018 a row also carries the campaign's numbers (from its primary source only),
+// its delivery against the planned impressions, and the deal's country and owner.
 //
 // Every test runs in a transaction that is rolled back. It first removes the campaigns that are
 // there, so the fixture below is the whole list: `total`, the defaults and the empty answer are
@@ -17,7 +19,7 @@ import { sqlstateOf, useTransactionalClient } from './db.ts'
 const DENIED = '42501' // insufficient_privilege
 
 const LIST_SIGNATURE =
-  'analytics.list_campaigns(text,text,uuid[],text[],text[],text[],date,date,text,boolean,integer,integer)'
+  'analytics.list_campaigns(text,text,uuid[],text[],text[],text[],date,date,text,boolean,integer,integer,date,date,text[],text[])'
 const OPTIONS_SIGNATURE = 'analytics.list_campaign_filter_options()'
 
 const uuid = (n: number): string =>
@@ -37,7 +39,8 @@ const C5 = uuid(15)
 const NEXD_CREDENTIAL = '00000000-0000-4000-8000-000000000011'
 const ZEUS_CREDENTIAL = '00000000-0000-4000-8000-000000000012'
 
-const ROW_KEYS = [
+/** The keys of 0017: the campaign's record. */
+const RECORD_KEYS = [
   'company_id',
   'company_name',
   'created_at',
@@ -56,6 +59,27 @@ const ROW_KEYS = [
   'status',
   'updated_at',
 ]
+/** The keys 0018 adds: two of the deal, and the numbers. */
+const DEAL_KEYS = ['country', 'owner_name']
+const NUMBER_KEYS = [
+  'impressions',
+  'viewable_impressions',
+  'engagements',
+  'clicks',
+  'engagement_rate',
+  'ctr',
+  'viewability',
+  'desktop_impressions',
+  'mobile_impressions',
+  'desktop_share',
+  'mobile_share',
+  'planned_impressions',
+  'delivered_impressions',
+  'delivery',
+]
+const ROW_KEYS = [...RECORD_KEYS, ...DEAL_KEYS, ...NUMBER_KEYS].sort()
+/** A campaign without a number: no analytics row, no planned impressions. */
+const NO_NUMBERS = Object.fromEntries(NUMBER_KEYS.map((key) => [key, null]))
 
 type CampaignRow = Record<string, unknown> & { id: string }
 interface Page {
@@ -67,6 +91,8 @@ interface FilterOptions {
   industries: string[]
   managers: string[]
   sources: string[]
+  countries: string[]
+  owners: string[]
 }
 
 /** The arguments as the frontend names them; it sends only the ones that are set. */
@@ -83,9 +109,13 @@ type ListArgs = Partial<{
   p_sort_desc: boolean | null
   p_limit: number | null
   p_offset: number | null
+  p_from: string | null
+  p_to: string | null
+  p_countries: string[] | null
+  p_owners: string[] | null
 }>
 
-describe('migration 0017_campaign_list_functions', () => {
+describe('the campaign list functions (0017, 0018)', () => {
   const { sql } = useTransactionalClient()
 
   const asReader = () => sql('SET LOCAL ROLE authenticated')
@@ -209,7 +239,7 @@ describe('migration 0017_campaign_list_functions', () => {
       expect(await sqlstateOf(() => sql('SELECT count(*) FROM app.company'))).toBe(DENIED)
     })
 
-    it('returns of app.campaign only columns a reader may select anyway', async () => {
+    it('returns of app.campaign only columns a reader may select anyway, but for country and owner', async () => {
       const rows = await sql<{ column_name: string }>(
         `SELECT column_name FROM information_schema.columns
           WHERE table_schema = 'app' AND table_name = 'campaign'
@@ -217,9 +247,20 @@ describe('migration 0017_campaign_list_functions', () => {
       )
       const readable = new Set(rows.map((row) => row.column_name))
       // The company's name and the platforms come from other tables.
-      const fromCampaign = ROW_KEYS.filter((key) => key !== 'company_name' && key !== 'sources')
+      const fromCampaign = RECORD_KEYS.filter((key) => key !== 'company_name' && key !== 'sources')
       expect(fromCampaign).toHaveLength(15)
       for (const key of fromCampaign) expect(readable.has(key), key).toBe(true)
+      // 0018 lets these two of the deal out through the functions, approved; their grant stays closed.
+      for (const key of DEAL_KEYS) expect(readable.has(key), key).toBe(false)
+    })
+
+    it('is one function, so a call by argument names is never ambiguous', async () => {
+      const [row] = await sql<{ n: number }>(
+        `SELECT count(*)::int AS n FROM pg_proc
+          WHERE pronamespace = 'analytics'::regnamespace
+            AND proname IN ('list_campaigns', 'list_campaign_filter_options')`,
+      )
+      expect(row?.n).toBe(2)
     })
   })
 
@@ -250,6 +291,9 @@ describe('migration 0017_campaign_list_functions', () => {
         industry_source: 'map',
         created_at: '2026-01-01T10:00:00.000Z',
         updated_at: '2026-02-03T10:00:00.000Z',
+        country: null,
+        owner_name: null,
+        ...NO_NUMBERS,
       })
       // ISO 8601 with an offset, as PostgREST prints a timestamptz.
       expect(row.created_at).toMatch(
@@ -269,22 +313,33 @@ describe('migration 0017_campaign_list_functions', () => {
           WHERE id = $1`,
         [C1],
       )
+      // A currency no other column has, so that its absence says something.
+      await sql(`UPDATE app.campaign SET amount = 1, amount_currency = 'XAU' WHERE id = $1`, [C3])
       await asReader()
 
-      const page = await list()
-      for (const row of page.rows) expect(Object.keys(row).sort()).toEqual(ROW_KEYS)
-      const text = JSON.stringify(page)
-      for (const closed of [
-        '98765.43',
-        'Closed Deal Type',
-        'Closedland',
-        'Closed Creative',
-        'Olga Owner',
-        'm-1',
-        '006CLOSEDREF000001',
-        'clf-closed-legacy',
-      ]) {
-        expect(text, closed).not.toContain(closed)
+      for (const args of [{}, { p_sort: 'planned_impressions' }, { p_sort: 'delivery' }]) {
+        const page = await list(args)
+        for (const row of page.rows) expect(Object.keys(row).sort()).toEqual(ROW_KEYS)
+        const text = JSON.stringify(page)
+        for (const closed of [
+          '98765.43',
+          'XAU',
+          'Closed Deal Type',
+          'Closed Creative',
+          '2026-02-09',
+          'm-1',
+          '006CLOSEDREF000001',
+          'clf-closed-legacy',
+        ]) {
+          expect(text, closed).not.toContain(closed)
+        }
+        // Since 0018 the country and the owner leave, approved; the deal's amount only as the
+        // planned impressions it gives (98765.43 CHF at 12.5 CHF a thousand).
+        expect(page.rows.find((row) => row.id === C1)).toMatchObject({
+          country: 'Closedland',
+          owner_name: 'Olga Owner',
+          planned_impressions: 7901234,
+        })
       }
     })
 
@@ -632,14 +687,18 @@ describe('migration 0017_campaign_list_functions', () => {
         industries: ['Automotive', 'Retail'],
         managers: ['jonas Frei', 'Mia Keller'],
         sources: ['nexd', 'zeus'],
+        countries: [],
+        owners: [],
       })
     })
 
-    it('has exactly the four lists', async () => {
+    it('has exactly the six lists', async () => {
       expect(Object.keys(await options()).sort()).toEqual([
         'companies',
+        'countries',
         'industries',
         'managers',
+        'owners',
         'sources',
       ])
     })
@@ -678,12 +737,718 @@ describe('migration 0017_campaign_list_functions', () => {
       }
     })
 
-    it('gives four empty lists, never null, when there is no campaign', async () => {
+    it('gives six empty lists, never null, when there is no campaign', async () => {
       await asService()
       await sql('DELETE FROM app.campaign')
       await asReader()
-      expect(await options()).toEqual({ companies: [], industries: [], managers: [], sources: [] })
+      expect(await options()).toEqual({
+        companies: [],
+        industries: [],
+        managers: [],
+        sources: [],
+        countries: [],
+        owners: [],
+      })
       expect(await list()).toEqual({ total: 0, rows: [] })
+    })
+  })
+
+  describe('numbers, delivery, country and owner (0018)', () => {
+    // Every campaign has its own case. Numbers come from the primary source only; the other
+    // source's rows are there, much larger, so that adding them in would show.
+    //
+    //   C1  nexd   3 rows over 2 days, 2 languages, 2 tags; zeus rows and zeus devices besides;
+    //              an internal CTA; 100 CHF at 12.5 CHF a thousand = 8000 planned
+    //   C2  zeus   in_view above impressions one day, no engagement measured, clicks above
+    //              impressions; devices with a tablet and an unknown; nexd devices besides
+    //   C3  nexd   one day of measured zeros; 100 EUR at 3.123456 EUR = 32015.8 → 32016 planned
+    //   C4  nexd   no row at all; an amount in another currency than the price
+    //   C5  zeus   in_view not measured; no click row; devices of one day
+    const on = (monthDay: string) => `2026-${monthDay}`
+
+    beforeEach(async () => {
+      await asService()
+      const deal = (
+        id: string,
+        country: string | null,
+        owner: string | null,
+        amount: string | null,
+        currency: string | null,
+      ) =>
+        sql(
+          `UPDATE app.campaign
+              SET country = $2, owner_name = $3, amount = $4::numeric, amount_currency = $5
+            WHERE id = $1`,
+          [id, country, owner, amount, currency],
+        )
+      await deal(C1, 'Switzerland', 'Olga Owner', '100', 'CHF')
+      await deal(C2, 'belgium', 'anna Berg', '500', 'CHF')
+      await deal(C3, null, 'Olga Owner', '100', 'EUR')
+      await deal(C4, 'Germany', null, '1000', 'EUR')
+      await deal(C5, 'Austria', null, null, null)
+
+      await sql(
+        `INSERT INTO analytics.advanced_analytics
+           (campaign_id, source, language, campaign_tag, events_date,
+            impressions, in_view, game_started, data_source)
+         VALUES
+           ($1, 'nexd', 'de', 'a', '${on('03-01')}', 1000, 1000,   50, 'sync'),
+           ($1, 'nexd', 'fr', 'a', '${on('03-01')}',  500,  450,   10, 'sync'),
+           ($1, 'nexd', 'de', 'b', '${on('03-02')}',  700,  600,    4, 'sync'),
+           ($1, 'zeus', 'de', '',  '${on('03-01')}', 99999, 99998, 99997, 'sync'),
+           ($2, 'zeus', 'de', '',  '${on('06-01')}',  300,  330, NULL, 'sync'),
+           ($2, 'zeus', 'de', '',  '${on('06-02')}',  100,   10, NULL, 'sync'),
+           ($3, 'nexd', 'de', '',  '${on('09-01')}',    0,    0,    0, 'sync'),
+           ($4, 'zeus', 'de', '',  '${on('05-01')}', 77777, 77777, 77777, 'sync'),
+           ($5, 'zeus', 'de', 'x', '${on('04-01')}', 5000, NULL,  250, 'sync')`,
+        [C1, C2, C3, C4, C5],
+      )
+      await sql(
+        `INSERT INTO analytics.cta (campaign_id, cta_id, name, is_internal_event) VALUES
+           ($1, 'go', 'Go', false), ($1, 'swipe', 'Swipe', true),
+           ($2, 'clickthrough', 'Click', false),
+           ($3, 'clickthrough', 'Click', false)`,
+        [C1, C2, C3],
+      )
+      await sql(
+        `INSERT INTO analytics.cta_clicks
+           (campaign_id, source, language, campaign_tag, cta_id, events_date, cta_counter, data_source)
+         VALUES
+           ($1, 'nexd', 'de', 'a', 'go',           '${on('03-01')}',   30, 'sync'),
+           ($1, 'nexd', 'de', 'b', 'go',           '${on('03-02')}',    3, 'sync'),
+           ($1, 'nexd', 'de', 'a', 'swipe',        '${on('03-01')}',  500, 'sync'),
+           ($1, 'zeus', 'de', '',  'go',           '${on('03-01')}', 7777, 'sync'),
+           ($2, 'zeus', 'de', '',  'clickthrough', '${on('06-01')}',  500, 'sync'),
+           ($3, 'nexd', 'de', '',  'clickthrough', '${on('09-01')}',    0, 'sync')`,
+        [C1, C2, C3],
+      )
+      await sql(
+        `INSERT INTO analytics.device_daily
+           (campaign_id, source, language, campaign_tag, device_type, events_date, impressions)
+         VALUES
+           ($1, 'zeus', 'de', '', 'desktop', '${on('03-01')}',   10),
+           ($1, 'zeus', 'de', '', 'mobile',  '${on('03-01')}',   20),
+           ($2, 'zeus', 'de', '', 'desktop', '${on('06-01')}',  100),
+           ($2, 'zeus', 'de', '', 'mobile',  '${on('06-01')}',  120),
+           ($2, 'zeus', 'de', '', 'tablet',  '${on('06-01')}',   60),
+           ($2, 'zeus', 'de', '', 'unknown', '${on('06-01')}',   20),
+           ($2, 'zeus', 'de', '', 'desktop', '${on('06-02')}',   40),
+           ($2, 'zeus', 'de', '', 'mobile',  '${on('06-02')}',   50),
+           ($2, 'zeus', 'de', '', 'tablet',  '${on('06-02')}',   10),
+           ($2, 'nexd', 'de', '', 'desktop', '${on('06-01')}', 9999),
+           ($3, 'zeus', 'de', 'x', 'desktop', '${on('04-01')}', 1000),
+           ($3, 'zeus', 'de', 'x', 'mobile',  '${on('04-01')}', 3000),
+           ($3, 'zeus', 'de', 'x', 'tablet',  '${on('04-01')}',  500),
+           ($3, 'zeus', 'de', 'x', 'unknown', '${on('04-01')}',  500)`,
+        [C1, C2, C5],
+      )
+      await asReader()
+    })
+
+    const rowOf = async (id: string, args: ListArgs = {}): Promise<CampaignRow> => {
+      const row = (await list({ p_limit: 100, ...args })).rows.find((r) => r.id === id)
+      if (!row) throw new Error(`campaign ${id} is not on the page`)
+      return row
+    }
+    const numbersOf = async (id: string, args: ListArgs = {}) => {
+      const row = await rowOf(id, args)
+      return Object.fromEntries(NUMBER_KEYS.map((key) => [key, row[key]]))
+    }
+    /** A number as the JSON text the function wrote, to see its decimals. */
+    const rawOf = async (id: string, key: string): Promise<string | null> => {
+      const [row] = await sql<{ value: string | null }>(
+        `SELECT row->$2 #>> '{}' AS value
+           FROM jsonb_array_elements(analytics.list_campaigns(p_limit => 100)->'rows') AS row
+          WHERE row->>'id' = $1`,
+        [id, key],
+      )
+      return row?.value ?? null
+    }
+
+    describe('a campaign’s numbers', () => {
+      it.each<[string, string, Record<string, number | null>]>([
+        [
+          'added up over days, languages and tags, from its primary source only',
+          C1,
+          {
+            impressions: 2200,
+            viewable_impressions: 2050,
+            engagements: 64,
+            clicks: 33,
+            engagement_rate: 0.0291,
+            ctr: 0.015,
+            viewability: 0.9318,
+            desktop_impressions: null,
+            mobile_impressions: null,
+            desktop_share: null,
+            mobile_share: null,
+            planned_impressions: 8000,
+            delivered_impressions: 2200,
+            delivery: 0.275,
+          },
+        ],
+        [
+          'as reported, never clamped, with what is not measured left null',
+          C2,
+          {
+            impressions: 400,
+            viewable_impressions: 340,
+            engagements: null,
+            clicks: 500,
+            engagement_rate: null,
+            ctr: 1.25,
+            viewability: 0.85,
+            desktop_impressions: 140,
+            mobile_impressions: 240,
+            desktop_share: 0.35,
+            mobile_share: 0.6,
+            planned_impressions: null,
+            delivered_impressions: 400,
+            delivery: null,
+          },
+        ],
+        [
+          'measured zeros: 0, and no rate over them',
+          C3,
+          {
+            impressions: 0,
+            viewable_impressions: 0,
+            engagements: 0,
+            clicks: 0,
+            engagement_rate: null,
+            ctr: null,
+            viewability: null,
+            desktop_impressions: null,
+            mobile_impressions: null,
+            desktop_share: null,
+            mobile_share: null,
+            planned_impressions: 32016,
+            delivered_impressions: 0,
+            delivery: 0,
+          },
+        ],
+        ['nothing from its primary source: all null, never 0', C4, NO_NUMBERS],
+        [
+          'a metric its source does not measure stays null beside the ones it does',
+          C5,
+          {
+            impressions: 5000,
+            viewable_impressions: null,
+            engagements: 250,
+            clicks: null,
+            engagement_rate: 0.05,
+            ctr: null,
+            viewability: null,
+            desktop_impressions: 1000,
+            mobile_impressions: 3500,
+            desktop_share: 0.2,
+            mobile_share: 0.7,
+            planned_impressions: null,
+            delivered_impressions: 5000,
+            delivery: null,
+          },
+        ],
+      ])('%s', async (_what, id, expected) => {
+        expect(await numbersOf(id)).toEqual(expected)
+      })
+
+      it('follows the primary source when it changes, and never adds the other one in', async () => {
+        await asService()
+        await sql(`UPDATE app.campaign SET primary_source = 'zeus' WHERE id = $1`, [C1])
+        await asReader()
+        expect(await numbersOf(C1)).toEqual({
+          impressions: 99999,
+          viewable_impressions: 99998,
+          engagements: 99997,
+          clicks: 7777,
+          engagement_rate: 1,
+          ctr: 0.0778,
+          viewability: 1,
+          desktop_impressions: 10,
+          mobile_impressions: 20,
+          desktop_share: 0.3333,
+          mobile_share: 0.6667,
+          planned_impressions: 8000,
+          delivered_impressions: 99999,
+          delivery: 12.4999,
+        })
+      })
+
+      it('carries the deal’s country and owner as stored', async () => {
+        expect(await rowOf(C1)).toMatchObject({ country: 'Switzerland', owner_name: 'Olga Owner' })
+        expect(await rowOf(C3)).toMatchObject({ country: null, owner_name: 'Olga Owner' })
+        expect(await rowOf(C4)).toMatchObject({ country: 'Germany', owner_name: null })
+      })
+    })
+
+    describe('rates', () => {
+      it('divide the sums, not the rows: 64 of 2200 is not the mean of 5%, 2% and 0.6%', async () => {
+        expect((await rowOf(C1)).engagement_rate).toBe(0.0291)
+      })
+
+      it('are rounded once to 4 decimals, half away from zero', async () => {
+        await asService()
+        await sql(
+          `INSERT INTO analytics.advanced_analytics
+             (campaign_id, source, language, campaign_tag, events_date, impressions, in_view, game_started, data_source)
+           VALUES ($1, 'nexd', 'de', '', '2026-05-01', 32, 3, 1, 'sync')`,
+          [C4],
+        )
+        await asReader()
+        // 1/32 = 0.03125 and 3/32 = 0.09375: exactly half way, so up.
+        expect(await rawOf(C4, 'engagement_rate')).toBe('0.0313')
+        expect(await rawOf(C4, 'viewability')).toBe('0.0938')
+        // 2050/2200 = 0.931818…, 64/2200 = 0.0290909…
+        expect(await rawOf(C1, 'viewability')).toBe('0.9318')
+        expect(await rawOf(C1, 'engagement_rate')).toBe('0.0291')
+        expect(await rawOf(C1, 'delivery')).toBe('0.2750')
+      })
+
+      it('are null when the impressions are not measured, beside what is', async () => {
+        await asService()
+        await sql(
+          `INSERT INTO analytics.advanced_analytics
+             (campaign_id, source, language, campaign_tag, events_date, impressions, in_view, game_started, data_source)
+           VALUES ($1, 'nexd', 'de', '', '2026-05-01', NULL, NULL, 5, 'sync')`,
+          [C4],
+        )
+        await asReader()
+        expect(await numbersOf(C4)).toMatchObject({
+          impressions: null,
+          engagements: 5,
+          engagement_rate: null,
+          delivered_impressions: null,
+        })
+      })
+
+      it('are null over zero impressions, never 0 and never an error', async () => {
+        expect(await numbersOf(C3)).toMatchObject({
+          impressions: 0,
+          engagement_rate: null,
+          ctr: null,
+          viewability: null,
+        })
+      })
+    })
+
+    describe('clicks', () => {
+      it('never count an internal CTA event', async () => {
+        // C1's swipe (internal) has 500 that day; only the two of `go` count.
+        expect((await rowOf(C1)).clicks).toBe(33)
+      })
+
+      it('are null when only internal events were clicked', async () => {
+        await asService()
+        await sql(`DELETE FROM analytics.cta_clicks WHERE campaign_id = $1 AND cta_id = 'go'`, [C1])
+        await asReader()
+        expect(await numbersOf(C1)).toMatchObject({ clicks: null, ctr: null })
+      })
+    })
+
+    describe('the window', () => {
+      it.each<[string, ListArgs, Record<string, number | null>]>([
+        [
+          'from a day on, that day included',
+          { p_from: '2026-03-02' },
+          { impressions: 700, viewable_impressions: 600, engagements: 4, clicks: 3 },
+        ],
+        [
+          'up to a day, that day included',
+          { p_to: '2026-03-01' },
+          { impressions: 1500, viewable_impressions: 1450, engagements: 60, clicks: 30 },
+        ],
+        [
+          'one day, both bounds on it',
+          { p_from: '2026-03-02', p_to: '2026-03-02' },
+          { impressions: 700, viewable_impressions: 600, engagements: 4, clicks: 3 },
+        ],
+        [
+          'both days',
+          { p_from: '2026-03-01', p_to: '2026-03-02' },
+          { impressions: 2200, viewable_impressions: 2050, engagements: 64, clicks: 33 },
+        ],
+        [
+          'open on both sides',
+          { p_from: null, p_to: null },
+          { impressions: 2200, viewable_impressions: 2050, engagements: 64, clicks: 33 },
+        ],
+        [
+          'days without a row: null, not 0',
+          { p_from: '2026-03-03', p_to: '2026-03-31' },
+          { impressions: null, viewable_impressions: null, engagements: null, clicks: null },
+        ],
+        [
+          'a window that ends before it starts: no day, so null',
+          { p_from: '2026-03-02', p_to: '2026-03-01' },
+          { impressions: null, viewable_impressions: null, engagements: null, clicks: null },
+        ],
+      ])('covers %s', async (_what, args, expected) => {
+        expect(await numbersOf(C1, args)).toMatchObject(expected)
+      })
+
+      it('covers the device split too', async () => {
+        expect(await numbersOf(C2, { p_from: '2026-06-02' })).toMatchObject({
+          desktop_impressions: 40,
+          mobile_impressions: 60,
+          desktop_share: 0.4,
+          mobile_share: 0.6,
+        })
+      })
+
+      it('never covers delivery: that is always the whole campaign', async () => {
+        for (const args of [{ p_from: '2026-03-02' }, { p_to: '2026-01-01' }]) {
+          expect(await numbersOf(C1, args)).toMatchObject({
+            planned_impressions: 8000,
+            delivered_impressions: 2200,
+            delivery: 0.275,
+          })
+        }
+      })
+
+      it('changes the numbers, never which campaigns match or how many', async () => {
+        const all = await list()
+        for (const args of [
+          { p_from: '2030-01-01' },
+          { p_to: '2000-01-01' },
+          { p_from: '2026-03-01', p_to: '2026-03-01' },
+        ]) {
+          const windowed = await list(args)
+          expect(windowed.total).toBe(all.total)
+          expect(windowed.rows.map((row) => row.id)).toEqual(all.rows.map((row) => row.id))
+        }
+        const filtered = { p_status: 'active', p_sources: ['zeus'] }
+        expect(await idSet({ ...filtered, p_from: '2030-01-01' })).toEqual(await idSet(filtered))
+      })
+
+      it('decides a sort by a number', async () => {
+        expect(await ids({ p_sort: 'impressions', p_to: '2026-03-01', p_sort_desc: true })).toEqual(
+          [C1, C5, C4, C3, C2],
+        )
+      })
+    })
+
+    describe('devices', () => {
+      it('count a tablet as mobile, and unknown only in the whole the shares divide', async () => {
+        const row = await numbersOf(C2)
+        expect(row.mobile_impressions).toBe(120 + 60 + 50 + 10)
+        expect(row.desktop_impressions).toBe(140)
+        // 140 + 240 + 20 unknown = 400: the two shares leave out the unknown 5%.
+        expect(Number(row.desktop_share) + Number(row.mobile_share)).toBeCloseTo(0.95, 10)
+      })
+
+      it('are null without a device row of the primary source', async () => {
+        // C1 is on NEXD, which has no device rows; its Zeus ones do not count.
+        expect(await numbersOf(C1)).toMatchObject({
+          desktop_impressions: null,
+          mobile_impressions: null,
+          desktop_share: null,
+          mobile_share: null,
+        })
+      })
+
+      it('leave a device the source sent no row for null, not 0', async () => {
+        await asService()
+        await sql(
+          `DELETE FROM analytics.device_daily WHERE campaign_id = $1 AND device_type = 'desktop'`,
+          [C5],
+        )
+        await asReader()
+        expect(await numbersOf(C5)).toMatchObject({
+          desktop_impressions: null,
+          desktop_share: null,
+          mobile_impressions: 3500,
+          mobile_share: 0.875,
+        })
+      })
+
+      it('keep a measured 0 as 0, with no share of nothing', async () => {
+        await asService()
+        await sql(
+          `INSERT INTO analytics.device_daily
+             (campaign_id, source, language, campaign_tag, device_type, events_date, impressions)
+           VALUES ($1, 'nexd', 'de', '', 'desktop', '2026-09-01', 0),
+                  ($1, 'nexd', 'de', '', 'mobile',  '2026-09-01', 0)`,
+          [C3],
+        )
+        await asReader()
+        expect(await numbersOf(C3)).toMatchObject({
+          desktop_impressions: 0,
+          mobile_impressions: 0,
+          desktop_share: null,
+          mobile_share: null,
+        })
+      })
+    })
+
+    describe('planned impressions and delivery', () => {
+      const setDeal = async (
+        amount: string | null,
+        amountCurrency: string | null,
+        price: string | null,
+        currency: string | null,
+      ) => {
+        await asService()
+        await sql(
+          `UPDATE app.campaign
+              SET amount = $2::numeric, amount_currency = $3, price = $4::numeric, currency = $5
+            WHERE id = $1`,
+          [C1, amount, amountCurrency, price, currency],
+        )
+        await asReader()
+      }
+
+      it('are the amount over the price a thousand: 1000 at 2.5 is 400000', async () => {
+        await setDeal('1000', 'CHF', '2.5', 'CHF')
+        expect(await numbersOf(C1)).toMatchObject({
+          planned_impressions: 400000,
+          delivered_impressions: 2200,
+          delivery: 0.0055,
+        })
+      })
+
+      it('round to a whole impression, half away from zero', async () => {
+        await setDeal('3', 'CHF', '2000', 'CHF')
+        expect((await rowOf(C1)).planned_impressions).toBe(2)
+        expect(await rawOf(C1, 'planned_impressions')).toBe('2')
+        // C3: 100 EUR at 3.123456 = 32015.82…
+        expect(await rawOf(C3, 'planned_impressions')).toBe('32016')
+      })
+
+      it.each<[string, [string | null, string | null, string | null, string | null]]>([
+        ['without an amount', [null, null, '12.5', 'CHF']],
+        ['without a price', ['100', 'CHF', null, null]],
+        ['with a price of 0: given away', ['100', 'CHF', '0', 'CHF']],
+        [
+          'when the amount and the price are in different currencies',
+          ['100', 'EUR', '12.5', 'CHF'],
+        ],
+      ])('are null %s', async (_what, deal) => {
+        await setDeal(...deal)
+        expect(await numbersOf(C1)).toMatchObject({
+          planned_impressions: null,
+          delivered_impressions: 2200,
+          delivery: null,
+        })
+      })
+
+      it('give no delivery against 0 planned impressions', async () => {
+        await setDeal('0', 'CHF', '12.5', 'CHF')
+        expect(await numbersOf(C1)).toMatchObject({ planned_impressions: 0, delivery: null })
+      })
+
+      it('let over-delivery stay above 1', async () => {
+        await setDeal('1', 'CHF', '1', 'CHF')
+        expect(await numbersOf(C1)).toMatchObject({ planned_impressions: 1000, delivery: 2.2 })
+      })
+
+      it('are null for a campaign that delivered nothing yet', async () => {
+        expect(await numbersOf(C4)).toMatchObject({
+          planned_impressions: null,
+          delivered_impressions: null,
+          delivery: null,
+        })
+        await asService()
+        await sql(`UPDATE app.campaign SET amount_currency = 'CHF' WHERE id = $1`, [C4])
+        await asReader()
+        expect(await numbersOf(C4)).toMatchObject({
+          planned_impressions: 50000,
+          delivered_impressions: null,
+          delivery: null,
+        })
+      })
+    })
+
+    describe('sort', () => {
+      // Nulls last in both directions, ties newest first: C5, C4, C3, C2, C1.
+      it.each<[string, string[], string[]]>([
+        ['impressions', [C3, C2, C1, C5, C4], [C5, C1, C2, C3, C4]],
+        ['viewable_impressions', [C3, C2, C1, C5, C4], [C1, C2, C3, C5, C4]],
+        ['engagements', [C3, C1, C5, C4, C2], [C5, C1, C3, C4, C2]],
+        ['engagement_rate', [C1, C5, C4, C3, C2], [C5, C1, C4, C3, C2]],
+        ['clicks', [C3, C1, C2, C5, C4], [C2, C1, C3, C5, C4]],
+        ['ctr', [C1, C2, C5, C4, C3], [C2, C1, C5, C4, C3]],
+        ['viewability', [C2, C1, C5, C4, C3], [C1, C2, C5, C4, C3]],
+        ['desktop_share', [C5, C2, C4, C3, C1], [C2, C5, C4, C3, C1]],
+        ['planned_impressions', [C1, C3, C5, C4, C2], [C3, C1, C5, C4, C2]],
+        ['delivery', [C3, C1, C5, C4, C2], [C1, C3, C5, C4, C2]],
+        ['country', [C5, C2, C4, C1, C3], [C1, C4, C2, C5, C3]],
+        ['owner_name', [C2, C3, C1, C5, C4], [C3, C1, C2, C5, C4]],
+      ])('by %s, up and down', async (column, ascending, descending) => {
+        expect(await ids({ p_sort: column }), 'ascending by default').toEqual(ascending)
+        expect(await ids({ p_sort: column, p_sort_desc: false }), 'ascending').toEqual(ascending)
+        expect(await ids({ p_sort: column, p_sort_desc: true }), 'descending').toEqual(descending)
+      })
+
+      it.each([
+        'name',
+        'company_name',
+        'status',
+        'industry',
+        'starts_on',
+        'ends_on',
+        'primary_source',
+        'price',
+        'manager_name',
+        'created_at',
+        'updated_at',
+        'impressions',
+        'viewable_impressions',
+        'engagements',
+        'engagement_rate',
+        'clicks',
+        'ctr',
+        'viewability',
+        'desktop_share',
+        'planned_impressions',
+        'delivery',
+        'country',
+        'owner_name',
+        'not a column',
+      ])('cuts the order by %s into pages, both ways, without changing it', async (column) => {
+        // A sort by a summed number ranks every campaign before the page is cut; any other cuts
+        // the page first. Either way a page must be a slice of the whole order.
+        for (const descending of [false, true]) {
+          const args: ListArgs = { p_sort: column, p_sort_desc: descending }
+          const whole = await ids(args)
+          const paged = [
+            ...(await ids({ ...args, p_limit: 2, p_offset: 0 })),
+            ...(await ids({ ...args, p_limit: 2, p_offset: 2 })),
+            ...(await ids({ ...args, p_limit: 2, p_offset: 4 })),
+          ]
+          expect(paged, descending ? 'descending' : 'ascending').toEqual(whole)
+        }
+      })
+
+      it('pages a sort by a number like any other: clamped size, no negative offset, an empty page past the end', async () => {
+        const order = [C3, C2, C1, C5, C4]
+        expect(await ids({ p_sort: 'impressions', p_offset: -4, p_limit: 2 })).toEqual(
+          order.slice(0, 2),
+        )
+        expect(await ids({ p_sort: 'impressions', p_limit: 0 })).toEqual(order.slice(0, 1))
+        expect(await ids({ p_sort: 'impressions', p_limit: -3 })).toEqual(order.slice(0, 1))
+        expect(await ids({ p_sort: 'impressions', p_offset: 4 })).toEqual(order.slice(4))
+        expect(await list({ p_sort: 'impressions', p_offset: 5 })).toEqual({ total: 5, rows: [] })
+        await addTiedCampaigns(105)
+        const big = await list({ p_sort: 'impressions', p_limit: 101 })
+        expect(big.total).toBe(110)
+        expect(big.rows).toHaveLength(100)
+        expect((await list({ p_sort: 'impressions' })).rows).toHaveLength(10)
+        expect(
+          (await list({ p_sort: 'impressions', p_limit: null, p_offset: null })).rows,
+        ).toHaveLength(10)
+      })
+
+      it('still sorts by the names of 0017', async () => {
+        expect(await ids({ p_sort: 'name' })).toEqual([C1, C2, C3, C4, C5])
+        expect(await ids({ p_sort: 'price', p_sort_desc: true })).toEqual([C4, C1, C3, C5, C2])
+      })
+
+      it('has every row’s numbers on a page cut after the sort', async () => {
+        // By a number, every campaign's numbers are needed before the page is cut; by anything
+        // else only the page's. Both must give the rows on a later page their own numbers.
+        const byNumber = await list({ p_sort: 'impressions', p_limit: 2, p_offset: 1 })
+        expect(byNumber.total).toBe(5)
+        expect(byNumber.rows.map((row) => [row.id, row.impressions, row.clicks])).toEqual([
+          [C2, 400, 500],
+          [C1, 2200, 33],
+        ])
+        const byName = await list({ p_sort: 'name', p_limit: 2, p_offset: 2 })
+        expect(byName.total).toBe(5)
+        expect(
+          byName.rows.map((row) => [row.id, row.impressions, row.planned_impressions]),
+        ).toEqual([
+          [C3, 0, 32016],
+          [C4, null, null],
+        ])
+        const newest = await list({ p_limit: 2, p_offset: 3 })
+        expect(newest.rows.map((row) => [row.id, row.impressions, row.delivery])).toEqual([
+          [C2, 400, null],
+          [C1, 2200, 0.275],
+        ])
+      })
+
+      it.each([['impressions'], ['delivery'], ['ctr']])(
+        'walks rows that tie on %s without repeating or skipping one',
+        async (column) => {
+          const tied = await addTiedCampaigns(25)
+          // Half of them with the same numbers, the other half with none.
+          await asService()
+          await sql(
+            `INSERT INTO analytics.advanced_analytics
+               (campaign_id, source, language, campaign_tag, events_date, impressions, data_source)
+             SELECT id, 'nexd', 'de', '', '2026-01-10', 100, 'sync'
+               FROM unnest($1::uuid[]) AS id`,
+            [tied.slice(0, 12)],
+          )
+          await asReader()
+          for (const descending of [false, true]) {
+            const args: ListArgs = {
+              p_company_ids: [GAMMA],
+              p_sort: column,
+              p_sort_desc: descending,
+              p_limit: 7,
+            }
+            const pages = [
+              await list({ ...args, p_offset: 0 }),
+              await list({ ...args, p_offset: 7 }),
+              await list({ ...args, p_offset: 14 }),
+              await list({ ...args, p_offset: 21 }),
+            ]
+            expect(pages.map((page) => page.total)).toEqual([25, 25, 25, 25])
+            const walked = pages.flatMap((page) => page.rows.map((row) => row.id))
+            expect(walked).toHaveLength(25)
+            expect(new Set(walked).size).toBe(25)
+            if (column === 'impressions') {
+              // The twelve with 100 impressions, by id; then the thirteen without, by id.
+              expect(walked).toEqual([...tied.slice(0, 12).sort(), ...tied.slice(12).sort()])
+            } else {
+              // No price and no click: null for all of them, so the id decides.
+              expect(walked).toEqual(tied)
+            }
+          }
+        },
+      )
+    })
+
+    describe('filters', () => {
+      it('by country, any of the listed, as stored', async () => {
+        expect(await idSet({ p_countries: ['Austria'] })).toEqual([C5])
+        expect(await idSet({ p_countries: ['Austria', 'Germany'] })).toEqual([C4, C5])
+        expect(await idSet({ p_countries: ['austria'] })).toEqual([])
+        expect(await idSet({ p_countries: [] })).toEqual([])
+      })
+
+      it('by owner, any of the listed, as stored', async () => {
+        expect(await idSet({ p_owners: ['Olga Owner'] })).toEqual([C1, C3])
+        expect(await idSet({ p_owners: ['Olga Owner', 'anna Berg'] })).toEqual([C1, C2, C3])
+        expect(await idSet({ p_owners: ['olga owner'] })).toEqual([])
+      })
+
+      it('combine with the others by AND', async () => {
+        expect(await idSet({ p_owners: ['Olga Owner'], p_status: 'active' })).toEqual([C1])
+        expect(await idSet({ p_owners: ['Olga Owner'], p_countries: ['Switzerland'] })).toEqual([
+          C1,
+        ])
+        const none = await list({ p_owners: ['anna Berg'], p_countries: ['Germany'] })
+        expect(none).toEqual({ total: 0, rows: [] })
+      })
+
+      it('leave search as it was: it does not look at the country or the owner', async () => {
+        expect(await idSet({ p_search: 'Switzerland' })).toEqual([])
+        expect(await idSet({ p_search: 'Olga' })).toEqual([])
+      })
+
+      it('are offered: each country and owner once, sorted without regard to case', async () => {
+        const offered = await options()
+        expect(offered.countries).toEqual(['Austria', 'belgium', 'Germany', 'Switzerland'])
+        expect(offered.owners).toEqual(['anna Berg', 'Olga Owner'])
+        for (const country of offered.countries) {
+          expect((await list({ p_countries: [country] })).total).toBeGreaterThan(0)
+        }
+        for (const owner of offered.owners) {
+          expect((await list({ p_owners: [owner] })).total).toBeGreaterThan(0)
+        }
+      })
     })
   })
 })
