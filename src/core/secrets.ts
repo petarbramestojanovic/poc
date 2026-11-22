@@ -18,6 +18,8 @@ const RESERVED_POINTERS = new Set([
   // The mail provider's key (src/core/mail): shaped like a platform credential, so only this list
   // stops a credential row from sending it to a platform's host.
   'RESEND_API_KEY',
+  // The industry LLM's key (src/modules/industries): the same shape, the same reason.
+  'OPENROUTER_API_KEY',
   'TZ',
   'PORT',
   'LOG_LEVEL',

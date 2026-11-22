@@ -15,6 +15,12 @@ export interface IngestDeps extends CampaignDeps {
    * from here, in the background, when it is enabled. The push is answered without waiting for it.
    */
   afterCreated?: (campaign: { id: string; name: string }) => void
+  /**
+   * Called for every campaign of a delivery that has no industry yet, created, updated or
+   * unchanged alike: the industries module classifies it in the background. The push is answered
+   * without waiting for it, and never changes an industry itself.
+   */
+  classify?: (campaign: { id: string }) => void
 }
 
 export const ingestSummarySchema = z.object({
@@ -24,6 +30,8 @@ export const ingestSummarySchema = z.object({
   unchanged: z.number(),
   /** Campaigns of this delivery handed to provisioning (every created one, when it is enabled). */
   provisioning: z.number(),
+  /** Campaigns of this delivery without an industry, handed to classification. */
+  classifying: z.number(),
   /** Records left alone on purpose (a campaign starting before INGEST_FROM): not errors. */
   skipped: z.array(
     z.object({
@@ -66,6 +74,7 @@ export async function ingestOpportunities(
     updated: 0,
     unchanged: 0,
     provisioning: 0,
+    classifying: 0,
     skipped: [],
     rejected: [],
     warnings: [],
@@ -101,6 +110,12 @@ export async function ingestOpportunities(
         }
       } else if (result.updated) summary.updated += 1
       else summary.unchanged += 1
+      // Empty until something decided it: a known brand got it in the setup's transaction, the
+      // rest is classified behind the answer. A later push tries again while it is still empty.
+      if (deps.classify && result.campaign.industry === null) {
+        deps.classify({ id: result.campaign.id })
+        summary.classifying += 1
+      }
     } catch (error) {
       if (!(error instanceof AppError) || error.status >= 500) throw error
       summary.rejected.push({
@@ -120,6 +135,7 @@ export async function ingestOpportunities(
       updated: summary.updated,
       unchanged: summary.unchanged,
       provisioning: summary.provisioning,
+      classifying: summary.classifying,
       skipped: summary.skipped.length,
       rejected: summary.rejected.map(({ record, opportunityId, error }) => ({
         record,

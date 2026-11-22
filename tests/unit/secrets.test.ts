@@ -23,6 +23,7 @@ describe('resolveSecret', () => {
     // Shaped like a third-party token, so only the reserved list stops it.
     ['the inbound token', 'INBOUND_CAMPAIGNS_TOKEN'],
     ['the mail provider key', 'RESEND_API_KEY'],
+    ['the industry LLM key', 'OPENROUTER_API_KEY'],
     ['an unrelated variable', 'HOME'],
     ['lower case', 'nexd_api_key'],
     ['no credential suffix', 'NEXD_ENDPOINT'],

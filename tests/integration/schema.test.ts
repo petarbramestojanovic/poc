@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { INDUSTRY_MAP } from '../../src/modules/industries/map.ts'
 import { at } from '../helpers.ts'
 import { SEED, sqlstateOf, useTransactionalClient } from './db.ts'
 
@@ -7,7 +8,8 @@ const FK_VIOLATION = '23503'
 const CHECK_VIOLATION = '23514'
 const NOT_NULL_VIOLATION = '23502'
 
-// Every table from RFC-004 with its primary key, in creation order, plus those of 0011, 0012 and 0014.
+// Every table from RFC-004 with its primary key, in creation order, plus those of 0011, 0012, 0014
+// and 0015.
 const EXPECTED_TABLES: Record<string, string[]> = {
   'external.source': ['id'],
   'external.credential': ['id'],
@@ -56,6 +58,8 @@ const EXPECTED_TABLES: Record<string, string[]> = {
   'app.creative': ['id'],
   'external.provisioned_resource': ['id'],
   'external.provisioning_run': ['id'],
+  // Not RFC-004: the industries a campaign can belong to, migration 0015.
+  'app.industry': ['name'],
 }
 
 describe('migration 0001_foundation', () => {
@@ -397,5 +401,77 @@ describe('migration 0012_creative', () => {
     expect(await insert('nexd', 'creative', 'coYV5VGFPODsDnKi')).toBeUndefined() // another kind
     expect(await insert('nope', 'campaign', 'x')).toBe(FK_VIOLATION)
     expect(await insert('nexd', '', 'x')).toBe(CHECK_VIOLATION)
+  })
+})
+
+describe('migration 0015_campaign_industry', () => {
+  const { sql } = useTransactionalClient()
+
+  const setIndustry = (industry: string | null, source: string | null) =>
+    sqlstateOf(() =>
+      sql('UPDATE app.campaign SET industry = $2, industry_source = $3 WHERE id = $1', [
+        SEED.campaignId,
+        industry,
+        source,
+      ]),
+    )
+
+  it('seeds every industry the keyword table names', async () => {
+    const rows = await sql<{ name: string }>('SELECT name FROM app.industry')
+    const seeded = new Set(rows.map((row) => row.name))
+    for (const { industry } of INDUSTRY_MAP) expect(seeded, industry).toContain(industry)
+    // The eleven of the KPI dashboard, Other Industries among them (the LLM's fallback).
+    expect(seeded.size).toBe(11)
+    expect(seeded).toContain('Other Industries')
+  })
+
+  it('wants a name and a definition that are not blank', async () => {
+    expect(
+      await sqlstateOf(() => sql(`INSERT INTO app.industry (name, definition) VALUES ('', 'x')`)),
+    ).toBe(CHECK_VIOLATION)
+    expect(
+      await sqlstateOf(() => sql(`INSERT INTO app.industry (name, definition) VALUES ('X', '')`)),
+    ).toBe(CHECK_VIOLATION)
+  })
+
+  it('keeps the industry and who set it together', async () => {
+    expect(await setIndustry('Retail', 'manual')).toBeUndefined()
+    expect(await setIndustry(null, null)).toBeUndefined()
+    expect(await setIndustry('Retail', null)).toBe(CHECK_VIOLATION)
+    expect(await setIndustry(null, 'map')).toBe(CHECK_VIOLATION)
+  })
+
+  it('knows three sources: the keyword table, the LLM and a person', async () => {
+    for (const source of ['map', 'llm', 'manual']) {
+      expect(await setIndustry('Retail', source), source).toBeUndefined()
+    }
+    expect(await setIndustry('Retail', 'guess')).toBe(CHECK_VIOLATION)
+  })
+
+  it('refuses an industry that is not in the list', async () => {
+    expect(await setIndustry('Retail ', 'manual')).toBe(FK_VIOLATION)
+    expect(await setIndustry('retail', 'manual')).toBe(FK_VIOLATION)
+  })
+
+  it('carries a renamed industry over to its campaigns', async () => {
+    expect(await setIndustry('Retail', 'manual')).toBeUndefined()
+    await sql(`UPDATE app.industry SET name = 'Retail (renamed)' WHERE name = 'Retail'`)
+    const [row] = await sql<{ industry: string }>(
+      'SELECT industry FROM app.campaign WHERE id = $1',
+      [SEED.campaignId],
+    )
+    expect(row?.industry).toBe('Retail (renamed)')
+  })
+
+  it('indexes the foreign key', async () => {
+    const [row] = await sql<{ indexed: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM pg_index i
+          WHERE i.indrelid = 'app.campaign'::regclass
+            AND i.indkey[0] = (SELECT attnum FROM pg_attribute
+                                WHERE attrelid = 'app.campaign'::regclass AND attname = 'industry')
+       ) AS indexed`,
+    )
+    expect(row?.indexed).toBe(true)
   })
 })

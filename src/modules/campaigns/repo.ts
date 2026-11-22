@@ -6,6 +6,7 @@ import {
   type ExternalRef,
   type ExternalRefColumns,
 } from '../../core/external-ref.ts'
+import type { IndustrySource } from '../industries/map.ts'
 import type { ProvisionedResourceRecord } from '../sync/types.ts'
 import type { Amount, EntitySetup, Price, SourceSetup } from './input.ts'
 
@@ -69,6 +70,12 @@ export interface CampaignRecord extends CampaignDealFields {
   endsOn: IsoDate | null
   status: CampaignStatus
   price: Price | null
+  /**
+   * The campaign's industry (app.industry), NULL until classified. Not a column a push or a
+   * CampaignValues edit writes: the industries module sets it, and only while it is empty.
+   */
+  industry: string | null
+  industrySource: IndustrySource | null
   externalRef: ExternalRef | null
   createdAt: Date
   updatedAt: Date
@@ -109,6 +116,8 @@ interface CampaignRow extends ExternalRefColumns {
   manager_external_id: string | null
   manager_name: string | null
   external_modified_at: Date | null
+  industry: string | null
+  industry_source: IndustrySource | null
   created_at: Date
   updated_at: Date
 }
@@ -142,6 +151,9 @@ const toCampaign = (row: CampaignRow): CampaignRecord => ({
       ? null
       : { id: row.manager_external_id, name: row.manager_name },
   externalModifiedAt: row.external_modified_at?.toISOString() ?? null,
+  // The table keeps these two both set or both NULL (campaign_industry_pair).
+  industry: row.industry,
+  industrySource: row.industry_source,
   externalRef: toExternalRef(row),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -180,6 +192,8 @@ export interface NewCampaign extends CampaignDealFields {
   status: CampaignStatus | undefined
   price: Price | null
   externalRef: ExternalRef | undefined
+  /** What the keyword table found; stored with source 'map'. Absent or null: not classified. */
+  industry?: string | null
 }
 
 export async function insertCampaign(q: Queryable, campaign: NewCampaign): Promise<CampaignRecord> {
@@ -196,6 +210,7 @@ export async function insertCampaign(q: Queryable, campaign: NewCampaign): Promi
     campaign.externalRef?.id ?? null,
     ...priceParams(campaign.price),
     ...dealParams(campaign),
+    campaign.industry ?? null,
   ])
   return toCampaign(required(rows[0], 'insert_campaign'))
 }
@@ -224,7 +239,7 @@ export async function updateCampaign(
 const priceParams = (price: Price | null): [string | null, string | null] =>
   price === null ? [null, null] : [String(price.value), price.currency]
 
-/** In the order of insert_campaign.sql and update_campaign.sql, which both end with these. */
+/** In the order of insert_campaign.sql and update_campaign.sql (the insert adds the industry after). */
 const dealParams = (deal: CampaignDealFields): unknown[] => [
   deal.amount === null ? null : String(deal.amount.value),
   deal.amount?.currency ?? null,

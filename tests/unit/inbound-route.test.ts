@@ -122,6 +122,7 @@ describe('POST /inbound/salesforce/opportunities', () => {
       updated: 0,
       unchanged: 0,
       provisioning: 0,
+      classifying: 0,
       skipped: [],
       rejected: [],
       warnings: [],

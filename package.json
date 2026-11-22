@@ -16,6 +16,7 @@
     "start": "node --enable-source-maps dist/index.js",
     "sync": "node --enable-source-maps --env-file-if-exists=.env src/cli/sync.ts",
     "mail": "node --enable-source-maps --env-file-if-exists=.env src/cli/mail.ts",
+    "industries": "node --enable-source-maps --env-file-if-exists=.env src/cli/industries.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",

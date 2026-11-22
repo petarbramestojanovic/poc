@@ -1,6 +1,8 @@
 import { buildApp } from './app.ts'
 import type { CampaignDeps } from './modules/campaigns/service.ts'
 import { loadConfig } from './core/config.ts'
+import { limitDb } from './core/db.ts'
+import { createLimiter } from './core/limiter.ts'
 import { createLogger } from './core/log.ts'
 import { createHttpClient } from './core/http/HttpClient.ts'
 import { createMailer } from './core/mail/mailer.ts'
@@ -10,6 +12,11 @@ import {
   type EmailReportScheduler,
 } from './modules/email-reports/scheduler.ts'
 import type { EmailReportServiceDeps } from './modules/email-reports/send.ts'
+import {
+  INDUSTRY_MAX_CONNECTIONS,
+  verifyIndustryMap,
+  type IndustryDeps,
+} from './modules/industries/service.ts'
 import type { ProvisioningDeps } from './modules/provisioning/service.ts'
 import { createRunTracker, type SyncDeps } from './modules/sync/engine.ts'
 import { startNightlyScheduler, type NightlyScheduler } from './modules/sync/scheduler.ts'
@@ -24,6 +31,14 @@ const logger = createLogger(config.logLevel)
 // Pool, HTTP client, connectors and the sync pool share. Fails the boot if the connector registry
 // and external.source disagree.
 const runtime = await createSyncRuntime(config, logger)
+// Fails the boot too if the industry keyword table names an industry app.industry does not have,
+// rather than letting the foreign key refuse a campaign at push time.
+try {
+  await verifyIndustryMap(runtime.db)
+} catch (error) {
+  await runtime.db.close()
+  throw error
+}
 
 // Process-wide cancellation: a deploy landing mid-run stops it between day transactions and the
 // run is recorded as aborted. The tracker lets app.close() wait for in-flight runs.
@@ -83,6 +98,18 @@ const provisioning: ProvisioningDeps = {
   signal: shutdown.signal,
 }
 
+// Industry classification after a Salesforce push shares the pool (its own one-connection share,
+// since a push can hand over a few hundred campaigns at once) and the tracker, with its own HTTP
+// client for the LLM: 15 s per attempt, two retries. Without a key, the keyword table only.
+const industries: IndustryDeps = {
+  db: limitDb(runtime.db, createLimiter(INDUSTRY_MAX_CONNECTIONS)),
+  http: createHttpClient({ log: logger, timeoutMs: 15_000, maxRetries: 2 }),
+  log: logger,
+  ...(config.openRouterApiKey === undefined ? {} : { apiKey: config.openRouterApiKey }),
+  signal: shutdown.signal,
+  tracker,
+}
+
 const app = buildApp({
   config,
   db: runtime.db,
@@ -93,6 +120,7 @@ const app = buildApp({
   campaigns,
   emailReports,
   provisioning,
+  industries,
   drainTimeoutMs: SHUTDOWN_DEADLINE_MS - 2_000,
 })
 
@@ -139,6 +167,10 @@ if (!config.provisioningEnabled) {
   logger.info(
     'provisioning on Salesforce push disabled (PROVISIONING_ENABLED is not true); POST /campaigns/:id/provision still works',
   )
+}
+
+if (config.openRouterApiKey === undefined) {
+  logger.info('industry LLM off (OPENROUTER_API_KEY is not set): unknown brands stay unclassified')
 }
 
 if (config.publicBaseUrl === undefined) {

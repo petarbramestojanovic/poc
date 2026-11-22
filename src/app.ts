@@ -22,6 +22,9 @@ import { companyRoutes } from './modules/companies/routes.ts'
 import { emailReportRoutes } from './modules/email-reports/routes.ts'
 import type { EmailReportServiceDeps } from './modules/email-reports/send.ts'
 import { healthRoutes } from './modules/health/routes.ts'
+import { campaignIndustryRoutes, industryRoutes } from './modules/industries/routes.ts'
+import type { IndustryDeps } from './modules/industries/service.ts'
+import { classifyInBackground } from './modules/industries/trigger.ts'
 import { inboundRoutes } from './modules/salesforce/routes.ts'
 import { syncRoutes } from './modules/sync/routes.ts'
 import { EXPORT_PREFIX } from './modules/webhooks/exports.ts'
@@ -53,6 +56,12 @@ export interface AppDeps {
   emailReports?: EmailReportServiceDeps
   /** Provisioning behind POST /campaigns/:id/provision. Without it the route answers 404. */
   provisioning?: ProvisioningDeps
+  /**
+   * Industries: every campaign a Salesforce push leaves without an industry is classified behind
+   * the answer, and PUT /campaigns/:id/industry and GET /industries exist. Without it, only the
+   * keyword table at create time runs and both routes answer 404.
+   */
+  industries?: IndustryDeps
 }
 
 /** Admin prefixes: every method and path under these requires the operator token. */
@@ -62,6 +71,7 @@ export const ADMIN_PREFIXES = [
   '/companies',
   '/campaigns',
   '/email-reports',
+  '/industries',
 ] as const
 
 /** Where other systems push to us, behind config.inboundCampaignsToken. Never an admin route. */
@@ -78,6 +88,7 @@ export function buildApp({
   campaigns,
   emailReports,
   provisioning,
+  industries,
 }: AppDeps): FastifyInstance {
   // Widen to Fastify's logger interface so its logger type parameter is not inferred as the
   // concrete pino type, which conflicts with Fastify's own child-logger factory typing.
@@ -145,9 +156,13 @@ export function buildApp({
         if (prefix === '/campaigns' && campaigns) {
           await admin.register(campaignRoutes, { deps: campaigns })
           if (provisioning) await admin.register(provisioningRoutes, { deps: provisioning })
+          if (industries) await admin.register(campaignIndustryRoutes, { deps: industries })
         }
         if (prefix === '/email-reports' && emailReports) {
           await admin.register(emailReportRoutes, { deps: emailReports })
+        }
+        if (prefix === '/industries' && industries) {
+          await admin.register(industryRoutes, { deps: industries })
         }
       },
       { prefix },
@@ -189,8 +204,20 @@ export function buildApp({
                   'crm',
                 )
             : undefined
+        // Every campaign the push leaves without an industry is classified behind the answer.
+        const classify = industries
+          ? (campaign: { id: string }) =>
+              void classifyInBackground(
+                { ...(tracker ? { tracker } : {}), ...industries },
+                campaign,
+              )
+          : undefined
         await inbound.register(inboundRoutes, {
-          deps: { ...campaigns, ...(afterCreated ? { afterCreated } : {}) },
+          deps: {
+            ...campaigns,
+            ...(afterCreated ? { afterCreated } : {}),
+            ...(classify ? { classify } : {}),
+          },
         })
       },
       { prefix: INBOUND_PREFIX },

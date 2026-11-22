@@ -24,6 +24,16 @@ const runtimeFields = {
    * account root. On staging a test folder, until the flow is proven.
    */
   NEXD_PROVISION_FOLDER_ID: z.string().trim().min(1).max(64).optional(),
+  /**
+   * OpenRouter's API key: the LLM that classifies a campaign's industry when the keyword table
+   * knows no brand (CLAUDE.md, Industries). Unset = the keyword table only. Read by the service
+   * and by `npm run industries`.
+   */
+  OPENROUTER_API_KEY: z
+    .string()
+    .trim()
+    .min(20, 'must be an OpenRouter API key (at least 20 characters)')
+    .optional(),
   TZ: z.literal('UTC', { error: 'must be UTC; sources and schedules carry their own timezones' }),
 }
 
@@ -214,6 +224,8 @@ export interface RuntimeConfig {
   readonly logLevel: LogLevel
   /** Where provisioning creates NEXD campaigns; unset = the account root. */
   readonly nexdProvisionFolderId?: string
+  /** The industry LLM's key (OpenRouter); unset = unknown brands stay unclassified. */
+  readonly openRouterApiKey?: string
 }
 
 export interface Config extends RuntimeConfig {
@@ -265,6 +277,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv = process.env): Runtime
     databaseSslCa: data.DATABASE_SSL_CA,
     logLevel: data.LOG_LEVEL,
     ...withNexdFolder(data.NEXD_PROVISION_FOLDER_ID),
+    ...withOpenRouterKey(data.OPENROUTER_API_KEY),
   }
 }
 
@@ -275,6 +288,10 @@ export function loadMailConfig(env: NodeJS.ProcessEnv = process.env): MailConfig
 
 function withNexdFolder(value: string | undefined): { nexdProvisionFolderId?: string } {
   return value === undefined ? {} : { nexdProvisionFolderId: value }
+}
+
+function withOpenRouterKey(value: string | undefined): { openRouterApiKey?: string } {
+  return value === undefined ? {} : { openRouterApiKey: value }
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -291,6 +308,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: data.PORT,
     logLevel: data.LOG_LEVEL,
     ...withNexdFolder(data.NEXD_PROVISION_FOLDER_ID),
+    ...withOpenRouterKey(data.OPENROUTER_API_KEY),
     trustProxyHops: data.TRUST_PROXY_HOPS,
     syncSchedulerEnabled: data.SYNC_SCHEDULER_ENABLED,
     webhookSchedulerEnabled: data.WEBHOOK_SCHEDULER_ENABLED,
