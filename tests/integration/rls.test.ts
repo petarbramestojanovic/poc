@@ -75,7 +75,7 @@ describe('RLS and the reader grants', () => {
     it.each([
       ['external.credential', 'points at the secret env vars'],
       ['external.raw_payload', 'whole vendor responses'],
-      ['app.company', 'not needed: company names come from the admin API'],
+      ['app.company', 'its name comes through analytics.list_campaigns only (0017)'],
       ['app.webhook', 'holds the signing secret'],
       ['app.webhook_delivery', 'holds every payload we sent'],
       ['app.email_report', 'holds email addresses'],
