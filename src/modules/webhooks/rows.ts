@@ -141,6 +141,7 @@ function buildRowSet(
       metrics: record.metrics,
       pageViews: [],
       ctaClicks: [],
+      devices: [],
       unmapped: new Map(),
     })
   }

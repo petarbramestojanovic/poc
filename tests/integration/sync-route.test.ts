@@ -53,6 +53,7 @@ const oneRow: Script = async (ctx) => ({
       metrics: { impressions: 100 },
       pageViews: [],
       ctaClicks: [],
+      devices: [],
       unmapped: new Map(),
     },
   ],

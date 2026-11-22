@@ -14,7 +14,14 @@ import {
   type NightlyPassSummary,
 } from '../modules/sync/nightly.ts'
 import * as repo from '../modules/sync/repo.ts'
-import { METRIC_IDS, type ConnectionContext, type SourceConnector } from '../modules/sync/types.ts'
+import {
+  DEVICE_COUNT_COLUMN,
+  DEVICE_COUNT_IDS,
+  DEVICE_TYPES,
+  METRIC_IDS,
+  type ConnectionContext,
+  type SourceConnector,
+} from '../modules/sync/types.ts'
 import type { DayDiff } from '../modules/sync/writer.ts'
 import { USAGE, type SyncCommand } from './args.ts'
 
@@ -248,6 +255,13 @@ export function formatDayDiff(day: DayDiff): string {
   }
   change('page views', day.pageViews.before, day.pageViews.after)
   change('cta clicks', day.ctaClicks.before, day.ctaClicks.after)
+  for (const type of DEVICE_TYPES) {
+    const device = day.devices[type]
+    if (!device) continue
+    for (const id of DEVICE_COUNT_IDS) {
+      change(`${DEVICE_COUNT_COLUMN[id]}[${type}]`, device[id].before, device[id].after)
+    }
+  }
   return `  ${day.date}  ${changes.length > 0 ? changes.join(', ') : 'no change'}`
 }
 

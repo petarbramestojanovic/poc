@@ -40,7 +40,7 @@ const config: Config = {
 const zeusIds = (over: Record<string, unknown> = {}) => ({
   campaignId: 'it-routes-18',
   idType: 'internal_id',
-  pixels: [{ code: 'it-routes-eng', role: 'engagement' }],
+  pixels: [{ pixelId: 'it-routes-eng', role: 'engagement' }],
   ...over,
 })
 
@@ -171,6 +171,7 @@ describe('campaign admin API', () => {
               metrics: { impressions: 1000, game_started: 40 },
               pageViews: [],
               ctaClicks: [{ ctaId: 'clickthrough', count: 12 }],
+              devices: [],
               unmapped: new Map(),
             },
           ],
@@ -257,8 +258,8 @@ describe('campaign admin API', () => {
       'zeus',
       zeusIds({
         pixels: [
-          { code: 'it-routes-eng', role: 'engagement' },
-          { code: 'it-routes-fin', role: 'finish' },
+          { pixelId: 'it-routes-eng', role: 'engagement' },
+          { pixelId: 'it-routes-fin', role: 'finish' },
         ],
       }),
     )
@@ -410,6 +411,24 @@ describe('campaign admin API', () => {
     })
   })
 
+  it('counts device rows as analytics: a link that has only those keeps its ids too', async () => {
+    const campaign = await seed()
+    await put(campaign.id, 'zeus', zeusIds())
+    await db.query(
+      `INSERT INTO analytics.device_daily
+         (campaign_id, source, language, campaign_tag, device_type, events_date, impressions, data_source)
+       VALUES ($1, 'zeus', '', '', 'mobile', '2026-09-01', 500, 'sync')`,
+      [campaign.id],
+    )
+
+    const changed = await put(campaign.id, 'zeus', zeusIds({ campaignId: 'it-routes-19' }))
+    const removed = await remove(campaign.id, 'zeus')
+    for (const res of [changed, removed]) {
+      expect(res.statusCode).toBe(409)
+      expect(res.json()).toMatchObject({ error: 'platform_has_data' })
+    }
+  })
+
   it('keeps the ids a platform has written analytics with: they can only be added to', async () => {
     const campaign = await seed()
     const created = await put(campaign.id, 'zeus', zeusIds())
@@ -429,8 +448,8 @@ describe('campaign admin API', () => {
       'zeus',
       zeusIds({
         pixels: [
-          { code: 'it-routes-eng', role: 'engagement' },
-          { code: 'it-routes-fin', role: 'finish' },
+          { pixelId: 'it-routes-eng', role: 'engagement' },
+          { pixelId: 'it-routes-fin', role: 'finish' },
         ],
       }),
     )

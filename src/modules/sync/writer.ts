@@ -2,27 +2,34 @@ import type { Queryable, Tx } from '../../core/db.ts'
 import type { IsoDate } from '../../core/dates.ts'
 import { loadSql } from '../../core/sql-file.ts'
 import {
+  DEVICE_COUNT_COLUMN,
+  DEVICE_COUNT_IDS,
+  DEVICE_TYPES,
   METRIC_AGGREGATION,
   METRIC_IDS,
   METRIC_WEIGHT,
   type CanonicalDailyRow,
+  type DeviceCountId,
+  type DeviceType,
   type MetricId,
 } from './types.ts'
 
 // The day-replace write (RFC-003 §4): under the link's transaction-scoped advisory lock,
-// delete the (campaign, source, language, day) slice from all three rollup tables, then
-// insert the fresh rows stamped data_source = 'sync'. An upsert would be wrong: it cannot
-// remove a key that disappeared from the source. An EMPTY slice is a valid write: it clears
-// a day the source no longer reports.
+// delete the (campaign, source, language, day) slice from the three rollup tables and the
+// device split, then insert the fresh rows stamped data_source = 'sync'. An upsert would be
+// wrong: it cannot remove a key that disappeared from the source. An EMPTY slice is a valid
+// write: it clears a day the source no longer reports.
 
 const sql = loadSql(import.meta.url, [
   'delete_day',
   'insert_advanced',
   'insert_page_views',
   'insert_cta_clicks',
+  'insert_device_daily',
   'select_day_advanced',
   'select_day_page_views',
   'select_day_cta_clicks',
+  'select_day_devices',
 ] as const)
 
 export interface DaySlice {
@@ -36,15 +43,28 @@ export interface DaySlice {
   rows: CanonicalDailyRow[]
 }
 
+interface TableCounts {
+  advanced: number
+  pageViews: number
+  ctaClicks: number
+  devices: number
+}
+
 export interface DayWriteCounts {
-  deleted: { advanced: number; pageViews: number; ctaClicks: number }
-  inserted: { advanced: number; pageViews: number; ctaClicks: number }
+  deleted: TableCounts
+  inserted: TableCounts
+}
+
+/** Every row a day's write touched, over the four tables. */
+export function totalRows(counts: TableCounts): number {
+  return counts.advanced + counts.pageViews + counts.ctaClicks + counts.devices
 }
 
 interface DeletedRow {
   advanced: number
   page_views: number
   cta_clicks: number
+  devices: number
 }
 
 export async function writeDay(tx: Tx, slice: DaySlice): Promise<DayWriteCounts> {
@@ -89,16 +109,33 @@ export async function writeDay(tx: Tx, slice: DaySlice): Promise<DayWriteCounts>
     ])
   }
 
+  const devices = slice.rows.flatMap((row) =>
+    row.devices.map((d) => ({ tag: row.campaignTag, ...d })),
+  )
+  if (devices.length > 0) {
+    // Positional: DEVICE_COUNT_IDS order must equal the unnest column order in
+    // insert_device_daily.sql.
+    const column = (id: DeviceCountId) => devices.map((d) => d[id] ?? null)
+    await tx.query(sql.insert_device_daily, [
+      ...insertKey,
+      devices.map((d) => d.tag),
+      devices.map((d) => d.deviceType),
+      ...DEVICE_COUNT_IDS.map(column),
+    ])
+  }
+
   return {
     deleted: {
       advanced: deleted?.advanced ?? 0,
       pageViews: deleted?.page_views ?? 0,
       ctaClicks: deleted?.cta_clicks ?? 0,
+      devices: deleted?.devices ?? 0,
     },
     inserted: {
       advanced: advanced.length,
       pageViews: pageViews.length,
       ctaClicks: ctaClicks.length,
+      devices: devices.length,
     },
   }
 }
@@ -121,6 +158,8 @@ export interface DayDiff {
   perTag: Partial<Record<MetricId, TagScalarDiff[]>>
   pageViews: { before: number; after: number }
   ctaClicks: { before: number; after: number }
+  /** Each count per device over the day's creatives; a device on neither side is left out. */
+  devices: Partial<Record<DeviceType, Record<DeviceCountId, MetricDiff>>>
 }
 
 type StoredRow = Record<string, string | number | null>
@@ -131,6 +170,10 @@ export async function diffDay(db: Queryable, slice: Omit<DaySlice, 'syncRunId'>)
   const existing = await db.query<StoredRow>(sql.select_day_advanced, key)
   const pages = await db.query<{ count: string }>(sql.select_day_page_views, key)
   const ctas = await db.query<{ count: string }>(sql.select_day_cta_clicks, key)
+  const storedDevices = await db.query<StoredRow & { device_type: string }>(
+    sql.select_day_devices,
+    key,
+  )
 
   const stored = (row: StoredRow, id: MetricId) => toNumber(row[id])
   const metrics: DayDiff['metrics'] = {}
@@ -180,6 +223,23 @@ export async function diffDay(db: Queryable, slice: Omit<DaySlice, 'syncRunId'>)
     }
   }
 
+  const devices: DayDiff['devices'] = {}
+  const fetchedDevices = slice.rows.flatMap((row) => row.devices)
+  for (const type of DEVICE_TYPES) {
+    const before = storedDevices.filter((d) => d.device_type === type)
+    const after = fetchedDevices.filter((d) => d.deviceType === type)
+    if (before.length === 0 && after.length === 0) continue
+    const count = (id: DeviceCountId): MetricDiff => ({
+      before: sumOrNull(before.map((d) => toNumber(d[DEVICE_COUNT_COLUMN[id]]))),
+      after: sumOrNull(after.map((d) => d[id] ?? null)),
+    })
+    devices[type] = {
+      impressions: count('impressions'),
+      inView: count('inView'),
+      clicks: count('clicks'),
+    }
+  }
+
   const total = (list: { count: number | string }[]) =>
     list.reduce((acc, item) => acc + Number(item.count), 0)
 
@@ -193,6 +253,7 @@ export async function diffDay(db: Queryable, slice: Omit<DaySlice, 'syncRunId'>)
     perTag,
     pageViews: { before: total(pages), after: total(slice.rows.flatMap((r) => r.pageViews)) },
     ctaClicks: { before: total(ctas), after: total(slice.rows.flatMap((r) => r.ctaClicks)) },
+    devices,
   }
 }
 

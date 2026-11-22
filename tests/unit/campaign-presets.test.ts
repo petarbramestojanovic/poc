@@ -32,8 +32,8 @@ describe('zeus preset', () => {
         campaignId: '18',
         idType: 'internal_id',
         pixels: [
-          { code: 'abc123', role: 'engagement' },
-          { code: 'def456', role: 'finish', tag: 'mpu_v1' },
+          { pixelId: 'abc123', role: 'engagement' },
+          { pixelId: 'def456', role: 'finish', tag: 'mpu_v1' },
         ],
       }),
     )
@@ -43,6 +43,18 @@ describe('zeus preset', () => {
       { level: 'pixel', externalId: 'def456', role: 'finish', campaignTag: 'mpu_v1' },
     ])
   })
+
+  it.each(['code', 'externalId'])(
+    'names a pixel by Zeus’s pixel number only: a pixel given by its `%s` is refused',
+    (field) => {
+      const shared = zeusPresetSchema.safeParse({
+        campaignId: '18',
+        idType: 'internal_id',
+        pixels: [{ [field]: 'eng', role: 'engagement' }],
+      })
+      expect(shared.success).toBe(false)
+    },
+  )
 
   it('leaves a creative untagged for the service to make it one of ours, unless a tag names one', () => {
     const setup = zeusSetup(
@@ -75,7 +87,7 @@ describe('zeus preset', () => {
     ['an empty campaign id', { campaignId: '  ', idType: 'internal_id' }],
     [
       'an unknown pixel role',
-      { campaignId: '18', idType: 'internal_id', pixels: [{ code: 'x', role: 'view' }] },
+      { campaignId: '18', idType: 'internal_id', pixels: [{ pixelId: 'x', role: 'view' }] },
     ],
     ['an unknown field', { campaignId: '18', idType: 'internal_id', pixel: 'x' }],
   ])('refuses %s', (_name, input) => {

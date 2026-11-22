@@ -131,16 +131,10 @@ export const ENTITIES = {
     label: 'ENG Swipe MPU V2',
     campaignTag: 'mpu_v2',
   },
-  engagement: {
-    level: 'pixel',
-    externalId: 'dev1eng',
-    role: 'engagement',
-    label: 'V1 engagement',
-    campaignTag: 'mpu_v1',
-  },
+  // A pixel a person mapped by hand: named by Zeus's pixel number, its role said on the link.
   finish: {
     level: 'pixel',
-    externalId: 'dev1fin',
+    externalId: '9002',
     role: 'finish',
     label: 'V1 finish',
     campaignTag: 'mpu_v1',
@@ -148,6 +142,18 @@ export const ENTITIES = {
 } satisfies Record<string, LinkEntity>
 
 export const ALL_ENTITIES: LinkEntity[] = Object.values(ENTITIES)
+
+/**
+ * The fixture's engagement pixel mapped by hand, for a link that does not list the creative whose
+ * id the pixel carries. On a link that does, the pixel counts for that creative without this.
+ */
+export const HAND_SET_ENGAGEMENT: LinkEntity = {
+  level: 'pixel',
+  externalId: '9001',
+  role: 'engagement',
+  label: 'V1 engagement',
+  campaignTag: 'mpu_v1',
+}
 
 export const DEFAULT_CONFIG: ZeusLinkConfig = {
   clickthrough_cta_id: 'clickthrough',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { INDUSTRY_MAP } from '../../src/modules/industries/map.ts'
+import { DEVICE_TYPES } from '../../src/modules/sync/types.ts'
 import { at } from '../helpers.ts'
 import { SEED, sqlstateOf, useTransactionalClient } from './db.ts'
 
@@ -8,8 +9,8 @@ const FK_VIOLATION = '23503'
 const CHECK_VIOLATION = '23514'
 const NOT_NULL_VIOLATION = '23502'
 
-// Every table from RFC-004 with its primary key, in creation order, plus those of 0011, 0012, 0014
-// and 0015.
+// Every table from RFC-004 with its primary key, in creation order, plus those of 0011, 0012, 0014,
+// 0015 and 0016.
 const EXPECTED_TABLES: Record<string, string[]> = {
   'external.source': ['id'],
   'external.credential': ['id'],
@@ -60,6 +61,15 @@ const EXPECTED_TABLES: Record<string, string[]> = {
   'external.provisioning_run': ['id'],
   // Not RFC-004: the industries a campaign can belong to, migration 0015.
   'app.industry': ['name'],
+  // Not RFC-004: the device split, migration 0016.
+  'analytics.device_daily': [
+    'campaign_id',
+    'source',
+    'language',
+    'campaign_tag',
+    'device_type',
+    'events_date',
+  ],
 }
 
 describe('migration 0001_foundation', () => {
@@ -474,4 +484,103 @@ describe('migration 0015_campaign_industry', () => {
     )
     expect(row?.indexed).toBe(true)
   })
+})
+
+describe('migration 0016_device_daily', () => {
+  const { sql } = useTransactionalClient()
+
+  const insert = (over: { source?: string; device?: string; counts?: string } = {}) =>
+    sql(
+      `INSERT INTO analytics.device_daily
+         (campaign_id, source, language, campaign_tag, device_type, events_date${over.counts === undefined ? '' : ', impressions, in_view, clicks'})
+       VALUES ($1, $2, 'de', 'schema_probe', $3, '2031-01-01'${over.counts === undefined ? '' : `, ${over.counts}`})`,
+      [SEED.campaignId, over.source ?? 'zeus', over.device ?? 'mobile'],
+    )
+
+  it('counts are nullable with no default: a keys-only insert stores NULLs', async () => {
+    await insert()
+    const [row] = await sql<Record<string, unknown>>(
+      `SELECT impressions, in_view, clicks, data_source, sync_run_id
+         FROM analytics.device_daily
+        WHERE campaign_id = $1 AND campaign_tag = 'schema_probe'`,
+      [SEED.campaignId],
+    )
+    expect(row).toEqual({
+      impressions: null,
+      in_view: null,
+      clicks: null,
+      data_source: 'live',
+      sync_run_id: null,
+    })
+  })
+
+  it('keeps one row per campaign, source, language, creative, device and day', async () => {
+    await insert()
+    expect(await sqlstateOf(() => insert())).toBe(UNIQUE_VIOLATION)
+    // Another device on the same day is another row.
+    expect(await sqlstateOf(() => insert({ device: 'desktop' }))).toBeUndefined()
+  })
+
+  it.each([...DEVICE_TYPES])('knows the device %s', async (device) => {
+    expect(await sqlstateOf(() => insert({ device }))).toBeUndefined()
+  })
+
+  it('allows exactly the devices the code knows (DEVICE_TYPES cannot drift from the CHECK)', async () => {
+    const [row] = await sql<{ definition: string }>(
+      `SELECT pg_get_constraintdef(oid) AS definition
+         FROM pg_constraint
+        WHERE conrelid = 'analytics.device_daily'::regclass AND contype = 'c'
+          AND pg_get_constraintdef(oid) LIKE '%device_type%'`,
+    )
+    const allowed = [...(row?.definition ?? '').matchAll(/'([^']*)'/g)].map((match) => match[1])
+    expect(allowed.sort()).toEqual([...DEVICE_TYPES].sort())
+  })
+
+  it.each(['', 'Mobile', 'tv'])('refuses the device %j', async (device) => {
+    expect(await sqlstateOf(() => insert({ device }))).toBe(CHECK_VIOLATION)
+  })
+
+  it.each(['-1, 0, 0', '0, -1, 0', '0, 0, -1'])('refuses a negative count (%s)', async (counts) => {
+    expect(await sqlstateOf(() => insert({ counts }))).toBe(CHECK_VIOLATION)
+  })
+
+  it('refuses a source it does not know', async () => {
+    expect(await sqlstateOf(() => insert({ source: 'nope' }))).toBe(FK_VIOLATION)
+  })
+
+  it('goes with its campaign', async () => {
+    const companies = await sql<{ id: string }>(
+      `INSERT INTO app.company (name) VALUES ('IT Schema Device Co') RETURNING id`,
+    )
+    const campaigns = await sql<{ id: string }>(
+      `INSERT INTO app.campaign (company_id, name, primary_source) VALUES ($1, 'IT Schema Device', 'zeus') RETURNING id`,
+      [at(companies).id],
+    )
+    const campaignId = at(campaigns).id
+    await sql(
+      `INSERT INTO analytics.device_daily (campaign_id, source, device_type, events_date, impressions)
+       VALUES ($1, 'zeus', 'mobile', '2031-01-01', 5)`,
+      [campaignId],
+    )
+    await sql('DELETE FROM app.campaign WHERE id = $1', [campaignId])
+    expect(
+      await sql('SELECT 1 FROM analytics.device_daily WHERE campaign_id = $1', [campaignId]),
+    ).toEqual([])
+  })
+
+  it.each(['campaign_id', 'source', 'sync_run_id'])(
+    'has an index led by its foreign key %s',
+    async (column) => {
+      const [row] = await sql<{ indexed: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM pg_index i
+            WHERE i.indrelid = 'analytics.device_daily'::regclass
+              AND i.indkey[0] = (SELECT attnum FROM pg_attribute
+                                  WHERE attrelid = 'analytics.device_daily'::regclass AND attname = $1)
+         ) AS indexed`,
+        [column],
+      )
+      expect(row?.indexed).toBe(true)
+    },
+  )
 })

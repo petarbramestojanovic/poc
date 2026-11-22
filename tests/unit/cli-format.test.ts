@@ -39,6 +39,23 @@ describe('CLI output', () => {
           },
           pageViews: { before: 0, after: 0 },
           ctaClicks: { before: 10, after: 12 },
+          devices: {
+            desktop: {
+              impressions: { before: 600, after: 600 },
+              inView: { before: 500, after: 500 },
+              clicks: { before: 6, after: 6 },
+            },
+            mobile: {
+              impressions: { before: 400, after: 450 },
+              inView: { before: 300, after: 300 },
+              clicks: { before: 4, after: 5 },
+            },
+            tablet: {
+              impressions: { before: null, after: 30 },
+              inView: { before: null, after: null },
+              clicks: { before: null, after: null },
+            },
+          },
         },
         {
           date: '2026-09-02',
@@ -47,13 +64,15 @@ describe('CLI output', () => {
           perTag: {},
           pageViews: { before: 0, after: 0 },
           ctaClicks: { before: 0, after: 0 },
+          devices: {},
         },
       ],
     })
     expect(text).toContain('Dry run run-1: nothing was written')
     expect(text).toContain(
-      '2026-09-01  impressions 1000 -> 1500, game_finished 20 -> -, unique_impressions_reported[mpu_v1] 900 -> 950, cta clicks 10 -> 12',
+      '2026-09-01  impressions 1000 -> 1500, game_finished 20 -> -, unique_impressions_reported[mpu_v1] 900 -> 950, cta clicks 10 -> 12, impressions[mobile] 400 -> 450, clicks[mobile] 4 -> 5, impressions[tablet] - -> 30',
     )
+    expect(text).not.toContain('[desktop]')
     expect(text).not.toContain('in_view')
     expect(text).toContain('2026-09-02  no change')
   })

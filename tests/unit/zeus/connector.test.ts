@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { eachDay } from '../../../src/core/dates.ts'
+import { HttpError } from '../../../src/core/http/HttpClient.ts'
 import {
   createZeusConnector,
-  matchPixel,
   ZeusContractError,
 } from '../../../src/modules/sync/connectors/zeus/connector.ts'
 import { ZeusInvariantError } from '../../../src/modules/sync/connectors/zeus/mapper.ts'
@@ -17,13 +17,15 @@ import {
   FIXTURE_WINDOW,
   fixtureFor,
   fixtureHttp,
+  HAND_SET_ENGAGEMENT,
   httpStatus,
   NOW,
   type Seen,
 } from './helpers.ts'
 
 const connector = createZeusConnector({ baseUrl: 'https://zeus.test', now: NOW })
-const UNMATCHED = 'pixel 9999 "Other campaign pixel"'
+/** The link as provisioning writes it: a campaign id and its creatives, no pixel mapped by hand. */
+const BY_RULE = [ENTITIES.campaign, ENTITIES.mpuV1, ENTITIES.mpuV2]
 
 /** The fixture for a report, with only the rows `keep` accepts. */
 const fixtureWhere = (keep: (row: Record<string, unknown>) => boolean) => (seen: Seen) => {
@@ -33,16 +35,18 @@ const fixtureWhere = (keep: (row: Record<string, unknown>) => boolean) => (seen:
 const fromDay = (first: string) => fixtureWhere((row) => (row.date as string) >= first)
 
 describe('Zeus connector', () => {
-  it('fetches creatives and campaigns filtered by the campaign id and tracker unfiltered, once per window', async () => {
+  it('fetches creatives and campaigns filtered by the campaign id, devices and tracker unfiltered, once per window', async () => {
     const http = fixtureHttp()
     const ctx = context(http)
     const result = await connector.fetchWindow(ctx)
     expect(http.requests).toEqual([
       { report: 'creatives', window: FIXTURE_WINDOW, filter: { external_id: 'camp-ext-1' } },
       { report: 'campaigns', window: FIXTURE_WINDOW, filter: { external_id: 'camp-ext-1' } },
+      { report: 'devices', window: FIXTURE_WINDOW, filter: {} },
       { report: 'tracker', window: FIXTURE_WINDOW, filter: {} },
     ])
     expect(http.authHeaders).toEqual([
+      'Bearer zeus-token',
       'Bearer zeus-token',
       'Bearer zeus-token',
       'Bearer zeus-token',
@@ -53,7 +57,7 @@ describe('Zeus connector', () => {
       'campaigns: rows matched with external_id=camp-ext-1',
     ])
     expect(result.covered).toEqual(FIXTURE_WINDOW)
-    expect(ctx.captures).toHaveLength(3)
+    expect(ctx.captures).toHaveLength(4)
     expect(JSON.stringify(ctx.captures)).not.toContain('zeus-token')
     expect(ctx.captures[0]?.request).toEqual({
       method: 'GET',
@@ -61,7 +65,7 @@ describe('Zeus connector', () => {
     })
   })
 
-  it('attributes fires to the right campaign_tag and reports the unmatched pixel in unmapped', async () => {
+  it('counts each pixel for its creative and leaves another campaign’s pixel alone', async () => {
     const result = await connector.fetchWindow(context(fixtureHttp()))
     const v1 = result.rows.filter((r) => r.campaignTag === 'mpu_v1')
     expect(
@@ -76,12 +80,91 @@ describe('Zeus connector', () => {
       ['2026-09-02', 21_000, 620, 300],
       ['2026-09-03', 22_000, 640, 310],
     ])
-    const untagged = result.rows.filter((r) => r.campaignTag === '')
-    expect(untagged.map((r) => r.unmapped)).toEqual([
-      new Map([[UNMATCHED, 40]]),
-      new Map([[UNMATCHED, 40]]),
-      new Map([[UNMATCHED, 40]]),
+    // Pixel 9999 is somebody else's: no number, no warning, nothing in this link's queue.
+    expect(result.rows.every((r) => r.unmapped.size === 0)).toBe(true)
+    expect(result.warnings.join('\n')).not.toMatch(/pixel|9999/)
+  })
+
+  it('takes engagement from the `eng` pixel that carries a creative’s id, with no pixel on the link', async () => {
+    const http = fixtureHttp()
+    const result = await connector.fetchWindow(context(http, FIXTURE_WINDOW, BY_RULE))
+
+    expect(http.requests.map((r) => r.report)).toContain('tracker')
+    const started = (tag: string) =>
+      result.rows.filter((r) => r.campaignTag === tag).map((r) => r.metrics.game_started)
+    expect(started('mpu_v1')).toEqual([600, 620, 640])
+    // No pixel names V2: its engagement is not measured, which is not 0.
+    expect(started('mpu_v2')).toEqual([undefined, undefined, undefined])
+    // The finish pixel is nobody's here: it carries no creative's id and nobody mapped it.
+    expect(result.rows.every((r) => r.metrics.game_finished === undefined)).toBe(true)
+  })
+
+  it('queues a pixel on our creative whose code has no role, warns once, and counts nothing for it', async () => {
+    const http = fixtureHttp({
+      tracker: (seen) => {
+        const fixture = fixtureFor(seen)
+        return {
+          ...fixture,
+          rows: fixture.rows.map((r) => (r.pixel_id === 9001 ? { ...r, code: 'view' } : r)),
+        }
+      },
+    })
+    const result = await connector.fetchWindow(context(http, FIXTURE_WINDOW, BY_RULE))
+
+    const label = 'pixel 9001 with code "view" on ENG Swipe MPU V1'
+    expect(result.rows.every((r) => r.metrics.game_started === undefined)).toBe(true)
+    expect(
+      result.rows
+        .filter((r) => r.unmapped.size > 0)
+        .map((r) => [r.date, r.campaignTag, r.unmapped]),
+    ).toEqual([
+      ['2026-09-01', '', new Map([[label, 600]])],
+      ['2026-09-02', '', new Map([[label, 620]])],
+      ['2026-09-03', '', new Map([[label, 640]])],
     ])
+    expect(result.warnings.filter((w) => w.startsWith('tracker:'))).toEqual([
+      `tracker: ${label} is not counted: nothing says what it counts`,
+    ])
+  })
+
+  it('never lets a hand-mapped pixel called `eng`, or by a shared external id, claim other pixels', async () => {
+    for (const externalId of ['eng', 'ENG Swipe MPU V1']) {
+      const result = await connector.fetchWindow(
+        context(fixtureHttp(), FIXTURE_WINDOW, [
+          ENTITIES.campaign,
+          { ...HAND_SET_ENGAGEMENT, externalId },
+        ]),
+      )
+      expect(result.rows.every((r) => r.metrics.game_started === undefined)).toBe(true)
+    }
+  })
+
+  it('does not count a pixel that carries the campaign’s id: only creatives are named by the rule', async () => {
+    const onCampaign = (seen: Seen) => {
+      const fixture = fixtureFor(seen)
+      return { ...fixture, rows: fixture.rows.map((r) => ({ ...r, external_id: 'camp-ext-1' })) }
+    }
+    const result = await connector.fetchWindow(
+      context(fixtureHttp({ tracker: onCampaign }), FIXTURE_WINDOW, BY_RULE),
+    )
+    expect(result.rows.every((r) => r.metrics.game_started === undefined)).toBe(true)
+    expect(result.rows.every((r) => r.unmapped.size === 0)).toBe(true)
+  })
+
+  it('is not stopped by somebody else’s pixel row that it cannot read, only by its own', async () => {
+    const junk = (pixelId: number) => (seen: Seen) => {
+      const fixture = fixtureFor(seen)
+      return {
+        ...fixture,
+        rows: fixture.rows.map((r) => (r.pixel_id === pixelId ? { ...r, fires: 'many' } : r)),
+      }
+    }
+    const foreign = await connector.fetchWindow(context(fixtureHttp({ tracker: junk(9999) })))
+    expect(foreign.rows.filter((r) => r.metrics.game_started !== undefined)).toHaveLength(3)
+
+    await expect(
+      connector.fetchWindow(context(fixtureHttp({ tracker: junk(9001) }))),
+    ).rejects.toThrow(/Unexpected Zeus tracker row/)
   })
 
   it('fails the run on a violated invariant', async () => {
@@ -193,15 +276,22 @@ describe('Zeus connector', () => {
   })
 
   it('chunks to ≤31 days and clamps the window end to yesterday', async () => {
-    const http = fixtureHttp({ creatives: empty, campaigns: empty, tracker: empty })
+    const http = fixtureHttp({
+      creatives: empty,
+      campaigns: empty,
+      devices: empty,
+      tracker: empty,
+    })
     const result = await connector.fetchWindow(
       context(http, { from: '2026-07-01', to: '2026-09-10' }),
     )
-    expect(http.requests.filter((r) => r.report === 'tracker').map((r) => r.window)).toEqual([
-      { from: '2026-07-01', to: '2026-07-31' },
-      { from: '2026-08-01', to: '2026-08-31' },
-      { from: '2026-09-01', to: '2026-09-04' },
-    ])
+    for (const report of ['creatives', 'campaigns', 'devices', 'tracker']) {
+      expect(http.requests.filter((r) => r.report === report).map((r) => r.window)).toEqual([
+        { from: '2026-07-01', to: '2026-07-31' },
+        { from: '2026-08-01', to: '2026-08-31' },
+        { from: '2026-09-01', to: '2026-09-04' },
+      ])
+    }
     expect(result.warnings).toContain(
       'Zeus serves complete days only: window end 2026-09-10 clamped to 2026-09-04 (UTC)',
     )
@@ -209,7 +299,12 @@ describe('Zeus connector', () => {
   })
 
   it('computes "yesterday" in the source day zone', async () => {
-    const http = fixtureHttp({ creatives: empty, campaigns: empty, tracker: empty })
+    const http = fixtureHttp({
+      creatives: empty,
+      campaigns: empty,
+      devices: empty,
+      tracker: empty,
+    })
     // 10:00 UTC on 5 Sept is already 6 Sept on Kiritimati (UTC+14), so yesterday there is 5 Sept.
     const result = await connector.fetchWindow(
       context(http, { from: '2026-09-01', to: '2026-09-10' }, ALL_ENTITIES, DEFAULT_CONFIG, {
@@ -263,7 +358,13 @@ describe('Zeus connector', () => {
       }),
     )
 
-    expect(http.requests.map((r) => r.filter)).toEqual([{ internal_id: 'camp-ext-1' }])
+    // The campaigns report is asked by the id the link typed; the two account-wide reports are
+    // not filtered at all, and nothing in them names this link by a Zeus number it does not have.
+    expect(http.requests.map((r) => [r.report, r.filter])).toEqual([
+      ['campaigns', { internal_id: 'camp-ext-1' }],
+      ['devices', {}],
+      ['tracker', {}],
+    ])
     expect(result.rows).toEqual([])
     // The covered days are still replaced (a quiet campaign is cleared, never kept stale), and
     // the empty answer is visible on the run in case the idType is what is wrong.
@@ -375,6 +476,7 @@ describe('Zeus connector', () => {
     const http = fixtureHttp({
       creatives: fromDay('2026-09-03'),
       campaigns: fixtureWhere((row) => row.date !== '2026-09-02'),
+      devices: empty,
       tracker: empty,
     })
     const result = await connector.fetchWindow(context(http))
@@ -397,7 +499,12 @@ describe('Zeus connector', () => {
         })),
       }
     }
-    const http = fixtureHttp({ creatives: empty, campaigns: zeros, tracker: empty })
+    const http = fixtureHttp({
+      creatives: empty,
+      campaigns: zeros,
+      devices: empty,
+      tracker: empty,
+    })
     const result = await connector.fetchWindow(context(http))
     expect(result.covered).toEqual(FIXTURE_WINDOW)
     expect(result.rows).toEqual([])
@@ -412,6 +519,7 @@ describe('Zeus connector', () => {
     expect(ctx.captures.map((c) => c.request.url)).toEqual([
       expect.stringContaining('/reports/creatives'),
       expect.stringContaining('/reports/campaigns'),
+      expect.stringContaining('/reports/devices'),
       expect.stringContaining('/reports/tracker'),
     ])
   })
@@ -454,12 +562,13 @@ describe('Zeus connector', () => {
     expect(result.covered).toEqual({ from: '2026-09-01', to: '2026-09-02' })
   })
 
-  it('reads the campaigns report and tracker, not creatives, for a link with no creative entity', async () => {
+  it('reads the campaigns report, not creatives, for a link with no creative entity', async () => {
     const http = fixtureHttp()
     const result = await connector.fetchWindow(
-      context(http, FIXTURE_WINDOW, [ENTITIES.campaign, ENTITIES.engagement]),
+      context(http, FIXTURE_WINDOW, [ENTITIES.campaign, HAND_SET_ENGAGEMENT]),
     )
-    expect(http.requests.map((r) => r.report)).toEqual(['campaigns', 'tracker'])
+    expect(http.requests.map((r) => r.report)).toEqual(['campaigns', 'devices', 'tracker'])
+    // The campaign's delivery and its device split are one row: the campaign's own.
     expect(result.rows.find((r) => r.date === '2026-09-01' && r.campaignTag === '')).toMatchObject({
       metrics: {
         impressions: 30_000,
@@ -468,14 +577,346 @@ describe('Zeus connector', () => {
         unique_clicks_reported: 195,
       },
       ctaClicks: [{ ctaId: 'clickthrough', count: 210 }],
+      devices: [
+        { deviceType: 'desktop', impressions: 18_000, inView: 14_100, clicks: 126 },
+        { deviceType: 'mobile', impressions: 10_000, inView: 7_900, clicks: 70 },
+        { deviceType: 'tablet', impressions: 2_000, inView: 1_500, clicks: 14 },
+      ],
     })
-    // The engagement pixel's tag is mpu_v1, so its fires land on their own tagged row.
+    // The pixel was mapped by hand to the creative tagged mpu_v1, so its fires land there.
     expect(
       result.rows.find((r) => r.date === '2026-09-01' && r.campaignTag === 'mpu_v1')?.metrics,
     ).toEqual({ game_started: 600 })
   })
 
-  it('downloads the unfiltered tracker report once for every link sharing a run memo', async () => {
+  describe('the device split', () => {
+    const ownRows = (rows: Awaited<ReturnType<typeof connector.fetchWindow>>['rows']) =>
+      rows.filter((r) => r.campaignTag === '')
+
+    it('stores a split campaign’s devices on the campaign’s own row, and nobody else’s', async () => {
+      const result = await connector.fetchWindow(context(fixtureHttp()))
+
+      expect(
+        ownRows(result.rows).map((r) => [
+          r.date,
+          r.devices.map((d) => [d.deviceType, d.impressions]),
+        ]),
+      ).toEqual([
+        [
+          '2026-09-01',
+          [
+            ['desktop', 18_000],
+            ['mobile', 10_000],
+            ['tablet', 2_000],
+          ],
+        ],
+        [
+          '2026-09-02',
+          [
+            ['desktop', 19_000],
+            ['mobile', 10_500],
+            ['tablet', 2_000],
+          ],
+        ],
+        [
+          '2026-09-03',
+          [
+            ['desktop', 20_000],
+            ['mobile', 11_000],
+            ['tablet', 2_000],
+          ],
+        ],
+      ])
+      // Campaign 777's 500 desktop impressions a day are in the same download and are not ours.
+      const all = result.rows.flatMap((r) => r.devices)
+      expect(all.reduce((sum, d) => sum + (d.impressions ?? 0), 0)).toBe(30_000 + 31_500 + 33_000)
+      expect(
+        result.rows.filter((r) => r.campaignTag !== '').every((r) => r.devices.length === 0),
+      ).toBe(true)
+      // The devices add up to the campaigns report: nothing to warn about.
+      expect(result.warnings.filter((w) => w.startsWith('devices'))).toEqual([])
+    })
+
+    it('stores a device row that names a creative on that creative', async () => {
+      // Zeus as the device split is meant to arrive: each row carries a creative's id.
+      const perCreative = (seen: Seen) => {
+        const creatives = fixtureFor({ ...seen, report: 'creatives' })
+        return {
+          ...fixtureFor(seen),
+          rows: creatives.rows.flatMap((r) => [
+            {
+              date: r.date,
+              campaign_id: 501,
+              external_id: r.creative_id,
+              device_type: 'mobile',
+              impressions: (r.impressions as number) - 1_000,
+              clicks: r.clicks,
+              visible_impressions: (r.visible_impressions as number) - 1_000,
+            },
+            {
+              date: r.date,
+              campaign_id: 501,
+              external_id: r.creative_id,
+              device_type: 'desktop',
+              impressions: 1_000,
+              clicks: 0,
+              visible_impressions: 1_000,
+            },
+          ]),
+        }
+      }
+      const result = await connector.fetchWindow(context(fixtureHttp({ devices: perCreative })))
+
+      expect(
+        result.rows
+          .filter((r) => r.date === '2026-09-01')
+          .map((r) => [r.campaignTag, r.metrics.impressions, r.devices]),
+      ).toEqual([
+        [
+          'mpu_v1',
+          20_000,
+          [
+            { deviceType: 'desktop', impressions: 1_000, inView: 1_000, clicks: 0 },
+            { deviceType: 'mobile', impressions: 19_000, inView: 15_000, clicks: 150 },
+          ],
+        ],
+        [
+          'mpu_v2',
+          10_000,
+          [
+            { deviceType: 'desktop', impressions: 1_000, inView: 1_000, clicks: 0 },
+            { deviceType: 'mobile', impressions: 9_000, inView: 6_500, clicks: 60 },
+          ],
+        ],
+      ])
+      expect(result.warnings.filter((w) => w.startsWith('devices'))).toEqual([])
+    })
+
+    it('keeps the creative’s rows and leaves the campaign’s out on a day Zeus sends both', async () => {
+      const both = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        const forCreative = fixture.rows
+          .filter((r) => r.campaign_id === 501 && r.date === '2026-09-02')
+          .map((r) => ({ ...r, external_id: ENTITIES.mpuV1.externalId }))
+        return { ...fixture, rows: [...fixture.rows, ...forCreative] }
+      }
+      const result = await connector.fetchWindow(context(fixtureHttp({ devices: both })))
+
+      const split = result.rows
+        .filter((r) => r.devices.length > 0)
+        .map((r) => [
+          r.date,
+          r.campaignTag,
+          r.devices.reduce((n, d) => n + (d.impressions ?? 0), 0),
+        ])
+      // 09-02 is counted once, on the creative; the other days stay on the campaign's own row.
+      expect(split).toEqual([
+        ['2026-09-01', '', 30_000],
+        ['2026-09-02', 'mpu_v1', 31_500],
+        ['2026-09-03', '', 33_000],
+      ])
+    })
+
+    it.each(['external_id', 'internal_id'] as const)(
+      'never adds a creative the link does not list to the campaign (%s link), and says so',
+      async (campaign_id_param) => {
+        // Zeus breaks the campaign's devices out per creative; one of them is not on the link.
+        const perCreative = (seen: Seen) => {
+          const fixture = fixtureFor(seen)
+          const ours = fixture.rows.filter((r) => r.campaign_id === 501)
+          return {
+            ...fixture,
+            rows: [
+              ...ours.map((r) => ({ ...r, external_id: ENTITIES.mpuV1.externalId })),
+              ...ours.map((r) => ({ ...r, external_id: 'a creative nobody linked' })),
+            ],
+          }
+        }
+        const campaign = {
+          ...ENTITIES.campaign,
+          externalId: campaign_id_param === 'internal_id' ? '501' : ENTITIES.campaign.externalId,
+        }
+        const result = await connector.fetchWindow(
+          context(
+            fixtureHttp({ devices: perCreative }),
+            FIXTURE_WINDOW,
+            [campaign, ENTITIES.mpuV1, ENTITIES.mpuV2],
+            { ...DEFAULT_CONFIG, campaign_id_param },
+          ),
+        )
+
+        expect(
+          new Set(result.rows.filter((r) => r.devices.length > 0).map((r) => r.campaignTag)),
+        ).toEqual(new Set(['mpu_v1']))
+        expect(result.warnings).toContain(
+          `devices: rows for "a creative nobody linked" in campaign 501 are neither the campaign's own nor a linked creative's; ignored`,
+        )
+      },
+    )
+
+    it('stores the campaign’s own rows once when Zeus also sends rows per creative for it', async () => {
+      // A campaign-level link: the campaign's total and its creatives' rows are the same
+      // impressions twice. Only the row that carries the campaign's own ids is the campaign's.
+      const totalAndParts = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        const ours = fixture.rows.filter((r) => r.campaign_id === 501)
+        return {
+          ...fixture,
+          rows: [...ours, ...ours.map((r) => ({ ...r, external_id: 'ENG Swipe MPU V1' }))],
+        }
+      }
+      const result = await connector.fetchWindow(
+        context(fixtureHttp({ devices: totalAndParts }), FIXTURE_WINDOW, [ENTITIES.campaign]),
+      )
+
+      const stored = result.rows.flatMap((r) => r.devices)
+      expect(stored.reduce((n, d) => n + (d.impressions ?? 0), 0)).toBe(30_000 + 31_500 + 33_000)
+      expect(result.warnings.filter((w) => w.startsWith('devices'))).toEqual([
+        `devices: rows for "ENG Swipe MPU V1" in campaign 501 are neither the campaign's own nor a linked creative's; ignored`,
+      ])
+    })
+
+    it('is not stopped by a row of somebody else’s that it cannot read', async () => {
+      const foreignJunk = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        const junk = { date: 'not a day', campaign_id: 777, external_id: 777, impressions: null }
+        return { ...fixture, rows: [junk, ...fixture.rows] }
+      }
+      const result = await connector.fetchWindow(context(fixtureHttp({ devices: foreignJunk })))
+      expect(result.rows.flatMap((r) => r.devices)).toHaveLength(9)
+    })
+
+    it('fails the run on a row of its own that it cannot read', async () => {
+      const ownJunk = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        const rows = fixture.rows.map((r) => ({ ...r }))
+        rows[0] = { ...rows[0], visible_impressions: null }
+        return { ...fixture, rows }
+      }
+      await expect(
+        connector.fetchWindow(context(fixtureHttp({ devices: ownJunk }))),
+      ).rejects.toThrow(/Unexpected Zeus devices row/)
+    })
+
+    it('fails the run when a row does not say whose it is: the report’s shape changed', async () => {
+      const anonymous = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        return { ...fixture, rows: fixture.rows.map(({ campaign_id: _, ...rest }) => rest) }
+      }
+      await expect(
+        connector.fetchWindow(context(fixtureHttp({ devices: anonymous }))),
+      ).rejects.toThrow(ZeusContractError)
+    })
+
+    it('reads an external id Zeus sends as a number', async () => {
+      const numeric = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        return {
+          ...fixture,
+          rows: fixture.rows.map((r) => (r.campaign_id === 501 ? { ...r, external_id: 501 } : r)),
+        }
+      }
+      const campaigns = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        return { ...fixture, rows: fixture.rows.map((r) => ({ ...r, external_id: '501' })) }
+      }
+      const result = await connector.fetchWindow(
+        context(
+          fixtureHttp({ devices: numeric, campaigns }),
+          FIXTURE_WINDOW,
+          [{ ...ENTITIES.campaign, externalId: '501' }],
+          { ...DEFAULT_CONFIG, campaign_id_param: 'internal_id' },
+        ),
+      )
+      expect(result.rows.flatMap((r) => r.devices)).toHaveLength(9)
+    })
+
+    it('fails the run, with nothing to write, when the devices report cannot be fetched', async () => {
+      const http = fixtureHttp()
+      const failing = {
+        ...http,
+        request: (req: Parameters<typeof http.request>[0]) =>
+          req.url.includes('/reports/devices')
+            ? Promise.reject(new HttpError(503, req.url, ''))
+            : http.request(req),
+      }
+      await expect(
+        connector.fetchWindow(context(failing, FIXTURE_WINDOW, [ENTITIES.campaign])),
+      ).rejects.toBeInstanceOf(HttpError)
+    })
+
+    it('fails the run on a device row that appears twice', async () => {
+      const twice = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        return { ...fixture, rows: [...fixture.rows, fixture.rows[0]] }
+      }
+      await expect(connector.fetchWindow(context(fixtureHttp({ devices: twice })))).rejects.toThrow(
+        /appears twice/,
+      )
+    })
+
+    it('stores what Zeus reports when the devices do not add up, and says so', async () => {
+      const short = (seen: Seen) => {
+        const fixture = fixtureFor(seen)
+        const rows = fixture.rows.map((r) => ({ ...r }))
+        rows[0] = { ...rows[0], impressions: 17_000 }
+        return { ...fixture, rows }
+      }
+      const result = await connector.fetchWindow(context(fixtureHttp({ devices: short })))
+
+      expect(ownRows(result.rows)[0]?.devices[0]).toMatchObject({
+        deviceType: 'desktop',
+        impressions: 17_000,
+      })
+      expect(result.warnings).toContain(
+        'devices: camp-ext-1 on 2026-09-01: the device rows add up to 29000 impressions, the campaigns report has 30000; stored as reported',
+      )
+    })
+
+    it('keeps the delivery of a campaign Zeus has no device rows for', async () => {
+      const result = await connector.fetchWindow(context(fixtureHttp({ devices: empty })))
+
+      expect(result.covered).toEqual(FIXTURE_WINDOW)
+      expect(result.rows.flatMap((r) => r.devices)).toEqual([])
+      expect(result.rows.filter((r) => r.metrics.impressions !== undefined)).toHaveLength(6)
+    })
+
+    it('leaves the device rows of the days before Zeus divided the campaign as stored', async () => {
+      const result = await connector.fetchWindow(
+        context(fixtureHttp({ creatives: fromDay('2026-09-02') })),
+      )
+      expect(result.covered).toEqual({ from: '2026-09-02', to: '2026-09-03' })
+      expect(ownRows(result.rows).map((r) => r.date)).toEqual(['2026-09-02', '2026-09-03'])
+    })
+
+    it('rejects a devices answer of an unexpected shape, keeping the payloads fetched before it', async () => {
+      const ctx = context(fixtureHttp({ devices: () => ({ rows: 'nope' }) }))
+      await expect(connector.fetchWindow(ctx)).rejects.toThrow(ZeusContractError)
+      expect(ctx.captures).toHaveLength(2)
+    })
+
+    it('narrows every link that reads the shared devices report to the last day Zeus served', async () => {
+      const through0902 = (s: Seen) =>
+        fixtureFor({ ...s, window: { from: s.window.from, to: '2026-09-02' } })
+      const http = fixtureHttp({ devices: through0902 })
+      const memo = createRunMemo()
+      const run = (linkId: string) =>
+        connector.fetchWindow(
+          context(http, FIXTURE_WINDOW, ALL_ENTITIES, DEFAULT_CONFIG, { memo, linkId }),
+        )
+
+      const a = await run('a')
+      const b = await run('b')
+
+      expect(http.requests.filter((r) => r.report === 'devices')).toHaveLength(1)
+      for (const result of [a, b]) {
+        expect(result.covered).toEqual({ from: '2026-09-01', to: '2026-09-02' })
+        expect(result.rows.every((r) => r.date <= '2026-09-02')).toBe(true)
+      }
+    })
+  })
+
+  it('downloads the two unfiltered reports once for every link sharing a run memo', async () => {
     const http = fixtureHttp()
     const memo = createRunMemo()
     await connector.fetchWindow(
@@ -485,6 +926,7 @@ describe('Zeus connector', () => {
       context(http, FIXTURE_WINDOW, ALL_ENTITIES, DEFAULT_CONFIG, { memo, linkId: 'b' }),
     )
     expect(http.requests.filter((r) => r.report === 'tracker')).toHaveLength(1)
+    expect(http.requests.filter((r) => r.report === 'devices')).toHaveLength(1)
     expect(http.requests.filter((r) => r.report === 'creatives')).toHaveLength(2)
   })
 
@@ -536,26 +978,6 @@ describe('Zeus connector', () => {
     expect(http.requests).toEqual([])
   })
 
-  it('matches pixels by code, then external_id, then name', () => {
-    const pixels = [
-      { ...ENTITIES.engagement, externalId: 'by-code' },
-      { ...ENTITIES.finish, externalId: 'by-ext' },
-      { ...ENTITIES.finish, externalId: 'by-name' },
-    ]
-    const row = { date: '2026-09-01', pixel_id: '1', fires: 1 }
-    expect(
-      matchPixel({ ...row, code: 'by-code', external_id: 'by-ext', name: 'by-name' }, pixels)
-        ?.externalId,
-    ).toBe('by-code')
-    expect(
-      matchPixel({ ...row, code: 'x', external_id: 'by-ext', name: 'by-name' }, pixels)?.externalId,
-    ).toBe('by-ext')
-    expect(
-      matchPixel({ ...row, code: null, external_id: null, name: 'by-name' }, pixels)?.externalId,
-    ).toBe('by-name')
-    expect(matchPixel({ ...row, code: 'x', external_id: 'y', name: 'z' }, pixels)).toBeUndefined()
-  })
-
   it('describes the link config schema and rejects an unexpected response shape', async () => {
     const schema = connector.describe().configSchema
     expect(schema.safeParse({}).success).toBe(false)
@@ -582,22 +1004,22 @@ describe('Zeus connector', () => {
     expect(pixels).toEqual([
       {
         pixel_id: '9001',
-        external_id: '1823ca',
-        code: 'dev1eng',
+        external_id: 'ENG Swipe MPU V1',
+        code: 'eng',
         name: 'ENG Swipe MPU V1 engagement',
         fires_last_7_days: 1_860,
       },
       {
         pixel_id: '9002',
         external_id: '1823cb',
-        code: 'dev1fin',
+        code: 'fin',
         name: 'ENG Swipe MPU V1 finish',
         fires_last_7_days: 900,
       },
       {
         pixel_id: '9999',
         external_id: 'zz99',
-        code: 'otherpx',
+        code: 'eng',
         name: 'Other campaign pixel',
         fires_last_7_days: 120,
       },

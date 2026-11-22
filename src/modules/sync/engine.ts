@@ -30,7 +30,7 @@ import { assertRegistryMatchesSources, type ConnectorRegistry } from './registry
 import * as repo from './repo.ts'
 import { createRunMemo, type CanonicalDailyRow, type RunMemo, type SyncContext } from './types.ts'
 import { completeDays, lookbackWindow } from './windows.ts'
-import { diffDay, writeDay, type DayDiff } from './writer.ts'
+import { diffDay, totalRows, writeDay, type DayDiff } from './writer.ts'
 
 export * from './errors.ts'
 
@@ -347,9 +347,8 @@ async function execute(deps: SyncDeps, request: SyncRequest): Promise<SyncSummar
       const counts = await db.withTransaction((tx) =>
         writeDay(tx, { ...sliceFor(date), syncRunId: runId }),
       )
-      rowsWritten +=
-        counts.inserted.advanced + counts.inserted.pageViews + counts.inserted.ctaClicks
-      rowsDeleted += counts.deleted.advanced + counts.deleted.pageViews + counts.deleted.ctaClicks
+      rowsWritten += totalRows(counts.inserted)
+      rowsDeleted += totalRows(counts.deleted)
       daysWritten++
       runLog.debug({ date, ...counts }, 'day replaced')
     }

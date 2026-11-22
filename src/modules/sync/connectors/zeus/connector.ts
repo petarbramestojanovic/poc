@@ -28,23 +28,27 @@ import {
   type Matched,
   type ZeusMapperInput,
 } from './mapper.ts'
+import { campaignIdentities, matchDeviceRow, resolveTrackerRow, ZEUS_PIXEL_ROLES } from './match.ts'
 import {
   zeusCampaignsRow,
   zeusCreativesRow,
+  zeusDevicesRow,
+  zeusDevicesRowIds,
   zeusLinkConfig,
   zeusReport,
   zeusTrackerRow,
+  zeusTrackerRowIds,
   type ZeusCampaignsRow,
   type ZeusCreativesRow,
   type ZeusLinkConfig,
-  type ZeusTrackerRow,
 } from './schema.ts'
 
-// Zeus (ATK): three GETs per ≤31-day chunk. `creatives` filtered by the link's campaign id,
-// `tracker` fetched unfiltered and matched locally (code → external_id → name, RFC-003 §2.3),
+// Zeus (ATK): four GETs per ≤31-day chunk. `creatives` filtered by the link's campaign id;
 // `campaigns` filtered the same way: written when the link has no creative entity, otherwise read
 // only to see which days have numbers (coverageStart). The id is sent in the one parameter the
-// link's `campaign_id_param` names, never retried in the other: see getFiltered.
+// link's `campaign_id_param` names, never retried in the other: see getFiltered. `devices` and
+// `tracker` are fetched unfiltered, once for every link of the run, and each link picks out the
+// rows that are its own (match.ts) and parses only those in full.
 
 export const ZEUS_MAX_WINDOW_DAYS = 31
 const DEFAULT_BASE_URL = 'https://t.zeus.ad'
@@ -62,21 +66,6 @@ export interface ZeusConnectorOptions {
 
 type Report = 'campaigns' | 'creatives' | 'devices' | 'tracker'
 type RequestContext = ConnectionContext & { capture?: (raw: RawCapture) => Promise<void> }
-
-/** Resolves which tracker field carries our ATK identity without guessing: code, external_id, name. */
-export function matchPixel(row: ZeusTrackerRow, pixels: LinkEntity[]): LinkEntity | undefined {
-  for (const field of ['code', 'external_id', 'name'] as const) {
-    const value = row[field]
-    if (value === null || value === undefined || value === '') continue
-    const hit = pixels.find((p) => p.externalId === value)
-    if (hit) return hit
-  }
-  return undefined
-}
-
-export function pixelLabel(row: ZeusTrackerRow): string {
-  return `pixel ${row.pixel_id} "${row.name ?? row.code ?? row.external_id ?? ''}"`
-}
 
 export interface PixelSummary {
   pixel_id: string
@@ -257,6 +246,18 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     return rows
   }
 
+  /**
+   * A row of an account-wide report that turned out to be this link's, parsed in full. The row
+   * was read loosely until now (schema.ts): a row of ours we cannot read fails the run.
+   */
+  function ownRow<T extends z.ZodType>(report: Report, schema: T, row: unknown): z.infer<T> {
+    const parsed = schema.safeParse(row)
+    if (!parsed.success) {
+      throw new ZeusContractError(`Unexpected Zeus ${report} row: ${z.prettifyError(parsed.error)}`)
+    }
+    return parsed.data
+  }
+
   const campaignOf =
     (id: string) => (row: { campaign_id: string; external_id?: string | null | undefined }) =>
       row.campaign_id === id || row.external_id === id
@@ -271,7 +272,6 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     const config = ctx.config
     const campaign = ctx.entities.find((e) => e.level === 'campaign')
     const creatives = ctx.entities.filter((e) => e.level === 'creative')
-    const pixels = ctx.entities.filter((e) => e.level === 'pixel')
     const campaignRows = (entity: LinkEntity) =>
       getFiltered(
         ctx,
@@ -285,6 +285,8 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
         state,
       )
 
+    /** The campaign's rows in its own report: what tells its device rows from anybody else's. */
+    let ownReport: ZeusCampaignsRow[] = []
     if (creatives.length > 0) {
       const byId = new Map(creatives.map((e) => [e.externalId, e]))
       const rows = campaign
@@ -325,35 +327,54 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
         input.creatives.push({ entity, row })
       }
       if (campaign) {
-        for (const row of await campaignRows(campaign)) {
-          state.campaignTotals.push({ entity: campaign, row })
-        }
+        ownReport = await campaignRows(campaign)
+        for (const row of ownReport) state.campaignTotals.push({ entity: campaign, row })
       }
     } else if (campaign) {
-      for (const row of await campaignRows(campaign)) {
-        input.campaigns.push({ entity: campaign, row })
-      }
+      ownReport = await campaignRows(campaign)
+      for (const row of ownReport) input.campaigns.push({ entity: campaign, row })
     } else {
       throw new ZeusContractError(
         `link ${ctx.link.id} has neither a campaign nor a creative entity`,
       )
     }
 
-    if (pixels.length > 0) {
-      // The unfiltered tracker report is identical for every link on this credential: one
-      // download serves every link in the same run memo (a scheduler pass shares one). The
-      // payload is captured by that one download, so `external.raw_payload` holds it under the
-      // first link's run of the pass, not under every link that read it.
-      const tracker = await memo.getOrLoad(
-        `zeus:tracker:${ctx.credential.id}:${window.from}:${window.to}`,
-        () => get(requestContext(ctx), 'tracker', window, zeusTrackerRow),
-      )
-      noteServed(state, window, tracker.to)
-      for (const row of tracker.rows) {
-        const entity = matchPixel(row, pixels)
-        if (entity) input.tracker.push({ entity, row })
-        else
-          input.unmatchedPixels.push({ label: pixelLabel(row), date: row.date, fires: row.fires })
+    // The devices and tracker reports are identical for every link on this credential: one
+    // unfiltered download of each serves every link in the same run memo (a scheduler pass shares
+    // one), instead of a request per creative. The payload is captured by that one download, so
+    // `external.raw_payload` holds it under the first link's run of the pass, not under every
+    // link that read it. Each link takes only its own rows, and parses only those in full.
+    const devices = await memo.getOrLoad(
+      `zeus:devices:${ctx.credential.id}:${window.from}:${window.to}`,
+      () => get(requestContext(ctx), 'devices', window, zeusDevicesRowIds),
+    )
+    noteServed(state, window, devices.to)
+    const identities = campaignIdentities(ownReport)
+    for (const ids of devices.rows) {
+      const match = matchDeviceRow(ids, ctx.entities, identities)
+      if (match.kind === 'owned') {
+        input.devices.push({ entity: match.entity, row: ownRow('devices', zeusDevicesRow, ids) })
+      } else if (match.kind === 'unlinked') {
+        state.warnings.add(
+          `devices: rows for "${match.owner}" in campaign ${ids.campaign_id} are neither the campaign's own nor a linked creative's; ignored`,
+        )
+      }
+    }
+
+    const tracker = await memo.getOrLoad(
+      `zeus:tracker:${ctx.credential.id}:${window.from}:${window.to}`,
+      () => get(requestContext(ctx), 'tracker', window, zeusTrackerRowIds),
+    )
+    noteServed(state, window, tracker.to)
+    for (const ids of tracker.rows) {
+      const match = resolveTrackerRow(ids, ctx.entities)
+      if (match.kind === 'not_ours') continue
+      const row = ownRow('tracker', zeusTrackerRow, ids)
+      if (match.kind === 'counted') {
+        input.tracker.push({ entity: match.entity, role: match.role, row })
+      } else {
+        input.unmappedPixels.push({ label: match.label, date: row.date, fires: row.fires })
+        state.warnings.add(`tracker: ${match.label} is not counted: nothing says what it counts`)
       }
     }
   }
@@ -369,7 +390,7 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
     identity: {
       levels: ['campaign', 'creative', 'pixel'],
       multiple: true,
-      roles: { pixel: ['engagement', 'finish'] },
+      roles: { pixel: ZEUS_PIXEL_ROLES },
     },
 
     describe: () => ({ configSchema: zeusLinkConfig }),
@@ -412,8 +433,9 @@ export function createZeusConnector(options: ZeusConnectorOptions = {}): ZeusCon
         clickthroughCtaId: ctx.config.clickthrough_cta_id,
         creatives: [],
         campaigns: [],
+        devices: [],
         tracker: [],
-        unmatchedPixels: [],
+        unmappedPixels: [],
       }
 
       const yesterday = yesterdayIn(ctx.source.dayTimezone, now())

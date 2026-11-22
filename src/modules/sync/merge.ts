@@ -1,7 +1,10 @@
 import {
+  DEVICE_COUNT_IDS,
+  DEVICE_TYPES,
   METRIC_AGGREGATION,
   METRIC_WEIGHT,
   type CanonicalDailyRow,
+  type DeviceCounts,
   type MetricId,
 } from './types.ts'
 
@@ -11,7 +14,8 @@ import {
 //   weighted_avg → averaged, weighted by its weight metric (plain mean without any weight)
 //   none         → a per-day scalar that can never be added (the same person may be in both
 //                  entities): kept when exactly one value exists or all agree, dropped otherwise
-// Absent metrics stay absent.
+// Absent metrics stay absent. Page views, CTA clicks and the device split are counts: added per
+// page, CTA and device.
 
 interface AverageAccumulator {
   weightedSum: number
@@ -41,6 +45,7 @@ export function mergeRows(
         metrics: {},
         pageViews: [],
         ctaClicks: [],
+        devices: [],
         unmapped: new Map(),
       }
       merged.set(key, target)
@@ -89,11 +94,13 @@ export function mergeRows(
     }
     mergeCounts(target.pageViews, row.pageViews, 'pageId')
     mergeCounts(target.ctaClicks, row.ctaClicks, 'ctaId')
+    mergeDevices(target.devices, row.devices)
     for (const [name, count] of row.unmapped) {
       target.unmapped.set(name, (target.unmapped.get(name) ?? 0) + count)
     }
   }
 
+  for (const row of merged.values()) row.devices.sort(byDeviceOrder)
   return [...merged.values()].sort(
     (a, b) =>
       a.date.localeCompare(b.date) ||
@@ -112,6 +119,26 @@ function mergeCounts<K extends 'pageId' | 'ctaId'>(
     if (existing) existing.count += item.count
     else target.push({ ...item })
   }
+}
+
+/** Adds a row's devices to the target's, per device. A count neither side measured stays absent. */
+function mergeDevices(target: DeviceCounts[], source: readonly DeviceCounts[]): void {
+  for (const item of source) {
+    const existing = target.find((t) => t.deviceType === item.deviceType)
+    if (!existing) {
+      target.push({ ...item })
+      continue
+    }
+    for (const id of DEVICE_COUNT_IDS) {
+      const value = item[id]
+      if (value !== undefined) existing[id] = (existing[id] ?? 0) + value
+    }
+  }
+}
+
+/** The order of DEVICE_TYPES, so a merged row lists its devices the same way on every run. */
+function byDeviceOrder(a: DeviceCounts, b: DeviceCounts): number {
+  return DEVICE_TYPES.indexOf(a.deviceType) - DEVICE_TYPES.indexOf(b.deviceType)
 }
 
 export function groupByDate(rows: readonly CanonicalDailyRow[]): Map<string, CanonicalDailyRow[]> {

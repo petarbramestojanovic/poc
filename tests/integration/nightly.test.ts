@@ -56,6 +56,7 @@ describe('nightly pass', () => {
             metrics: { impressions: 100 },
             pageViews: [],
             ctaClicks: [],
+            devices: [],
             unmapped: new Map(),
           },
         ],

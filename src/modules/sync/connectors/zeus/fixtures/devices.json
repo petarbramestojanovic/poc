@@ -1,0 +1,142 @@
+{
+  "customer": {
+    "id": 317,
+    "name": "Brame"
+  },
+  "from": "2026-09-01",
+  "to": "2026-09-03",
+  "rows": [
+    {
+      "date": "2026-09-01",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "desktop",
+      "impressions": 18000,
+      "clicks": 126,
+      "ctr": 0.7,
+      "visible_impressions": 14100,
+      "visibility": 78.33
+    },
+    {
+      "date": "2026-09-01",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "mobile",
+      "impressions": 10000,
+      "clicks": 70,
+      "ctr": 0.7,
+      "visible_impressions": 7900,
+      "visibility": 79.0
+    },
+    {
+      "date": "2026-09-01",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "tablet",
+      "impressions": 2000,
+      "clicks": 14,
+      "ctr": 0.7,
+      "visible_impressions": 1500,
+      "visibility": 75.0
+    },
+    {
+      "date": "2026-09-01",
+      "campaign_id": 777,
+      "external_id": "777",
+      "device_type": "desktop",
+      "impressions": 500,
+      "clicks": 5,
+      "ctr": 1.0,
+      "visible_impressions": 400,
+      "visibility": 80.0
+    },
+    {
+      "date": "2026-09-02",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "desktop",
+      "impressions": 19000,
+      "clicks": 135,
+      "ctr": 0.71,
+      "visible_impressions": 14900,
+      "visibility": 78.42
+    },
+    {
+      "date": "2026-09-02",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "mobile",
+      "impressions": 10500,
+      "clicks": 75,
+      "ctr": 0.71,
+      "visible_impressions": 8300,
+      "visibility": 79.05
+    },
+    {
+      "date": "2026-09-02",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "tablet",
+      "impressions": 2000,
+      "clicks": 15,
+      "ctr": 0.75,
+      "visible_impressions": 1500,
+      "visibility": 75.0
+    },
+    {
+      "date": "2026-09-02",
+      "campaign_id": 777,
+      "external_id": "777",
+      "device_type": "desktop",
+      "impressions": 500,
+      "clicks": 5,
+      "ctr": 1.0,
+      "visible_impressions": 400,
+      "visibility": 80.0
+    },
+    {
+      "date": "2026-09-03",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "desktop",
+      "impressions": 20000,
+      "clicks": 145,
+      "ctr": 0.73,
+      "visible_impressions": 15700,
+      "visibility": 78.5
+    },
+    {
+      "date": "2026-09-03",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "mobile",
+      "impressions": 11000,
+      "clicks": 80,
+      "ctr": 0.73,
+      "visible_impressions": 8700,
+      "visibility": 79.09
+    },
+    {
+      "date": "2026-09-03",
+      "campaign_id": 501,
+      "external_id": "camp-ext-1",
+      "device_type": "tablet",
+      "impressions": 2000,
+      "clicks": 15,
+      "ctr": 0.75,
+      "visible_impressions": 1500,
+      "visibility": 75.0
+    },
+    {
+      "date": "2026-09-03",
+      "campaign_id": 777,
+      "external_id": "777",
+      "device_type": "desktop",
+      "impressions": 500,
+      "clicks": 5,
+      "ctr": 1.0,
+      "visible_impressions": 400,
+      "visibility": 80.0
+    }
+  ]
+}

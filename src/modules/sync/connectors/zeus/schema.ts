@@ -6,6 +6,8 @@ import { z } from 'zod'
 
 const id = z.union([z.number(), z.string()]).transform(String)
 const optionalText = z.string().nullable().optional()
+/** An id that may be missing. Zeus repeats its own number where no external id is set. */
+const optionalId = id.nullable().optional()
 const count = z.number().int().nonnegative()
 // Zeus sends null for the unique counts on some days. Stored as 0 by decision (2026-10-20), an
 // exception to "absent is not zero"; a missing field still means absent.
@@ -30,12 +32,39 @@ export type ZeusCreativesRow = z.infer<typeof zeusCreativesRow>
 export const zeusTrackerRow = z.looseObject({
   date: z.iso.date(),
   pixel_id: id,
-  external_id: optionalText,
+  /** Whose pixel it is: the id of the creative it counts for, when ATK set one. */
+  external_id: optionalId,
+  /** What the pixel counts ('eng'), not whose it is: every campaign uses the same codes. */
   code: optionalText,
   name: optionalText,
   fires: count,
 })
 export type ZeusTrackerRow = z.infer<typeof zeusTrackerRow>
+
+export const zeusDevicesRow = z.looseObject({
+  date: z.iso.date(),
+  campaign_id: id,
+  /** Whose row it is, when ATK set one. */
+  external_id: optionalId,
+  /** desktop / mobile / tablet, empty when Zeus cannot tell; the mapper maps it onto DEVICE_TYPES. */
+  device_type: optionalText,
+  impressions: count,
+  clicks: count,
+  visible_impressions: count,
+  // ctr / visibility are ratios; never stored (RFC-003 §2.2).
+})
+export type ZeusDevicesRow = z.infer<typeof zeusDevicesRow>
+
+// The devices and tracker reports are downloaded for the whole account, so most of their rows
+// are other campaigns'. Only what says whose a row is gets parsed for every row; the rest of a
+// row is parsed once a link takes it, so a row of somebody else's that we cannot read costs
+// nobody a run. A row that does not say whose it is means the report changed shape, and fails.
+export const zeusDevicesRowIds = z.looseObject({ campaign_id: id, external_id: optionalId })
+export const zeusTrackerRowIds = z.looseObject({
+  pixel_id: id,
+  external_id: optionalId,
+  code: optionalText,
+})
 
 export const zeusCampaignsRow = z.looseObject({
   date: z.iso.date(),

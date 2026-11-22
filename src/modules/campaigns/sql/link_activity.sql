@@ -12,4 +12,6 @@ SELECT EXISTS (
     OR EXISTS (SELECT 1 FROM analytics.page_views
                 WHERE campaign_id = $2 AND source = $3 AND language = $4)
     OR EXISTS (SELECT 1 FROM analytics.cta_clicks
+                WHERE campaign_id = $2 AND source = $3 AND language = $4)
+    OR EXISTS (SELECT 1 FROM analytics.device_daily
                 WHERE campaign_id = $2 AND source = $3 AND language = $4) AS has_data;

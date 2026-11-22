@@ -59,6 +59,7 @@ export function mapNexdRows(input: NexdMapperInput): CanonicalDailyRow[] {
       },
       pageViews: [],
       ctaClicks: [],
+      devices: [],
       unmapped: new Map(),
     }
 
