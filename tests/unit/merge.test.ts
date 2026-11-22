@@ -13,6 +13,7 @@ const row = (over: Partial<CanonicalDailyRow>): CanonicalDailyRow => ({
   metrics: {},
   pageViews: [],
   ctaClicks: [],
+  devices: [],
   unmapped: new Map(),
   ...over,
 })
@@ -104,6 +105,54 @@ describe('mergeRows', () => {
     expect(dropped?.metrics).toEqual({ impressions: 15 })
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain('unique_impressions_reported dropped')
+  })
+
+  it('adds device counts per device type when several entities feed one creative', () => {
+    const merged = mergeRows([
+      row({
+        devices: [
+          { deviceType: 'desktop', impressions: 100, inView: 80, clicks: 3 },
+          { deviceType: 'mobile', impressions: 40, inView: 30, clicks: 1 },
+        ],
+      }),
+      row({
+        devices: [
+          { deviceType: 'mobile', impressions: 60, inView: 50, clicks: 2 },
+          { deviceType: 'tablet', impressions: 7, inView: 7, clicks: 0 },
+        ],
+      }),
+    ])
+    expect(merged).toEqual([
+      row({
+        devices: [
+          { deviceType: 'desktop', impressions: 100, inView: 80, clicks: 3 },
+          { deviceType: 'mobile', impressions: 100, inView: 80, clicks: 3 },
+          { deviceType: 'tablet', impressions: 7, inView: 7, clicks: 0 },
+        ],
+      }),
+    ])
+  })
+
+  it('keeps a device count nobody measured absent, never 0', () => {
+    const [merged] = mergeRows([
+      row({ devices: [{ deviceType: 'mobile', impressions: 10 }] }),
+      row({ devices: [{ deviceType: 'mobile', impressions: 5, clicks: 2 }] }),
+    ])
+    expect(merged?.devices).toEqual([{ deviceType: 'mobile', impressions: 15, clicks: 2 }])
+    expect(merged?.devices[0]).not.toHaveProperty('inView')
+  })
+
+  it('keeps the devices of different creatives and days apart', () => {
+    const merged = mergeRows([
+      row({ campaignTag: 'a', devices: [{ deviceType: 'mobile', impressions: 1 }] }),
+      row({ campaignTag: 'b', devices: [{ deviceType: 'mobile', impressions: 2 }] }),
+      row({ date: '2026-09-02', devices: [{ deviceType: 'mobile', impressions: 4 }] }),
+    ])
+    expect(merged.map((r) => [r.date, r.campaignTag, r.devices])).toEqual([
+      ['2026-09-01', 'a', [{ deviceType: 'mobile', impressions: 1 }]],
+      ['2026-09-01', 'b', [{ deviceType: 'mobile', impressions: 2 }]],
+      ['2026-09-02', 'a', [{ deviceType: 'mobile', impressions: 4 }]],
+    ])
   })
 
   it('declares an aggregation for every metric', () => {

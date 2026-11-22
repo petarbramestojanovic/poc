@@ -84,7 +84,7 @@ describe('campaign routes, refused before the service', () => {
     {
       name: 'a Zeus pixel without its role',
       url: `/campaigns/${ID}/platforms/zeus`,
-      payload: { ...zeus, pixels: [{ code: 'px' }] },
+      payload: { ...zeus, pixels: [{ pixelId: 'px' }] },
       message: 'role',
     },
     {

@@ -50,6 +50,33 @@ export const METRIC_WEIGHT: Readonly<Partial<Record<MetricId, MetricId>>> = {
   dwell_avg_ms: 'game_started',
 }
 
+/**
+ * The devices a delivery is split by: the values analytics.device_daily.device_type allows (a
+ * test pins both). A connector maps its platform's names onto these; what the platform cannot
+ * tell, or names in a way we do not know, is 'unknown', so the devices still add up.
+ */
+export const DEVICE_TYPES = ['desktop', 'mobile', 'tablet', 'unknown'] as const
+export type DeviceType = (typeof DEVICE_TYPES)[number]
+
+/**
+ * The counts analytics.device_daily holds per device, in the column order of
+ * src/modules/sync/sql/insert_device_daily.sql (a test reads each back by name). All of them are
+ * counts that add up: across the entities of one creative when merged, across creatives and days
+ * when read.
+ */
+export const DEVICE_COUNT_IDS = ['impressions', 'inView', 'clicks'] as const
+export type DeviceCountId = (typeof DEVICE_COUNT_IDS)[number]
+
+/** The column of analytics.device_daily each count is stored in. */
+export const DEVICE_COUNT_COLUMN: Readonly<Record<DeviceCountId, string>> = {
+  impressions: 'impressions',
+  inView: 'in_view',
+  clicks: 'clicks',
+}
+
+/** One device's share of a row's delivery. An absent count = not measured per device, never 0. */
+export type DeviceCounts = { deviceType: DeviceType } & Partial<Record<DeviceCountId, number>>
+
 export interface CanonicalDailyRow {
   date: IsoDate
   language: string
@@ -59,6 +86,8 @@ export interface CanonicalDailyRow {
   metrics: Partial<Record<MetricId, number>>
   pageViews: { pageId: string; count: number }[]
   ctaClicks: { ctaId: string; count: number }[]
+  /** The row's delivery per device, at most one entry per device; empty = no device split. */
+  devices: DeviceCounts[]
   /** Events seen with no event_map entry, by vendor-supplied name. A Map, never a plain object. */
   unmapped: Map<string, number>
 }

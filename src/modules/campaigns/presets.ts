@@ -39,11 +39,21 @@ export const zeusPresetSchema = z.strictObject({
    * campaign's rows or nothing at all, so the caller has to say.
    */
   idType: z.enum(['internal_id', 'external_id']),
-  /** ATK pixels: what gives an ATK campaign its game starts and finishes. */
+  /**
+   * ATK pixels mapped by hand. A pixel that carries the id of one of the link's creatives counts
+   * for it without being listed here: ATK sets that id, and the pixel's `code` says what it
+   * counts (`eng`). This list is for a pixel that does not follow that, and what it says about
+   * a pixel wins over the rule.
+   */
   pixels: z
     .array(
       z.strictObject({
-        code: nonEmptyId,
+        /**
+         * Zeus's own number for the pixel (`pixel_id`, the first column `--list-pixels` prints):
+         * the one id no two pixels share. Never its `code`, which every campaign uses, nor its
+         * external id, which the pixels of one creative have in common.
+         */
+        pixelId: nonEmptyId,
         role: z.enum(['engagement', 'finish']),
         label,
         /** The creative tag these fires belong to; '' = the campaign's own row. */
@@ -82,7 +92,7 @@ export function zeusSetup(input: ZeusPreset): SourceSetup {
       ...input.pixels.map((pixel) =>
         defined({
           level: 'pixel',
-          externalId: pixel.code,
+          externalId: pixel.pixelId,
           role: pixel.role,
           label: pixel.label,
           campaignTag: pixel.tag ?? '',

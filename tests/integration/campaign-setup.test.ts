@@ -88,7 +88,7 @@ describe('campaign setup', () => {
         deps,
         setup(
           { primarySource: 'zeus' },
-          { ...zeus({ pixels: [{ code: 'it-setup-eng', role: 'engagement' }] }), ...nexd },
+          { ...zeus({ pixels: [{ pixelId: 'it-setup-eng', role: 'engagement' }] }), ...nexd },
         ),
       )
 
@@ -248,7 +248,7 @@ describe('campaign setup', () => {
           {
             ...zeus({
               creatives: [{ id: 'it-setup-zc-1', tag: creative?.tag }],
-              pixels: [{ code: 'it-setup-eng', role: 'engagement', tag: creative?.tag }],
+              pixels: [{ pixelId: 'it-setup-eng', role: 'engagement', tag: creative?.tag }],
             }),
             ...nexd, // pushed again: the live id it already has gets no new creative
           },
@@ -274,7 +274,10 @@ describe('campaign setup', () => {
       await expect(
         setUpCampaign(
           deps,
-          setup({}, zeus({ pixels: [{ code: 'it-setup-eng', role: 'engagement', tag: 'nope' }] })),
+          setup(
+            {},
+            zeus({ pixels: [{ pixelId: 'it-setup-eng', role: 'engagement', tag: 'nope' }] }),
+          ),
         ),
       ).rejects.toMatchObject({ code: 'invalid_setup' })
       expect(await db.query(`SELECT 1 FROM app.company WHERE name = 'IT Setup Rauch'`)).toEqual([])
@@ -283,7 +286,7 @@ describe('campaign setup', () => {
     it('leaves the campaign row alone: an entity with no tag names no creative', async () => {
       const result = await setUpCampaign(
         deps,
-        setup({}, zeus({ pixels: [{ code: 'it-setup-eng', role: 'engagement' }] })),
+        setup({}, zeus({ pixels: [{ pixelId: 'it-setup-eng', role: 'engagement' }] })),
       )
       expect(await creativesOf(result.campaign.id)).toEqual([])
       expect((await pointersOf(result.campaign.id)).map((e) => e.campaign_tag)).toEqual(['', ''])
@@ -400,12 +403,12 @@ describe('campaign setup', () => {
       // Then the ATK campaign and its engagement pixel are filled in…
       const withZeus = await push(
         {},
-        zeus({ pixels: [{ code: 'it-setup-eng', role: 'engagement' }] }),
+        zeus({ pixels: [{ pixelId: 'it-setup-eng', role: 'engagement' }] }),
       )
       // …and later the finish pixel and a NEXD creative, in a push that forgot the first pixel.
       const later = await push(
         {},
-        { ...zeus({ pixels: [{ code: 'it-setup-fin', role: 'finish' }] }), ...nexd },
+        { ...zeus({ pixels: [{ pixelId: 'it-setup-fin', role: 'finish' }] }), ...nexd },
       )
 
       expect(at(withZeus.links)).toMatchObject({ source: 'zeus', created: true, entitiesAdded: 2 })

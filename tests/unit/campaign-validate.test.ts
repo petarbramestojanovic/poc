@@ -31,7 +31,7 @@ describe('checkSources', () => {
       zeusPresetSchema.parse({
         campaignId: '18',
         idType: 'internal_id',
-        pixels: [{ code: 'abc', role: 'engagement' }],
+        pixels: [{ pixelId: 'abc', role: 'engagement' }],
       }),
     )
     const nexd = nexdSetup(nexdPresetSchema.parse({ creatives: [{ liveId: 'nx_1', label: 'V1' }] }))

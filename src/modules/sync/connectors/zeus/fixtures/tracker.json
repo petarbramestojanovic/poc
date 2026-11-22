@@ -9,8 +9,8 @@
     {
       "date": "2026-09-01",
       "pixel_id": 9001,
-      "external_id": "1823ca",
-      "code": "dev1eng",
+      "external_id": "ENG Swipe MPU V1",
+      "code": "eng",
       "name": "ENG Swipe MPU V1 engagement",
       "fires": 600
     },
@@ -18,7 +18,7 @@
       "date": "2026-09-01",
       "pixel_id": 9002,
       "external_id": "1823cb",
-      "code": "dev1fin",
+      "code": "fin",
       "name": "ENG Swipe MPU V1 finish",
       "fires": 290
     },
@@ -26,15 +26,15 @@
       "date": "2026-09-01",
       "pixel_id": 9999,
       "external_id": "zz99",
-      "code": "otherpx",
+      "code": "eng",
       "name": "Other campaign pixel",
       "fires": 40
     },
     {
       "date": "2026-09-02",
       "pixel_id": 9001,
-      "external_id": "1823ca",
-      "code": "dev1eng",
+      "external_id": "ENG Swipe MPU V1",
+      "code": "eng",
       "name": "ENG Swipe MPU V1 engagement",
       "fires": 620
     },
@@ -42,7 +42,7 @@
       "date": "2026-09-02",
       "pixel_id": 9002,
       "external_id": "1823cb",
-      "code": "dev1fin",
+      "code": "fin",
       "name": "ENG Swipe MPU V1 finish",
       "fires": 300
     },
@@ -50,15 +50,15 @@
       "date": "2026-09-02",
       "pixel_id": 9999,
       "external_id": "zz99",
-      "code": "otherpx",
+      "code": "eng",
       "name": "Other campaign pixel",
       "fires": 40
     },
     {
       "date": "2026-09-03",
       "pixel_id": 9001,
-      "external_id": "1823ca",
-      "code": "dev1eng",
+      "external_id": "ENG Swipe MPU V1",
+      "code": "eng",
       "name": "ENG Swipe MPU V1 engagement",
       "fires": 640
     },
@@ -66,7 +66,7 @@
       "date": "2026-09-03",
       "pixel_id": 9002,
       "external_id": "1823cb",
-      "code": "dev1fin",
+      "code": "fin",
       "name": "ENG Swipe MPU V1 finish",
       "fires": 310
     },
@@ -74,7 +74,7 @@
       "date": "2026-09-03",
       "pixel_id": 9999,
       "external_id": "zz99",
-      "code": "otherpx",
+      "code": "eng",
       "name": "Other campaign pixel",
       "fires": 40
     }

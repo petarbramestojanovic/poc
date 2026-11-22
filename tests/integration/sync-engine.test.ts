@@ -33,6 +33,7 @@ import {
   type SourceConnector,
   type SyncContext,
 } from '../../src/modules/sync/types.ts'
+import { at } from '../helpers.ts'
 import { fakeHttp, type Seen } from '../unit/zeus/helpers.ts'
 import { SEED } from './db.ts'
 
@@ -53,6 +54,7 @@ const row = (
   metrics: { impressions: 1000, in_view: 800, game_started: 50 },
   pageViews: [],
   ctaClicks: [{ ctaId: 'clickthrough', count: 10 }],
+  devices: [],
   unmapped: new Map(),
   ...over,
 })
@@ -72,7 +74,7 @@ const twoDays: Script = async (ctx) => {
       row('2026-09-01', 'mpu_v1', { pageViews: [{ pageId: 'result', count: 5 }] }),
       // second entity, same tag → merged into the row above
       row('2026-09-01', 'mpu_v1', { metrics: { game_finished: 20 }, ctaClicks: [] }),
-      // untagged row carrying only an unmatched pixel
+      // untagged row carrying only a pixel nothing gives a role
       row('2026-09-01', '', {
         metrics: {},
         ctaClicks: [],
@@ -123,6 +125,7 @@ describe('sync engine', () => {
       'analytics.advanced_analytics',
       'analytics.page_views',
       'analytics.cta_clicks',
+      'analytics.device_daily',
     ]) {
       await db.query(`DELETE FROM ${table} WHERE campaign_id = $1`, [SEED.campaignId])
     }
@@ -183,6 +186,20 @@ describe('sync engine', () => {
     db.query<{ events_date: string; campaign_tag: string; page_id: string; view_counter: string }>(
       `SELECT events_date, campaign_tag, page_id, view_counter
          FROM analytics.page_views WHERE campaign_id = $1 ORDER BY events_date`,
+      [SEED.campaignId],
+    )
+  const devices = () =>
+    db.query<{
+      events_date: string
+      campaign_tag: string
+      device_type: string
+      impressions: string | null
+      in_view: string | null
+      clicks: string | null
+    }>(
+      `SELECT events_date, campaign_tag, device_type, impressions, in_view, clicks
+         FROM analytics.device_daily WHERE campaign_id = $1 AND source = 'zeus'
+        ORDER BY events_date, campaign_tag, device_type`,
       [SEED.campaignId],
     )
   const state = async () =>
@@ -438,10 +455,70 @@ describe('sync engine', () => {
       to: seen.window.to,
       rows,
     })
-    /** Zeus answers: the campaign delivered every day, its creative rows are on `dividedDays`. */
-    const zeus = (dividedDays: string[]): Script => {
+    /**
+     * Zeus answers: the campaign delivered every day, its creative rows are on `dividedDays`.
+     * With `split`, the two account-wide reports have rows too: the campaign's devices on every
+     * day, an `eng` pixel carrying the creative's id on the divided ones, and somebody else's.
+     */
+    const zeus = (dividedDays: string[], split = false): Script => {
       const answer = (seen: Seen) => {
-        if (seen.report === 'tracker') return report(seen, [])
+        if (seen.report === 'devices') {
+          if (!split) return report(seen, [])
+          return report(
+            seen,
+            ['2026-09-01', '2026-09-02', '2026-09-03'].flatMap((date) => [
+              {
+                date,
+                ...delivery,
+                device_type: 'desktop',
+                impressions: 400,
+                clicks: 4,
+                visible_impressions: 300,
+              },
+              {
+                date,
+                ...delivery,
+                device_type: 'mobile',
+                impressions: 300,
+                clicks: 3,
+                visible_impressions: 200,
+              },
+              {
+                date,
+                campaign_id: 12,
+                external_id: '12',
+                device_type: 'mobile',
+                impressions: 9,
+                clicks: 0,
+                visible_impressions: 9,
+              },
+            ]),
+          )
+        }
+        if (seen.report === 'tracker') {
+          if (!split) return report(seen, [])
+          return report(
+            seen,
+            dividedDays.flatMap((date) => [
+              {
+                date,
+                pixel_id: 7001,
+                external_id: 'KW45 V1',
+                code: 'eng',
+                name: 'ours',
+                fires: 35,
+              },
+              {
+                date,
+                pixel_id: 7002,
+                external_id: 'not-ours',
+                code: 'eng',
+                name: 'theirs',
+                fires: 99,
+              },
+            ]),
+          )
+        }
         if (seen.report === 'campaigns') {
           return report(
             seen,
@@ -519,6 +596,46 @@ describe('sync engine', () => {
       )
     })
 
+    it('writes the device split and the engagement of the days it claims, and nobody else’s', async () => {
+      await storedBeforeTheCreatives()
+      script = zeus(['2026-09-03'], true)
+
+      const summary = await sync({ window: LONG_WINDOW, deep: true })
+
+      // Only 09-03 is claimed: the campaign's devices of the two days before are not written.
+      expect(await devices()).toEqual([
+        {
+          events_date: '2026-09-03',
+          campaign_tag: '',
+          device_type: 'desktop',
+          impressions: '400',
+          in_view: '300',
+          clicks: '4',
+        },
+        {
+          events_date: '2026-09-03',
+          campaign_tag: '',
+          device_type: 'mobile',
+          impressions: '300',
+          in_view: '200',
+          clicks: '3',
+        },
+      ])
+      expect(
+        await db.query(
+          `SELECT campaign_tag, game_started FROM analytics.advanced_analytics
+            WHERE campaign_id = $1 AND source = 'zeus' AND events_date = '2026-09-03'`,
+          [SEED.campaignId],
+        ),
+      ).toEqual([{ campaign_tag: 'kw45_v1', game_started: '35' }])
+      expect(
+        await db.query('SELECT 1 FROM external.unmapped_event WHERE link_id = $1', [
+          SEED.zeusLinkId,
+        ]),
+      ).toEqual([])
+      expect((await run(summary.syncRunId))?.warnings.join('\n')).not.toMatch(/devices|tracker/)
+    })
+
     it('fails the run and clears nothing when the creatives report goes empty', async () => {
       const stored = await storedBeforeTheCreatives()
       const before = await advanced()
@@ -528,6 +645,215 @@ describe('sync engine', () => {
 
       expect(await advanced()).toEqual(before)
       expect(before.every((r) => r.sync_run_id === stored.syncRunId)).toBe(true)
+    })
+  })
+
+  describe('the device split', () => {
+    const DAY = { from: '2026-09-01', to: '2026-09-01' }
+    const split: Script = () => ({
+      rows: [
+        row('2026-09-01', 'mpu_v1', {
+          devices: [
+            { deviceType: 'desktop', impressions: 600, inView: 480, clicks: 6 },
+            { deviceType: 'mobile', impressions: 300, inView: 250, clicks: 3 },
+          ],
+        }),
+        // A second entity of the same creative: its devices are added to the row above.
+        row('2026-09-01', 'mpu_v1', {
+          metrics: {},
+          ctaClicks: [],
+          devices: [
+            { deviceType: 'mobile', impressions: 100, inView: 70, clicks: 1 },
+            { deviceType: 'unknown', impressions: 5 },
+          ],
+        }),
+        row('2026-09-02', 'mpu_v2', {
+          devices: [{ deviceType: 'tablet', impressions: 40, inView: 40, clicks: 0 }],
+        }),
+      ],
+      warnings: [],
+      covered: WINDOW,
+    })
+
+    it('stores one row per creative, device and day, stamped like the rows beside it', async () => {
+      script = split
+      const summary = await sync()
+
+      expect(await devices()).toEqual([
+        {
+          events_date: '2026-09-01',
+          campaign_tag: 'mpu_v1',
+          device_type: 'desktop',
+          impressions: '600',
+          in_view: '480',
+          clicks: '6',
+        },
+        {
+          events_date: '2026-09-01',
+          campaign_tag: 'mpu_v1',
+          device_type: 'mobile',
+          impressions: '400',
+          in_view: '320',
+          clicks: '4',
+        },
+        // Not measured stays NULL: never 0.
+        {
+          events_date: '2026-09-01',
+          campaign_tag: 'mpu_v1',
+          device_type: 'unknown',
+          impressions: '5',
+          in_view: null,
+          clicks: null,
+        },
+        {
+          events_date: '2026-09-02',
+          campaign_tag: 'mpu_v2',
+          device_type: 'tablet',
+          impressions: '40',
+          in_view: '40',
+          clicks: '0',
+        },
+      ])
+      expect(
+        await db.query(
+          `SELECT DISTINCT language, data_source, sync_run_id FROM analytics.device_daily WHERE campaign_id = $1`,
+          [SEED.campaignId],
+        ),
+      ).toEqual([{ language: 'de', data_source: 'sync', sync_run_id: summary.syncRunId }])
+      // 2 advanced rows + 2 CTA rows + 4 device rows.
+      expect(summary.rowsWritten).toBe(8)
+      expect((await run(summary.syncRunId))?.rows_written).toBe(8)
+    })
+
+    it('writes every device count into its own column (the order of insert_device_daily.sql)', async () => {
+      script = () => ({
+        rows: [
+          row('2026-09-01', 'all', {
+            devices: [{ deviceType: 'mobile', impressions: 11, inView: 22, clicks: 33 }],
+          }),
+        ],
+        warnings: [],
+        covered: DAY,
+      })
+      await sync({ window: DAY })
+      expect(await devices()).toEqual([
+        {
+          events_date: '2026-09-01',
+          campaign_tag: 'all',
+          device_type: 'mobile',
+          impressions: '11',
+          in_view: '22',
+          clicks: '33',
+        },
+      ])
+    })
+
+    it('replaces a restated day completely: a device that is gone disappears, other days untouched', async () => {
+      script = split
+      await sync()
+      script = () => ({
+        rows: [
+          row('2026-09-01', 'mpu_v1', {
+            devices: [{ deviceType: 'desktop', impressions: 650, inView: 500, clicks: 7 }],
+          }),
+        ],
+        warnings: [],
+        covered: DAY,
+      })
+      const second = await sync({ window: DAY, trigger: 'backfill' })
+
+      expect((await devices()).map((d) => [d.events_date, d.device_type, d.impressions])).toEqual([
+        ['2026-09-01', 'desktop', '650'],
+        ['2026-09-02', 'tablet', '40'],
+      ])
+      // 1 advanced + 1 CTA + 3 device rows of that day went.
+      expect(second.rowsDeleted).toBe(5)
+    })
+
+    it('clears the device rows of a covered day the source no longer reports', async () => {
+      script = split
+      await sync()
+      script = () => ({ rows: [row('2026-09-01', 'mpu_v1')], warnings: [], covered: WINDOW })
+      await sync({ trigger: 'backfill' })
+
+      expect(await devices()).toEqual([])
+      expect((await advanced()).map((r) => r.events_date)).toEqual(['2026-09-01'])
+    })
+
+    it('never touches the device rows of a day outside the covered window', async () => {
+      script = split
+      await sync()
+      script = () => ({ rows: [], warnings: [], covered: DAY })
+      await sync({ trigger: 'backfill' })
+
+      expect((await devices()).map((d) => d.events_date)).toEqual(['2026-09-02'])
+    })
+
+    it('replaces a day as a whole: a device row the database refuses leaves the day as it was', async () => {
+      script = split
+      await sync()
+      // The advanced row of this day is written first; the device insert then fails its CHECK.
+      script = () => ({
+        rows: [
+          row('2026-09-01', 'mpu_v1', {
+            metrics: { impressions: 9999 },
+            devices: [{ deviceType: 'tv' as never, impressions: 1 }],
+          }),
+        ],
+        warnings: [],
+        covered: DAY,
+      })
+      await expect(sync({ window: DAY, trigger: 'backfill' })).rejects.toThrow()
+
+      expect((await advanced()).map((r) => [r.events_date, r.impressions])).toEqual([
+        ['2026-09-01', '1000'],
+        ['2026-09-02', '1000'],
+      ])
+      expect(await devices()).toHaveLength(4)
+    })
+
+    it('shows what a dry run would change per device, and writes nothing', async () => {
+      script = split
+      await sync()
+      script = () => ({
+        rows: [
+          row('2026-09-01', 'mpu_v1', {
+            devices: [
+              { deviceType: 'desktop', impressions: 600, inView: 480, clicks: 6 },
+              { deviceType: 'mobile', impressions: 450, inView: 300, clicks: 4 },
+              { deviceType: 'tablet', impressions: 20 },
+            ],
+          }),
+        ],
+        warnings: [],
+        covered: DAY,
+      })
+      const summary = await sync({ window: DAY, trigger: 'manual', dryRun: true })
+
+      expect(at(summary.diff ?? []).devices).toEqual({
+        desktop: {
+          impressions: { before: 600, after: 600 },
+          inView: { before: 480, after: 480 },
+          clicks: { before: 6, after: 6 },
+        },
+        mobile: {
+          impressions: { before: 400, after: 450 },
+          inView: { before: 320, after: 300 },
+          clicks: { before: 4, after: 4 },
+        },
+        // A count a side does not have is a dash in the CLI, never 0.
+        tablet: {
+          impressions: { before: null, after: 20 },
+          inView: { before: null, after: null },
+          clicks: { before: null, after: null },
+        },
+        unknown: {
+          impressions: { before: 5, after: null },
+          inView: { before: null, after: null },
+          clicks: { before: null, after: null },
+        },
+      })
+      expect(await devices()).toHaveLength(4)
     })
   })
 
@@ -616,6 +942,7 @@ describe('sync engine', () => {
         perTag: {},
         pageViews: { before: 5, after: 0 },
         ctaClicks: { before: 10, after: 10 },
+        devices: {},
       },
     ])
     expect((await advanced()).map((r) => r.impressions)).toEqual(['1000', '2000'])

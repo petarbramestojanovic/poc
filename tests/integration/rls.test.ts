@@ -53,6 +53,7 @@ describe('RLS and the reader grants', () => {
       'analytics.advanced_analytics',
       'analytics.cta_clicks',
       'analytics.page_views',
+      'analytics.device_daily',
       'analytics.cta',
       'analytics.page',
       'analytics.metric',
@@ -154,6 +155,14 @@ describe('RLS and the reader grants', () => {
            VALUES ('${SEED.campaignId}', 'zeus', 'de', 'x', '2026-09-01', 1, 'sync')`,
         ),
       ).toBe(DENIED)
+      expect(
+        await write(
+          `INSERT INTO analytics.device_daily
+             (campaign_id, source, language, campaign_tag, device_type, events_date, impressions)
+           VALUES ('${SEED.campaignId}', 'zeus', 'de', 'x', 'mobile', '2026-09-01', 1)`,
+        ),
+      ).toBe(DENIED)
+      expect(await write(`DELETE FROM analytics.device_daily`)).toBe(DENIED)
       expect(await write(`DELETE FROM external.sync_run`)).toBe(DENIED)
       expect(await write(`UPDATE app.campaign SET name = 'hijacked'`)).toBe(DENIED)
     })
@@ -162,6 +171,7 @@ describe('RLS and the reader grants', () => {
   describe('the browser key before a login', () => {
     it.each([
       'analytics.advanced_analytics',
+      'analytics.device_daily',
       'external.sync_run',
       'app.campaign',
       'app.email_report',
