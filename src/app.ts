@@ -27,6 +27,7 @@ import type { IndustryDeps } from './modules/industries/service.ts'
 import { classifyInBackground } from './modules/industries/trigger.ts'
 import { inboundRoutes } from './modules/salesforce/routes.ts'
 import { syncRoutes } from './modules/sync/routes.ts'
+import { PAGE_PREFIX, pageRoutes, type TrackingDeps } from './modules/tracking/routes.ts'
 import { EXPORT_PREFIX } from './modules/webhooks/exports.ts'
 import { exportRoutes, webhookRoutes } from './modules/webhooks/routes.ts'
 import type { RunTracker, SyncDeps } from './modules/sync/engine.ts'
@@ -62,6 +63,11 @@ export interface AppDeps {
    * keyword table at create time runs and both routes answer 404.
    */
   industries?: IndustryDeps
+  /**
+   * The public page tracker behind /pages (POST /pages/event, GET /pages/tag.js), with no token.
+   * Without it /pages answers 404.
+   */
+  tracking?: TrackingDeps
 }
 
 /** Admin prefixes: every method and path under these requires the operator token. */
@@ -89,6 +95,7 @@ export function buildApp({
   emailReports,
   provisioning,
   industries,
+  tracking,
 }: AppDeps): FastifyInstance {
   // Widen to Fastify's logger interface so its logger type parameter is not inferred as the
   // concrete pino type, which conflicts with Fastify's own child-logger factory typing.
@@ -180,6 +187,23 @@ export function buildApp({
         await exports.register(exportRoutes, { deps: webhooks })
       },
       { prefix: EXPORT_PREFIX },
+    )
+  }
+
+  // Public on purpose too: a client's page, on any site, counts its visits and conversions here and
+  // loads the script that does it (src/modules/tracking/routes.ts). It reaches app.campaign (does
+  // the campaign exist) and analytics.utm_daily, and nothing else.
+  if (tracking) {
+    app.register(
+      async (pages) => {
+        pages.setNotFoundHandler(async (_request, reply) =>
+          reply.code(404).send({ error: 'not_found' }),
+        )
+        await pages.register(pageRoutes, { deps: tracking })
+      },
+      // Fastify's request lines carry the visitor's address: off for the whole scope, its 404s
+      // too (a client's mistyped tag path would log every visitor).
+      { prefix: PAGE_PREFIX, logLevel: 'warn' },
     )
   }
 

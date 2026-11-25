@@ -34,6 +34,16 @@ export default defineConfig(
     rules: { '@typescript-eslint/require-await': 'off' },
   },
 
+  // The page tracker's script runs in a client's page, in any browser, as plain script.
+  {
+    files: ['src/**/assets/**/*.js'],
+    languageOptions: {
+      sourceType: 'script',
+      ecmaVersion: 2019,
+      globals: { window: 'readonly' },
+    },
+  },
+
   // Operator CLI prints to stdout by design.
   { files: ['src/cli/**/*.ts'], rules: { 'no-console': 'off' } },
 

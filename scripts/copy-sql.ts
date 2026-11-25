@@ -1,14 +1,17 @@
 import { cpSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
-// tsc emits only JavaScript; the `sql/` directories loaded by src/core/sql-file.ts are copied
-// alongside. Only those directories are copied — nothing else from src/ reaches dist/.
+// tsc emits only JavaScript; the `sql/` directories loaded by src/core/sql-file.ts, and the
+// `assets/` directories a module reads at import time (the page tracker's browser script), are
+// copied alongside. Only those directories are copied — nothing else from src/ reaches dist/.
+const COPIED = new Set(['sql', 'assets'])
+
 function sqlDirs(dir: string): string[] {
   const found: string[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const path = join(dir, entry.name)
-    if (entry.name === 'sql') found.push(path)
+    if (COPIED.has(entry.name)) found.push(path)
     else found.push(...sqlDirs(path))
   }
   return found

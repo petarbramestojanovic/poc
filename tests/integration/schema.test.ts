@@ -70,6 +70,15 @@ const EXPECTED_TABLES: Record<string, string[]> = {
     'device_type',
     'events_date',
   ],
+  // Not RFC-004: the page tracker's counts, migration 0019.
+  'analytics.utm_daily': [
+    'campaign_id',
+    'events_date',
+    'source',
+    'language',
+    'overflow',
+    'combination_key',
+  ],
 }
 
 describe('migration 0001_foundation', () => {

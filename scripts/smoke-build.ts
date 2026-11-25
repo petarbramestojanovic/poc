@@ -29,6 +29,7 @@ const modules = [
   'modules/industries/trigger.js',
   'modules/industries/routes.js',
   'cli/industries-commands.js',
+  'modules/tracking/routes.js',
 ]
 for (const module of modules) {
   await import(new URL(`../dist/${module}`, import.meta.url).href)
