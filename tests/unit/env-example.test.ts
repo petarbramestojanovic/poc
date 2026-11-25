@@ -23,6 +23,7 @@ const REQUIRED = [
   'MAIL_FROM',
   'MAIL_REPLY_TO',
   'OPENROUTER_API_KEY',
+  'PAGE_COMBINATION_CAP',
   'TZ',
 ]
 

@@ -196,6 +196,11 @@ const serviceSchema = z
      * ours to set, so a value that is not a usable origin is ignored rather than failing the boot.
      */
     RENDER_EXTERNAL_URL: publicBaseUrl.optional().catch(undefined),
+    /**
+     * The public page tracker (POST /pages/event): how many combinations of referrer, utm_ and brame_ values one campaign may get a day; a visit
+     * with a combination first seen after that is counted on the day's overflow row.
+     */
+    PAGE_COMBINATION_CAP: z.coerce.number().int().min(1).default(2000),
     /** Set by Render to the deployed commit. /healthz reports it so a deploy can see it is live. */
     RENDER_GIT_COMMIT: z
       .string()
@@ -246,6 +251,8 @@ export interface Config extends RuntimeConfig {
   readonly commit?: string
   /** Unset: email is off (MAIL_PROVIDER is not set). */
   readonly mail?: MailConfig
+  /** The page tracker's limit; loadConfig always sets it (default 2,000). */
+  readonly pageTracking?: { readonly combinationCap: number }
 }
 
 export class ConfigError extends Error {
@@ -317,6 +324,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...withPublicBaseUrl(data.PUBLIC_BASE_URL ?? data.RENDER_EXTERNAL_URL),
     ...(data.RENDER_GIT_COMMIT === undefined ? {} : { commit: data.RENDER_GIT_COMMIT }),
     ...(mail === undefined ? {} : { mail }),
+    pageTracking: { combinationCap: data.PAGE_COMBINATION_CAP },
   }
 }
 

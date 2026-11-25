@@ -20,6 +20,7 @@ import {
 import type { ProvisioningDeps } from './modules/provisioning/service.ts'
 import { createRunTracker, type SyncDeps } from './modules/sync/engine.ts'
 import { startNightlyScheduler, type NightlyScheduler } from './modules/sync/scheduler.ts'
+import { PAGE_MAX_CONNECTIONS, type TrackingDeps } from './modules/tracking/routes.ts'
 import { startWebhookScheduler, type WebhookScheduler } from './modules/webhooks/scheduler.ts'
 import type { SendDeps } from './modules/webhooks/send.ts'
 
@@ -110,6 +111,15 @@ const industries: IndustryDeps = {
   tracker,
 }
 
+// The public page tracker works through its own two-connection share of the pool, and answers
+// 503 rather than queue without end, so a flood of posts never takes a sync's or a report's
+// connections.
+const tracking: TrackingDeps = {
+  db: limitDb(runtime.db, createLimiter(PAGE_MAX_CONNECTIONS)),
+  log: logger,
+  combinationCap: config.pageTracking?.combinationCap ?? 2000,
+}
+
 const app = buildApp({
   config,
   db: runtime.db,
@@ -121,6 +131,7 @@ const app = buildApp({
   emailReports,
   provisioning,
   industries,
+  tracking,
   drainTimeoutMs: SHUTDOWN_DEADLINE_MS - 2_000,
 })
 

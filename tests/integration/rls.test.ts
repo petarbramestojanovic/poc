@@ -54,6 +54,7 @@ describe('RLS and the reader grants', () => {
       'analytics.cta_clicks',
       'analytics.page_views',
       'analytics.device_daily',
+      'analytics.utm_daily',
       'analytics.cta',
       'analytics.page',
       'analytics.metric',

@@ -27,7 +27,19 @@ describe('loadConfig', () => {
       syncSchedulerEnabled: true,
       webhookSchedulerEnabled: true,
       emailReportSchedulerEnabled: true,
+      pageTracking: { combinationCap: 2000 },
     })
+  })
+
+  it('reads the page tracker limit, and refuses one that is not a positive whole number', () => {
+    expect(loadConfig({ ...valid, PAGE_COMBINATION_CAP: '500' }).pageTracking).toEqual({
+      combinationCap: 500,
+    })
+    for (const bad of ['0', '-1', '1.5', 'many']) {
+      expect(() => loadConfig({ ...valid, PAGE_COMBINATION_CAP: bad })).toThrow(
+        'PAGE_COMBINATION_CAP',
+      )
+    }
   })
 
   it('coerces PORT and TRUST_PROXY_HOPS and accepts LOG_LEVEL', () => {
